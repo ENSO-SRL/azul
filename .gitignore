@@ -1,0 +1,26 @@
+# Environment files (contain secrets)
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# SQLite
+*.db
+
+# Certificates (NEVER commit these)
+certs/
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
