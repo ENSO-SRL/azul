@@ -18,6 +18,7 @@ Supports TWO modes:
        - AZUL_AUTH1_3DS    / AZUL_AUTH2_3DS         (optional overrides)
        - AZUL_CERT_PATH   (path to .crt file)
        - AZUL_KEY_PATH    (path to .key file)
+       - AZUL_ENV         sandbox | production  (default: sandbox)
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 # ---------------------------------------------------------------------------
 # .env loader (no external dependency)
@@ -35,7 +37,6 @@ from pathlib import Path
 
 def _load_dotenv() -> None:
     """Load a .env file from project root into os.environ (if it exists)."""
-    # Walk up from this file to find the project root .env
     env_path = Path(__file__).resolve().parents[2] / ".env"
     if not env_path.is_file():
         return
@@ -59,10 +60,18 @@ _load_dotenv()
 
 _LOCAL_MODE = os.getenv("AZUL_LOCAL_MODE", "0") == "1"
 
-_REGION = os.getenv("AZUL_AWS_REGION", "us-east-2")
+_REGION       = os.getenv("AZUL_AWS_REGION",  "us-east-2")
 _SECRET_CREDS = os.getenv("AZUL_SECRET_CREDS", "iamatlas/azul/dev/api-credentials")
-_SECRET_CERT = os.getenv("AZUL_SECRET_CERT", "iamatlas/azul/dev/cert-pem")
-_SECRET_KEY = os.getenv("AZUL_SECRET_KEY", "iamatlas/azul/dev/cert-key")
+_SECRET_CERT  = os.getenv("AZUL_SECRET_CERT",  "iamatlas/azul/dev/cert-pem")
+_SECRET_KEY   = os.getenv("AZUL_SECRET_KEY",   "iamatlas/azul/dev/cert-key")
+
+# Azul API URLs
+AZUL_URL_SANDBOX    = "https://pruebas.azul.com.do/webservices/JSON/default.aspx"
+AZUL_URL_PRODUCTION = "https://pagos.azul.com.do/WebServices/JSON/default.aspx"
+
+# 3DS 2.0 specific endpoints (production only — sandbox uses same base)
+AZUL_3DS_METHOD_URL    = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedsmethod"
+AZUL_3DS_CHALLENGE_URL = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedschallenge"
 
 # ---------------------------------------------------------------------------
 # Dataclass
@@ -78,6 +87,12 @@ class AzulConfig:
     merchant_id: str
     auth_splitit: tuple[str, str]   # (auth1, auth2) — ventas simples, sin 3DS
     auth_3dsecure: tuple[str, str]  # (auth1, auth2) — flujo 3D Secure 2.0
+    env: Literal["sandbox", "production"] = "sandbox"
+
+    @property
+    def api_url(self) -> str:
+        """Return the correct Azul API URL for the configured environment."""
+        return AZUL_URL_PRODUCTION if self.env == "production" else AZUL_URL_SANDBOX
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +132,8 @@ def _write_temp_pem(content: str, suffix: str) -> str:
 def _load_from_aws() -> AzulConfig:
     """Build config by pulling secrets from AWS Secrets Manager."""
     creds_json = _get_secret(_SECRET_CREDS)
-    cert_pem = _get_secret(_SECRET_CERT)
-    key_pem = _get_secret(_SECRET_KEY)
+    cert_pem   = _get_secret(_SECRET_CERT)
+    key_pem    = _get_secret(_SECRET_KEY)
 
     creds = json.loads(creds_json)
 
@@ -134,6 +149,7 @@ def _load_from_aws() -> AzulConfig:
             creds["auth_3dsecure"]["auth1"],
             creds["auth_3dsecure"]["auth2"],
         ),
+        env=creds.get("env", "production"),
     )
 
 
@@ -146,17 +162,16 @@ def _load_from_env() -> AzulConfig:
             "Provide credentials via .env or environment variables."
         )
 
-    # Auth — allow specific overrides or a single pair for both modes
     auth1_default = os.environ.get("AZUL_AUTH1", "")
     auth2_default = os.environ.get("AZUL_AUTH2", "")
 
     auth1_splitit = os.environ.get("AZUL_AUTH1_SPLITIT", auth1_default)
     auth2_splitit = os.environ.get("AZUL_AUTH2_SPLITIT", auth2_default)
-    auth1_3ds = os.environ.get("AZUL_AUTH1_3DS", auth1_default)
-    auth2_3ds = os.environ.get("AZUL_AUTH2_3DS", auth2_default)
+    auth1_3ds     = os.environ.get("AZUL_AUTH1_3DS", auth1_default)
+    auth2_3ds     = os.environ.get("AZUL_AUTH2_3DS", auth2_default)
 
     cert_path = os.environ.get("AZUL_CERT_PATH", "")
-    key_path = os.environ.get("AZUL_KEY_PATH", "")
+    key_path  = os.environ.get("AZUL_KEY_PATH", "")
 
     if not cert_path or not key_path:
         raise RuntimeError(
@@ -164,12 +179,17 @@ def _load_from_env() -> AzulConfig:
             "are not set. Point them to your .crt and .key PEM files."
         )
 
+    env: Literal["sandbox", "production"] = (
+        "production" if os.environ.get("AZUL_ENV", "sandbox") == "production" else "sandbox"
+    )
+
     return AzulConfig(
         cert_path=cert_path,
         key_path=key_path,
         merchant_id=merchant_id,
         auth_splitit=(auth1_splitit, auth2_splitit),
         auth_3dsecure=(auth1_3ds, auth2_3ds),
+        env=env,
     )
 
 

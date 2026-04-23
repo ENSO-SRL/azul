@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database import Base
@@ -29,10 +29,20 @@ class PaymentModel(Base):
     status: Mapped[str] = mapped_column(String(20), default="PENDING")
     auth_mode: Mapped[str] = mapped_column(String(20), default="splitit")
 
+    # CIT vs MIT
+    initiated_by: Mapped[str] = mapped_column(String(20), default="cardholder")
+
+    # Idempotencia — UNIQUE permite buscar por clave y evitar cobros dobles
+    idempotency_key: Mapped[str] = mapped_column(String(128), default="", index=True)
+
     # Azul response fields
     azul_order_id: Mapped[str] = mapped_column(String(50), default="")
     iso_code: Mapped[str] = mapped_column(String(10), default="")
+    response_code: Mapped[str] = mapped_column(String(20), default="")
     response_message: Mapped[str] = mapped_column(String(255), default="")
+
+    # DataVault token (si se solicitó save_card=True)
+    data_vault_token: Mapped[str] = mapped_column(String(100), default="")
 
     # Service payment fields
     service_type: Mapped[str] = mapped_column(String(50), default="")
@@ -40,6 +50,20 @@ class PaymentModel(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class SavedCardModel(Base):
+    __tablename__ = "saved_cards"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    customer_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    token: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    card_brand: Mapped[str] = mapped_column(String(20), default="")
+    card_last4: Mapped[str] = mapped_column(String(4), default="")
+    expiration: Mapped[str] = mapped_column(String(6), default="")   # YYYYMM
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class RecurringPaymentModel(Base):
@@ -70,10 +94,11 @@ class TransactionModel(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     payment_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    request_payload: Mapped[str] = mapped_column(Text, default="")
+    request_payload: Mapped[str] = mapped_column(Text, default="")   # PAN enmascarado
     response_payload: Mapped[str] = mapped_column(Text, default="")
     http_status: Mapped[int] = mapped_column(Integer, default=0)
     iso_code: Mapped[str] = mapped_column(String(10), default="")
+    response_code: Mapped[str] = mapped_column(String(20), default="")
     response_message: Mapped[str] = mapped_column(String(255), default="")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

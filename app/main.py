@@ -12,17 +12,22 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.infrastructure.database import init_db
+from app.infrastructure.database import engine, init_db
+from app.services.scheduler import start_scheduler, stop_scheduler
+from routers.clubs import router as clubs_router
 from routers.health import router as health_router
 from routers.payments import router as payments_router
 from routers.recurring import router as recurring_router
+from routers.tokens import router as tokens_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: create DB tables.  Shutdown: nothing special."""
+    """Startup: create DB tables + start scheduler.  Shutdown: stop scheduler."""
     await init_db()
+    start_scheduler(engine)
     yield
+    stop_scheduler()
 
 
 app = FastAPI(
@@ -30,15 +35,23 @@ app = FastAPI(
     description=(
         "Sistema de pagos integrado con Azul Payment Gateway.\n\n"
         "Soporta:\n"
-        "- **Pagos únicos** (Sale)\n"
+        "- **Pagos únicos** (Sale CIT con tarjeta completa)\n"
         "- **Pagos de servicios** (facturas, utilities)\n"
-        "- **Pagos recurrentes** (suscripciones con DataVault)\n\n"
-        "Usa el endpoint `/test/smoke` para validar la conexión con el sandbox de Azul."
+        "- **Pagos de clubs** (CIT on-demand con token DataVault)\n"
+        "- **Pagos recurrentes** (suscripciones MIT con DataVault)\n"
+        "- **Tokenización** (DataVault CREATE / DELETE)\n\n"
+        "### Idempotencia\n"
+        "Pasa el header `Idempotency-Key` en cualquier endpoint de cobro para "
+        "reintentos seguros sin cobros duplicados.\n\n"
+        "### Smoke test\n"
+        "Usa `/test/smoke` para validar mTLS + autenticación contra el sandbox de Azul."
     ),
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
 app.include_router(health_router)
 app.include_router(payments_router)
 app.include_router(recurring_router)
+app.include_router(tokens_router)
+app.include_router(clubs_router)

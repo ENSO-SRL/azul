@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from app.domain.entities import Payment, RecurringPayment, Transaction
+from app.domain.entities import Payment, RecurringPayment, SavedCard, Transaction
 
 
 class PaymentRepository(ABC):
@@ -22,6 +22,11 @@ class PaymentRepository(ABC):
 
     @abstractmethod
     async def update(self, payment: Payment) -> Payment: ...
+
+    @abstractmethod
+    async def find_by_idempotency_key(self, key: str) -> Payment | None:
+        """Return an existing payment with the given idempotency key, or None."""
+        ...
 
 
 class RecurringRepository(ABC):
@@ -38,6 +43,11 @@ class RecurringRepository(ABC):
     @abstractmethod
     async def list_active(self) -> list[RecurringPayment]: ...
 
+    @abstractmethod
+    async def list_due(self) -> list[RecurringPayment]:
+        """Return active subscriptions whose next_charge_at <= now."""
+        ...
+
 
 class TransactionRepository(ABC):
 
@@ -46,3 +56,18 @@ class TransactionRepository(ABC):
 
     @abstractmethod
     async def list_by_payment(self, payment_id: str) -> list[Transaction]: ...
+
+
+class SavedCardRepository(ABC):
+
+    @abstractmethod
+    async def save(self, card: SavedCard) -> SavedCard: ...
+
+    @abstractmethod
+    async def get_by_token(self, token: str) -> SavedCard | None: ...
+
+    @abstractmethod
+    async def list_by_customer(self, customer_id: str) -> list[SavedCard]: ...
+
+    @abstractmethod
+    async def delete(self, token: str) -> None: ...
