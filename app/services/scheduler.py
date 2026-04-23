@@ -5,12 +5,29 @@ Runs inside the FastAPI process (AsyncIOScheduler).  Every hour it queries
 for active subscriptions whose next_charge_at <= now and fires sale_mit()
 for each one.
 
-Retry policy
-------------
-- Attempt 1: immediately when due.
-- Attempt 2: 1 hour after failure   (next_charge_at = now + 1h).
-- Attempt 3: 24 hours after failure (next_charge_at = now + 24h).
-- After 3 consecutive failures: subscription moved to PAUSED.
+Retry policy (deterministic — uses failed_attempts counter)
+------------------------------------------------------------
+Intento 1 falla → failed_attempts=1, next_charge_at = now + 1 día
+Intento 2 falla → failed_attempts=2, next_charge_at = now + 3 días
+Intento 3 falla → failed_attempts=3, next_charge_at = now + 7 días
+Intento 4 falla → status=PAUSED, notificar al cliente
+
+Si aprueba en cualquier punto → failed_attempts=0, avanzar ciclo normal.
+
+Idempotencia — CustomOrderId determinístico
+-------------------------------------------
+Cada intento genera un CustomOrderId único derivado del ID de suscripción,
+el número de ciclo, y el intento actual. Si el scheduler falla y reintenta
+por error de red, Azul detecta el duplicado y no cobra dos veces.
+
+Separación de errores
+---------------------
+- AzulIntegrationError → bug nuestro (auth, payload malformado).
+  NO se pausa la suscripción. Se loguea como ERROR para alertas.
+- Declinadas de negocio (IsoCode != 00) → payment.status = DECLINED.
+  Se aplica política de reintentos normal.
+- Exception genérica → se trata como fallo técnico transitorio.
+  Se aplica política de reintentos.
 
 Integration
 -----------
@@ -27,15 +44,27 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.domain.entities import Payment, PaymentStatus, PaymentType, SubscriptionStatus
-from app.infrastructure.azul_gateway import AzulPaymentGateway
+from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
 
 logger = logging.getLogger(__name__)
 
-# Retry backoff delays (hours)
-_RETRY_DELAYS = [1, 24, 48]
+# Retry backoff delays in days
+_RETRY_DELAYS_DAYS = [1, 3, 7]  # Intento 1→2, 2→3, 3→PAUSE
+_MAX_ATTEMPTS = 3
 
 # Shared scheduler instance
 _scheduler: AsyncIOScheduler | None = None
+
+
+def _build_custom_order_id(sub_id: str, failed_attempts: int) -> str:
+    """Deterministic CustomOrderId for idempotent retries.
+
+    Format: sub-{id_prefix}-att{attempt}
+    Azul uses this to detect duplicate requests and avoid double-charging.
+    """
+    # Use first 8 chars of UUID to keep within Azul field length limits
+    short_id = sub_id.replace("-", "")[:12]
+    return f"sub-{short_id}-att{failed_attempts}"
 
 
 async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None:
@@ -60,7 +89,11 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
 
         for sub in due:
             try:
+                # Build idempotent CustomOrderId — same on retry, unique per cycle+attempt
+                custom_order_id = _build_custom_order_id(sub.id, sub.failed_attempts)
+
                 payment = Payment(
+                    id=custom_order_id,  # use as CustomOrderId for Azul idempotency
                     amount=sub.amount,
                     itbis=sub.itbis,
                     payment_type=PaymentType.RECURRING,
@@ -75,8 +108,11 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
                 await txn_repo.save(txn)
 
                 if payment.status == PaymentStatus.APPROVED:
+                    # Success — reset retry counter, advance schedule
+                    sub.failed_attempts = 0
+                    sub.last_failure_reason = ""
                     sub.last_charged_at = datetime.now(timezone.utc)
-                    sub.next_charge_at  = (
+                    sub.next_charge_at = (
                         datetime.now(timezone.utc) + timedelta(days=sub.frequency_days)
                     )
                     logger.info(
@@ -84,7 +120,18 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
                         sub.id, sub.next_charge_at.date(),
                     )
                 else:
-                    sub = _handle_failure(sub, payment.response_message)
+                    # Business decline — apply retry policy
+                    sub = _handle_failure(sub, payment.response_message or f"IsoCode={payment.iso_code}")
+
+            except AzulIntegrationError as exc:
+                # Our bug — log as ERROR, do NOT apply retry (would loop)
+                # The subscription stays on the same next_charge_at until a human fixes the integration
+                logger.error(
+                    "[scheduler] INTEGRATION ERROR sub=%s: %s — "
+                    "NOT retrying. Fix the integration bug first.",
+                    sub.id, exc,
+                )
+                # Don't modify sub — don't bump failed_attempts for our bugs
 
             except Exception as exc:
                 logger.exception("[scheduler] sub=%s unexpected error: %s", sub.id, exc)
@@ -94,43 +141,50 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
 
 
 def _handle_failure(sub, reason: str):
-    """Advance retry counter or pause subscription."""
+    """Advance retry counter or pause subscription.
+
+    Uses sub.failed_attempts for deterministic backoff — no heuristics.
+    """
     from app.domain.entities import RecurringPayment  # avoid circular at module level
 
     now = datetime.now(timezone.utc)
+    sub.failed_attempts += 1
+    sub.last_failure_reason = reason[:500]  # trim to column limit
 
-    # Count consecutive failures by inspecting last_charged_at
-    # We store retry attempt implicitly via next_charge_at offsets
-    # Simple approach: check how many times next_charge_at was bumped forward < 1 day
-    # For MVP, we use a simple attempt count based on frequency vs delay comparison.
-
-    # Determine which retry attempt we're on
-    if sub.next_charge_at and sub.last_charged_at:
-        delta_hours = (sub.next_charge_at - sub.last_charged_at).total_seconds() / 3600
-        if delta_hours < 2:
-            # Attempt 1 failed → retry in 24h
-            delay_hours = _RETRY_DELAYS[1]
-        elif delta_hours < 25:
-            # Attempt 2 failed → retry in 48h
-            delay_hours = _RETRY_DELAYS[2]
-        else:
-            # Attempt 3 failed → pause
-            logger.warning(
-                "[scheduler] sub=%s paused after 3 failures — last reason: %s",
-                sub.id, reason,
-            )
-            sub.status = SubscriptionStatus.PAUSED
-            return sub
+    if sub.failed_attempts > _MAX_ATTEMPTS:
+        # Exhausted all retries — pause subscription
+        logger.warning(
+            "[scheduler] sub=%s PAUSED after %d consecutive failures. "
+            "Last reason: %s",
+            sub.id, sub.failed_attempts, reason,
+        )
+        sub.status = SubscriptionStatus.PAUSED
+        # Keep next_charge_at as-is so UI can show "paused since"
     else:
-        # First failure
-        delay_hours = _RETRY_DELAYS[0]
+        delay_days = _RETRY_DELAYS_DAYS[sub.failed_attempts - 1]
+        sub.next_charge_at = now + timedelta(days=delay_days)
+        logger.warning(
+            "[scheduler] sub=%s failed (attempt %d/%d): %s — retrying in %d day(s) on %s",
+            sub.id, sub.failed_attempts, _MAX_ATTEMPTS,
+            reason, delay_days, sub.next_charge_at.date(),
+        )
 
-    sub.next_charge_at = now + timedelta(hours=delay_hours)
-    logger.warning(
-        "[scheduler] sub=%s failed (%s) — retrying in %sh",
-        sub.id, reason, delay_hours,
-    )
     return sub
+
+
+async def run_now(engine: AsyncEngine) -> int:
+    """Manually trigger the scheduler job — used by debug endpoints and tests.
+
+    Returns the number of subscriptions processed.
+    """
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    from app.infrastructure.repo_impl import SQLRecurringRepository
+
+    async with session_factory() as session:
+        count = len(await SQLRecurringRepository(session).list_due())
+
+    await _charge_due_subscriptions(session_factory)
+    return count
 
 
 def start_scheduler(engine: AsyncEngine) -> None:

@@ -44,18 +44,23 @@ class RecurringService:
         cvc: str,
         frequency_days: int = 30,
         description: str = "",
+        cardholder_name: str = "",
+        cardholder_email: str = "",
     ) -> tuple[RecurringPayment, Payment]:
         """First charge + tokenise the card via DataVault.
 
         Returns the new subscription and the initial payment.
+        cardholder_name and cardholder_email are required by Azul API v1.2.
         """
 
-        # 1. Execute first charge with save_token=True
+        # 1. Execute first charge with save_token=True (CIT — user present)
         payment = Payment(
             amount=amount,
             itbis=itbis,
             payment_type=PaymentType.RECURRING,
             auth_mode="splitit",
+            cardholder_name=cardholder_name,
+            cardholder_email=cardholder_email,
         )
 
         payment, txn = await self._gw.sale(
@@ -65,11 +70,8 @@ class RecurringService:
         await self._payments.save(payment)
         await self._txns.save(txn)
 
-        # 2. Extract token from the Azul response
-        import json
-        resp_data = json.loads(txn.response_payload) if txn.response_payload else {}
-        token = resp_data.get("DataVaultToken", "")
-        brand = resp_data.get("CardNumber", "")[:4] if resp_data.get("CardNumber") else ""
+        # 2. Extract token from the payment entity (populated by gateway)
+        token = payment.data_vault_token
 
         # 3. Create subscription
         now = datetime.now(timezone.utc)
@@ -80,7 +82,7 @@ class RecurringService:
             frequency_days=frequency_days,
             description=description,
             data_vault_token=token,
-            card_brand=brand,
+            card_brand=payment.data_vault_token[:4] if token else "",
             card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
             last_charged_at=now,
             next_charge_at=now + timedelta(days=frequency_days),
@@ -90,8 +92,11 @@ class RecurringService:
         return recurring, payment
 
     async def charge(self, recurring_id: str) -> Payment:
-        """Manually charge an active subscription using its stored token."""
+        """Manually charge an active subscription using its stored token (MIT).
 
+        This is a Merchant-Initiated Transaction — the user is NOT present.
+        The scheduler calls this; it can also be triggered manually via the API.
+        """
         sub = await self._recurring.get_by_id(recurring_id)
         if not sub:
             raise ValueError(f"Subscription {recurring_id} not found")
@@ -105,9 +110,11 @@ class RecurringService:
             itbis=sub.itbis,
             payment_type=PaymentType.RECURRING,
             auth_mode="splitit",
+            initiated_by="merchant",
         )
 
-        payment, txn = await self._gw.sale_with_token(payment, sub.data_vault_token)
+        # MIT — user not present, use stored token
+        payment, txn = await self._gw.sale_mit(payment, sub.data_vault_token)
 
         await self._payments.save(payment)
         await self._txns.save(txn)

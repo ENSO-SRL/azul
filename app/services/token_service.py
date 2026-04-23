@@ -27,10 +27,13 @@ class TokenService:
         card_number: str,
         expiration: str,
         cvc: str,
+        cardholder_name: str = "",
+        cardholder_email: str = "",
     ) -> SavedCard:
         """Store a card in Azul DataVault WITHOUT charging it.
 
         Uses TrxType=CREATE — the card is validated and tokenized.
+        cardholder_name and cardholder_email are required by Azul API v1.2.
         Returns the SavedCard domain entity with the DataVault token.
         """
         card = await self._gw.create_token(
@@ -38,6 +41,8 @@ class TokenService:
             card_number=card_number,
             expiration=expiration,
             cvc=cvc,
+            cardholder_name=cardholder_name,
+            cardholder_email=cardholder_email,
         )
         return await self._cards.save(card)
 

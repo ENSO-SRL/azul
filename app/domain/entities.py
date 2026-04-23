@@ -90,6 +90,10 @@ class Payment:
     # retorna el payment original sin reejecutar la transacción
     idempotency_key: str = ""
 
+    # Campos obligatorios desde Azul API v1.2
+    cardholder_name: str = ""
+    cardholder_email: str = ""
+
     # Campos que Azul devuelve
     azul_order_id: str = ""
     iso_code: str = ""
@@ -147,6 +151,10 @@ class RecurringPayment:
     # Scheduling
     next_charge_at: datetime | None = None
     last_charged_at: datetime | None = None
+
+    # Retry policy — conteo explícito para evitar lógica heurística frágil
+    failed_attempts: int = 0
+    last_failure_reason: str = ""
 
     # Auto-generados
     id: str = field(default_factory=lambda: str(uuid.uuid4()))

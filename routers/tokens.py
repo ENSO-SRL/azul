@@ -29,6 +29,8 @@ class RegisterCardRequest(BaseModel):
     card_number: str = Field(..., description="Número de tarjeta (16-19 dígitos)")
     expiration: str  = Field(..., description="Expiración YYYYMM (ej. 202812)")
     cvc: str         = Field(..., description="CVC / CVV")
+    cardholder_name: str  = Field(..., description="Nombre del tarjetahabiente")
+    cardholder_email: str = Field(..., description="Correo electrónico del tarjetahabiente")
 
     model_config = {"json_schema_extra": {"examples": [
         {
@@ -36,6 +38,8 @@ class RegisterCardRequest(BaseModel):
             "card_number": "4260550061845872",
             "expiration": "202812",
             "cvc": "123",
+            "cardholder_name": "Juan Pérez",
+            "cardholder_email": "juan@ejemplo.com",
         }
     ]}}
 
@@ -87,9 +91,21 @@ async def register_card(
             card_number=body.card_number,
             expiration=body.expiration,
             cvc=body.cvc,
+            cardholder_name=body.cardholder_name,
+            cardholder_email=body.cardholder_email,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        err = str(exc)
+        if "VALIDATION_ERROR:TrxType" in err:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "DataVault CREATE (tokenizar sin cobrar) no está habilitado en sandbox. "
+                    "Usa POST /api/v1/payments con save_card=true para obtener un token "
+                    "en el mismo cobro. Solicitar habilitación a solucionesintegradas@bpd.com.do."
+                ),
+            )
+        raise HTTPException(status_code=422, detail=err)
     return _to_response(card)
 
 

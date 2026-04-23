@@ -48,10 +48,13 @@ class PaymentService:
         auth_mode: str = "splitit",
         save_card: bool = False,
         idempotency_key: str = "",
+        cardholder_name: str = "",
+        cardholder_email: str = "",
     ) -> Payment:
         """Create and execute a one-time CIT Sale.
 
-        If ``save_card=True`` the card is stored in DataVault and the token
+        cardholder_name and cardholder_email are required by Azul API v1.2.
+        If save_card=True the card is stored in DataVault and the token
         is persisted on the Payment record for future use.
         """
         # Idempotency check
@@ -68,6 +71,8 @@ class PaymentService:
             auth_mode=auth_mode,
             initiated_by="cardholder",
             idempotency_key=idempotency_key,
+            cardholder_name=cardholder_name,
+            cardholder_email=cardholder_email,
         )
 
         payment, txn = await self._gw.sale(
@@ -103,6 +108,8 @@ class PaymentService:
         bill_reference: str,
         order_id: str = "",
         idempotency_key: str = "",
+        cardholder_name: str = "",
+        cardholder_email: str = "",
     ) -> Payment:
         """Pay a utility / service bill."""
         if idempotency_key:
@@ -120,6 +127,8 @@ class PaymentService:
             idempotency_key=idempotency_key,
             service_type=service_type,
             bill_reference=bill_reference,
+            cardholder_name=cardholder_name,
+            cardholder_email=cardholder_email,
         )
 
         payment, txn = await self._gw.sale(payment, card_number, expiration, cvc)

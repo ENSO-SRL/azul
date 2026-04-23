@@ -44,6 +44,10 @@ class PaymentModel(Base):
     # DataVault token (si se solicitó save_card=True)
     data_vault_token: Mapped[str] = mapped_column(String(100), default="")
 
+    # Campos obligatorios Azul API v1.2
+    cardholder_name: Mapped[str] = mapped_column(String(100), default="")
+    cardholder_email: Mapped[str] = mapped_column(String(255), default="")
+
     # Service payment fields
     service_type: Mapped[str] = mapped_column(String(50), default="")
     bill_reference: Mapped[str] = mapped_column(String(100), default="")
@@ -85,6 +89,10 @@ class RecurringPaymentModel(Base):
     # Scheduling
     next_charge_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_charged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Retry policy — conteo explícito de intentos fallidos consecutivos
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_failure_reason: Mapped[str] = mapped_column(String(500), default="")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 

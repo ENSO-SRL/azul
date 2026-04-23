@@ -53,6 +53,8 @@ def _payment_to_model(p: Payment) -> PaymentModel:
         response_code=p.response_code,
         response_message=p.response_message,
         data_vault_token=p.data_vault_token,
+        cardholder_name=p.cardholder_name,
+        cardholder_email=p.cardholder_email,
         service_type=p.service_type,
         bill_reference=p.bill_reference,
         created_at=p.created_at,
@@ -78,6 +80,8 @@ def _model_to_payment(m: PaymentModel) -> Payment:
         response_code=m.response_code,
         response_message=m.response_message,
         data_vault_token=m.data_vault_token,
+        cardholder_name=getattr(m, "cardholder_name", ""),
+        cardholder_email=getattr(m, "cardholder_email", ""),
         service_type=m.service_type,
         bill_reference=m.bill_reference,
         created_at=m.created_at,
@@ -99,6 +103,8 @@ def _recurring_to_model(r: RecurringPayment) -> RecurringPaymentModel:
         card_last4=r.card_last4,
         next_charge_at=r.next_charge_at,
         last_charged_at=r.last_charged_at,
+        failed_attempts=r.failed_attempts,
+        last_failure_reason=r.last_failure_reason,
         created_at=r.created_at,
     )
 
@@ -117,6 +123,8 @@ def _model_to_recurring(m: RecurringPaymentModel) -> RecurringPayment:
         card_last4=m.card_last4,
         next_charge_at=m.next_charge_at,
         last_charged_at=m.last_charged_at,
+        failed_attempts=getattr(m, "failed_attempts", 0),
+        last_failure_reason=getattr(m, "last_failure_reason", ""),
         created_at=m.created_at,
     )
 
@@ -225,16 +233,18 @@ class SQLRecurringRepository(RecurringRepository):
         )
         model = result.scalar_one_or_none()
         if model:
-            model.amount           = recurring.amount
-            model.itbis            = recurring.itbis
-            model.frequency_days   = recurring.frequency_days
-            model.description      = recurring.description
-            model.data_vault_token = recurring.data_vault_token
-            model.card_brand       = recurring.card_brand
-            model.card_last4       = recurring.card_last4
-            model.next_charge_at   = recurring.next_charge_at
-            model.last_charged_at  = recurring.last_charged_at
-            model.status           = recurring.status.value
+            model.amount               = recurring.amount
+            model.itbis                = recurring.itbis
+            model.frequency_days       = recurring.frequency_days
+            model.description          = recurring.description
+            model.data_vault_token     = recurring.data_vault_token
+            model.card_brand           = recurring.card_brand
+            model.card_last4           = recurring.card_last4
+            model.next_charge_at       = recurring.next_charge_at
+            model.last_charged_at      = recurring.last_charged_at
+            model.status               = recurring.status.value
+            model.failed_attempts      = recurring.failed_attempts
+            model.last_failure_reason  = recurring.last_failure_reason
             await self._session.commit()
         return recurring
 

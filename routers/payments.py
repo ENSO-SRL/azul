@@ -30,6 +30,9 @@ class SaleRequest(BaseModel):
     order_id: str    = Field("",  description="Referencia de orden")
     auth_mode: str   = Field("splitit", description="splitit o 3dsecure")
     save_card: bool  = Field(False, description="Si True, tokeniza la tarjeta en DataVault")
+    # Obligatorios desde Azul API v1.2
+    cardholder_name: str  = Field(..., description="Nombre del tarjetahabiente")
+    cardholder_email: str = Field(..., description="Correo electrónico del tarjetahabiente")
 
     model_config = {"json_schema_extra": {"examples": [
         {
@@ -40,6 +43,8 @@ class SaleRequest(BaseModel):
             "cvc": "123",
             "order_id": "ORD-001",
             "save_card": False,
+            "cardholder_name": "Juan Pérez",
+            "cardholder_email": "juan@ejemplo.com",
         }
     ]}}
 
@@ -53,6 +58,8 @@ class ServicePaymentRequest(BaseModel):
     service_type: str = Field(..., description="Tipo de servicio (ej. electricidad, agua)")
     bill_reference: str = Field(..., description="Referencia de factura")
     order_id: str = ""
+    cardholder_name: str  = Field(..., description="Nombre del tarjetahabiente")
+    cardholder_email: str = Field(..., description="Correo electrónico del tarjetahabiente")
 
 
 class PaymentResponse(BaseModel):
@@ -112,6 +119,8 @@ async def create_payment(
         auth_mode=body.auth_mode,
         save_card=body.save_card,
         idempotency_key=idempotency_key,
+        cardholder_name=body.cardholder_name,
+        cardholder_email=body.cardholder_email,
     )
     return _to_response(payment)
 
@@ -136,6 +145,8 @@ async def create_service_payment(
         bill_reference=body.bill_reference,
         order_id=body.order_id,
         idempotency_key=idempotency_key,
+        cardholder_name=body.cardholder_name,
+        cardholder_email=body.cardholder_email,
     )
     return _to_response(payment)
 

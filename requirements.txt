@@ -6,3 +6,5 @@ sqlalchemy[asyncio]>=2.0.0
 aiosqlite>=0.20.0
 pydantic>=2.0.0
 apscheduler>=3.10.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

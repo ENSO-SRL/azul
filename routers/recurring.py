@@ -33,11 +33,14 @@ class CreateSubscriptionRequest(BaseModel):
     cvc: str
     frequency_days: int = Field(30, description="Frecuencia de cobro en días")
     description: str = Field("", description="Descripción de la suscripción")
+    cardholder_name: str  = Field(..., description="Nombre del tarjetahabiente")
+    cardholder_email: str = Field(..., description="Correo electrónico del tarjetahabiente")
 
     model_config = {"json_schema_extra": {"examples": [
         {"customer_id": "CLI-001", "amount": 5000, "itbis": 900,
          "card_number": "4260550061845872", "expiration": "202812", "cvc": "123",
-         "frequency_days": 30, "description": "Membresía mensual"}
+         "frequency_days": 30, "description": "Membresía mensual",
+         "cardholder_name": "Juan Pérez", "cardholder_email": "juan@ejemplo.com"}
     ]}}
 
 
@@ -53,6 +56,8 @@ class SubscriptionResponse(BaseModel):
     data_vault_token: str
     next_charge_at: str | None
     last_charged_at: str | None
+    failed_attempts: int
+    last_failure_reason: str
     created_at: str
 
 
@@ -98,6 +103,8 @@ async def create_subscription(
             cvc=body.cvc,
             frequency_days=body.frequency_days,
             description=body.description,
+            cardholder_name=body.cardholder_name,
+            cardholder_email=body.cardholder_email,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -163,5 +170,7 @@ def _to_sub_response(r) -> dict:
         "data_vault_token": r.data_vault_token,
         "next_charge_at": r.next_charge_at.isoformat() if r.next_charge_at else None,
         "last_charged_at": r.last_charged_at.isoformat() if r.last_charged_at else None,
+        "failed_attempts": getattr(r, "failed_attempts", 0),
+        "last_failure_reason": getattr(r, "last_failure_reason", ""),
         "created_at": r.created_at.isoformat(),
     }
