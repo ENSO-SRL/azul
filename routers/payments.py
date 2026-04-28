@@ -38,21 +38,23 @@ class CardHolderInfoSchema(BaseModel):
     """Bloque CardHolderInfo para enriquecer riesgo 3DS."""
     billing_name: str = ""
     billing_email: str = ""
+    phone_home: str = ""
+    phone_mobile: str = ""
+    phone_work: str = ""
     billing_address1: str = ""
     billing_address2: str = ""
+    billing_address3: str = ""
     billing_city: str = ""
     billing_state: str = ""
     billing_zip: str = ""
     billing_country: str = ""
-    billing_phone: str = ""
-    shipping_name: str = ""
     shipping_address1: str = ""
     shipping_address2: str = ""
+    shipping_address3: str = ""
     shipping_city: str = ""
     shipping_state: str = ""
     shipping_zip: str = ""
     shipping_country: str = ""
-    shipping_phone: str = ""
 
 
 class SaleRequest(BaseModel):
@@ -77,6 +79,10 @@ class SaleRequest(BaseModel):
     requestor_challenge_indicator: str = Field(
         "01",
         description="01/02/03/04 según estrategia 3DS",
+    )
+    include_method_notification_url: bool = Field(
+        True,
+        description="Si false, envía MethodNotificationUrl vacío (modo NOT_EXPECTED)",
     )
 
     model_config = {"json_schema_extra": {"examples": [
@@ -208,6 +214,7 @@ async def create_payment(
         browser_info=browser_info_dict,
         cardholder_info=cardholder_info_dict,
         requestor_challenge_indicator=body.requestor_challenge_indicator,
+        include_method_notification_url=body.include_method_notification_url,
     )
     return _to_response(payment)
 
@@ -313,7 +320,7 @@ async def verify_payment(
         "response_message": data.get("ResponseMessage", data.get("ErrorDescription", "")),
         "iso_code": data.get("IsoCode", ""),
         "azul_order_id": data.get("AzulOrderId", ""),
-        "found": bool(data.get("AzulOrderId") or data.get("IsoCode")),
+        "found": data.get("Found") in (True, "true", "True"),
         "raw": data,
     }
 

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any, Literal
 
@@ -178,7 +179,7 @@ class AzulPaymentGateway:
     @staticmethod
     def _base_payload(payment: Payment) -> dict[str, Any]:
         cfg = load_azul_config()
-        return {
+        payload = {
             "Channel": "EC",
             "Store": cfg.merchant_id,
             "PosInputMode": "E-Commerce",
@@ -197,6 +198,10 @@ class AzulPaymentGateway:
             "CardHolderName": payment.cardholder_name,
             "CardHolderEmail": payment.cardholder_email,
         }
+        alt_merchant_name = os.getenv("AZUL_ALT_MERCHANT_NAME", "").strip()
+        if alt_merchant_name:
+            payload["AltMerchantName"] = alt_merchant_name
+        return payload
 
     # -- public methods ---------------------------------------------------
 
@@ -210,6 +215,7 @@ class AzulPaymentGateway:
         browser_info: dict[str, str] | None = None,
         cardholder_info: dict[str, str] | None = None,
         requestor_challenge_indicator: str = "01",
+        include_method_notification_url: bool = True,
     ) -> tuple[Payment, Transaction]:
         """Execute a CIT Sale with full card data (first-time charge).
 
@@ -234,10 +240,37 @@ class AzulPaymentGateway:
             "cardholderInitiatedIndicator": "1",
         })
 
+        if cardholder_info:
+            ch = {
+                "Name": cardholder_info.get("billing_name", ""),
+                "Email": cardholder_info.get("billing_email", ""),
+                "PhoneHome": cardholder_info.get("phone_home", ""),
+                "PhoneMobile": cardholder_info.get("phone_mobile", ""),
+                "PhoneWork": cardholder_info.get("phone_work", ""),
+                "BillingAddressLine1": cardholder_info.get("billing_address1", ""),
+                "BillingAddressLine2": cardholder_info.get("billing_address2", ""),
+                "BillingAddressLine3": cardholder_info.get("billing_address3", ""),
+                "BillingAddressCity": cardholder_info.get("billing_city", ""),
+                "BillingAddressState": cardholder_info.get("billing_state", ""),
+                "BillingAddressCountry": cardholder_info.get("billing_country", ""),
+                "BillingAddressZip": cardholder_info.get("billing_zip", ""),
+                "ShippingAddressLine1": cardholder_info.get("shipping_address1", ""),
+                "ShippingAddressLine2": cardholder_info.get("shipping_address2", ""),
+                "ShippingAddressLine3": cardholder_info.get("shipping_address3", ""),
+                "ShippingAddressCity": cardholder_info.get("shipping_city", ""),
+                "ShippingAddressState": cardholder_info.get("shipping_state", ""),
+                "ShippingAddressCountry": cardholder_info.get("shipping_country", ""),
+                "ShippingAddressZip": cardholder_info.get("shipping_zip", ""),
+            }
+            payload["CardHolderInfo"] = {k: v for k, v in ch.items() if v}
+
         if payment.auth_mode == "3dsecure" and browser_info:
             payload["ThreeDSAuth"] = {
                 "TermUrl": f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}",
-                "MethodNotificationUrl": f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}",
+                "MethodNotificationUrl": (
+                    f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}"
+                    if include_method_notification_url else ""
+                ),
                 "RequestorChallengeIndicator": requestor_challenge_indicator,
             }
             payload["BrowserInfo"] = {
@@ -251,26 +284,6 @@ class AzulPaymentGateway:
                 "UserAgent": browser_info.get("user_agent", ""),
                 "JavaScriptEnabled": browser_info.get("javascript_enabled", "true"),
             }
-            if cardholder_info:
-                payload["CardHolderInfo"] = {
-                    "BillingName": cardholder_info.get("billing_name", ""),
-                    "BillingEmail": cardholder_info.get("billing_email", ""),
-                    "BillingAddress1": cardholder_info.get("billing_address1", ""),
-                    "BillingAddress2": cardholder_info.get("billing_address2", ""),
-                    "BillingCity": cardholder_info.get("billing_city", ""),
-                    "BillingState": cardholder_info.get("billing_state", ""),
-                    "BillingZip": cardholder_info.get("billing_zip", ""),
-                    "BillingCountry": cardholder_info.get("billing_country", ""),
-                    "BillingPhone": cardholder_info.get("billing_phone", ""),
-                    "ShippingName": cardholder_info.get("shipping_name", ""),
-                    "ShippingAddress1": cardholder_info.get("shipping_address1", ""),
-                    "ShippingAddress2": cardholder_info.get("shipping_address2", ""),
-                    "ShippingCity": cardholder_info.get("shipping_city", ""),
-                    "ShippingState": cardholder_info.get("shipping_state", ""),
-                    "ShippingZip": cardholder_info.get("shipping_zip", ""),
-                    "ShippingCountry": cardholder_info.get("shipping_country", ""),
-                    "ShippingPhone": cardholder_info.get("shipping_phone", ""),
-                }
 
         return await self._execute(payment, payload)
 

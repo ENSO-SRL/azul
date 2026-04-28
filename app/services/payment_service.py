@@ -59,6 +59,7 @@ class PaymentService:
         browser_info: dict[str, str] | None = None,
         cardholder_info: dict[str, str] | None = None,
         requestor_challenge_indicator: str = "01",
+        include_method_notification_url: bool = True,
     ) -> Payment:
         """Create and execute a one-time CIT Sale.
 
@@ -94,6 +95,7 @@ class PaymentService:
             browser_info=browser_info,
             cardholder_info=cardholder_info,
             requestor_challenge_indicator=requestor_challenge_indicator,
+            include_method_notification_url=include_method_notification_url,
         )
 
         if save_card and payment.data_vault_token and self._cards:
