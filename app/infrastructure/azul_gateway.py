@@ -208,6 +208,8 @@ class AzulPaymentGateway:
         cvc: str,
         save_token: bool = False,
         browser_info: dict[str, str] | None = None,
+        cardholder_info: dict[str, str] | None = None,
+        requestor_challenge_indicator: str = "01",
     ) -> tuple[Payment, Transaction]:
         """Execute a CIT Sale with full card data (first-time charge).
 
@@ -236,7 +238,7 @@ class AzulPaymentGateway:
             payload["ThreeDSAuth"] = {
                 "TermUrl": f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}",
                 "MethodNotificationUrl": f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}",
-                "RequestorChallengeIndicator": "01",
+                "RequestorChallengeIndicator": requestor_challenge_indicator,
             }
             payload["BrowserInfo"] = {
                 "AcceptHeader": browser_info.get("accept_header", "text/html"),
@@ -249,6 +251,26 @@ class AzulPaymentGateway:
                 "UserAgent": browser_info.get("user_agent", ""),
                 "JavaScriptEnabled": browser_info.get("javascript_enabled", "true"),
             }
+            if cardholder_info:
+                payload["CardHolderInfo"] = {
+                    "BillingName": cardholder_info.get("billing_name", ""),
+                    "BillingEmail": cardholder_info.get("billing_email", ""),
+                    "BillingAddress1": cardholder_info.get("billing_address1", ""),
+                    "BillingAddress2": cardholder_info.get("billing_address2", ""),
+                    "BillingCity": cardholder_info.get("billing_city", ""),
+                    "BillingState": cardholder_info.get("billing_state", ""),
+                    "BillingZip": cardholder_info.get("billing_zip", ""),
+                    "BillingCountry": cardholder_info.get("billing_country", ""),
+                    "BillingPhone": cardholder_info.get("billing_phone", ""),
+                    "ShippingName": cardholder_info.get("shipping_name", ""),
+                    "ShippingAddress1": cardholder_info.get("shipping_address1", ""),
+                    "ShippingAddress2": cardholder_info.get("shipping_address2", ""),
+                    "ShippingCity": cardholder_info.get("shipping_city", ""),
+                    "ShippingState": cardholder_info.get("shipping_state", ""),
+                    "ShippingZip": cardholder_info.get("shipping_zip", ""),
+                    "ShippingCountry": cardholder_info.get("shipping_country", ""),
+                    "ShippingPhone": cardholder_info.get("shipping_phone", ""),
+                }
 
         return await self._execute(payment, payload)
 
@@ -276,6 +298,45 @@ class AzulPaymentGateway:
             "cardholderInitiatedIndicator": "STANDING_ORDER",
         })
 
+        return await self._execute(payment, payload)
+
+    async def hold(
+        self,
+        payment: Payment,
+        card_number: str,
+        expiration: str,
+        cvc: str,
+    ) -> tuple[Payment, Transaction]:
+        """Execute a pre-authorization (TrxType Hold)."""
+        payload = self._base_payload(payment)
+        payload.update({
+            "TrxType": "Hold",
+            "CardNumber": card_number,
+            "Expiration": expiration,
+            "CVC": cvc,
+            "SaveToDataVault": "0",
+            "DataVaultToken": "",
+            "ForceNo3DS": "1",
+            "cardholderInitiatedIndicator": "1",
+        })
+        return await self._execute(payment, payload)
+
+    async def post_capture(
+        self,
+        payment: Payment,
+        azul_order_id: str,
+    ) -> tuple[Payment, Transaction]:
+        """Capture a prior Hold (TrxType Post)."""
+        payload = self._base_payload(payment)
+        payload.update({
+            "TrxType": "Post",
+            "AZULOrderId": azul_order_id,
+            "CardNumber": "",
+            "Expiration": "",
+            "CVC": "",
+            "SaveToDataVault": "0",
+            "DataVaultToken": "",
+        })
         return await self._execute(payment, payload)
 
     async def sale_mit(
@@ -560,6 +621,27 @@ class AzulPaymentGateway:
         if data.get("ResponseCode") == AzulResponseCode.ERROR:
             err = data.get("ErrorDescription", data.get("ResponseMessage", "Unknown error"))
             raise AzulIntegrationError(f"ProcessThreeDSChallenge failed: {err}")
+
+        return data
+
+    async def verify_payment(self, custom_order_id: str) -> dict[str, Any]:
+        """Query Azul for a transaction by CustomOrderId."""
+        cfg = load_azul_config()
+        payload = {
+            "Channel": "EC",
+            "Store": cfg.merchant_id,
+            "CustomOrderId": custom_order_id,
+        }
+
+        async with self._build_client("splitit") as client:
+            resp = await client.post(cfg.verify_payment_url, json=payload)
+
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+
+        if data.get("ResponseCode") == AzulResponseCode.ERROR:
+            err = data.get("ErrorDescription", data.get("ResponseMessage", "Unknown error"))
+            raise AzulIntegrationError(f"VerifyPayment failed: {err}")
 
         return data
 

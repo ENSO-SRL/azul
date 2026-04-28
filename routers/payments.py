@@ -34,6 +34,27 @@ class BrowserInfoSchema(BaseModel):
     javascript_enabled: str = Field("true", description="Si JavaScript está activo")
 
 
+class CardHolderInfoSchema(BaseModel):
+    """Bloque CardHolderInfo para enriquecer riesgo 3DS."""
+    billing_name: str = ""
+    billing_email: str = ""
+    billing_address1: str = ""
+    billing_address2: str = ""
+    billing_city: str = ""
+    billing_state: str = ""
+    billing_zip: str = ""
+    billing_country: str = ""
+    billing_phone: str = ""
+    shipping_name: str = ""
+    shipping_address1: str = ""
+    shipping_address2: str = ""
+    shipping_city: str = ""
+    shipping_state: str = ""
+    shipping_zip: str = ""
+    shipping_country: str = ""
+    shipping_phone: str = ""
+
+
 class SaleRequest(BaseModel):
     amount: int      = Field(..., description="Monto en centavos (ej. 1000 = $10.00)")
     itbis: int       = Field(0,   description="ITBIS en centavos")
@@ -48,6 +69,14 @@ class SaleRequest(BaseModel):
     browser_info: BrowserInfoSchema | None = Field(
         None,
         description="Datos del navegador — obligatorio si auth_mode=3dsecure",
+    )
+    cardholder_info: CardHolderInfoSchema | None = Field(
+        None,
+        description="Bloque CardHolderInfo (billing/shipping) recomendado para 3DS",
+    )
+    requestor_challenge_indicator: str = Field(
+        "01",
+        description="01/02/03/04 según estrategia 3DS",
     )
 
     model_config = {"json_schema_extra": {"examples": [
@@ -79,6 +108,26 @@ class ServicePaymentRequest(BaseModel):
     cardholder_email: str = Field(..., description="Correo electrónico del tarjetahabiente")
 
 
+class HoldRequest(BaseModel):
+    amount: int
+    itbis: int = 0
+    card_number: str
+    expiration: str
+    cvc: str
+    order_id: str = ""
+    cardholder_name: str = Field(..., description="Nombre del tarjetahabiente")
+    cardholder_email: str = Field(..., description="Correo electrónico del tarjetahabiente")
+
+
+class PostRequest(BaseModel):
+    amount: int
+    itbis: int = 0
+    azul_order_id: str = Field(..., description="AZULOrderId devuelto por Hold")
+    order_id: str = ""
+    cardholder_name: str = ""
+    cardholder_email: str = ""
+
+
 class PaymentResponse(BaseModel):
     id: str
     order_id: str
@@ -95,6 +144,19 @@ class PaymentResponse(BaseModel):
     threeds_redirect_url: str = ""
     threeds_challenge_form: str = ""
     created_at: str
+
+
+class VerifyPaymentRequest(BaseModel):
+    custom_order_id: str = Field(..., description="CustomOrderId enviado originalmente a Azul")
+
+
+class VerifyPaymentResponse(BaseModel):
+    response_code: str = ""
+    response_message: str = ""
+    iso_code: str = ""
+    azul_order_id: str = ""
+    found: bool = False
+    raw: dict = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +192,7 @@ async def create_payment(
     svc: PaymentService   = Depends(_get_service),
 ):
     browser_info_dict = body.browser_info.model_dump() if body.browser_info else None
+    cardholder_info_dict = body.cardholder_info.model_dump() if body.cardholder_info else None
     payment = await svc.process_sale(
         amount=body.amount,
         itbis=body.itbis,
@@ -143,6 +206,8 @@ async def create_payment(
         cardholder_name=body.cardholder_name,
         cardholder_email=body.cardholder_email,
         browser_info=browser_info_dict,
+        cardholder_info=cardholder_info_dict,
+        requestor_challenge_indicator=body.requestor_challenge_indicator,
     )
     return _to_response(payment)
 
@@ -172,6 +237,51 @@ async def create_service_payment(
     )
     return _to_response(payment)
 
+@router.post(
+    "/hold",
+    response_model=PaymentResponse,
+    summary="Preautorización (TrxType Hold)",
+)
+async def create_hold(
+    body: HoldRequest,
+    idempotency_key: str  = Header("", alias="Idempotency-Key"),
+    svc: PaymentService   = Depends(_get_service),
+):
+    payment = await svc.process_hold(
+        amount=body.amount,
+        itbis=body.itbis,
+        card_number=body.card_number,
+        expiration=body.expiration,
+        cvc=body.cvc,
+        order_id=body.order_id,
+        cardholder_name=body.cardholder_name,
+        cardholder_email=body.cardholder_email,
+        idempotency_key=idempotency_key,
+    )
+    return _to_response(payment)
+
+
+@router.post(
+    "/post",
+    response_model=PaymentResponse,
+    summary="Captura de preautorización (TrxType Post)",
+)
+async def create_post(
+    body: PostRequest,
+    idempotency_key: str  = Header("", alias="Idempotency-Key"),
+    svc: PaymentService   = Depends(_get_service),
+):
+    payment = await svc.process_post(
+        amount=body.amount,
+        itbis=body.itbis,
+        azul_order_id=body.azul_order_id,
+        order_id=body.order_id,
+        cardholder_name=body.cardholder_name,
+        cardholder_email=body.cardholder_email,
+        idempotency_key=idempotency_key,
+    )
+    return _to_response(payment)
+
 
 @router.get(
     "/{payment_id}",
@@ -186,6 +296,26 @@ async def get_payment(
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
     return _to_response(payment)
+
+
+@router.post(
+    "/verify",
+    response_model=VerifyPaymentResponse,
+    summary="Verificar una transacción en Azul por CustomOrderId",
+)
+async def verify_payment(
+    body: VerifyPaymentRequest,
+    svc: PaymentService = Depends(_get_service),
+):
+    data = await svc.verify_payment(custom_order_id=body.custom_order_id)
+    return {
+        "response_code": data.get("ResponseCode", ""),
+        "response_message": data.get("ResponseMessage", data.get("ErrorDescription", "")),
+        "iso_code": data.get("IsoCode", ""),
+        "azul_order_id": data.get("AzulOrderId", ""),
+        "found": bool(data.get("AzulOrderId") or data.get("IsoCode")),
+        "raw": data,
+    }
 
 
 # ---------------------------------------------------------------------------

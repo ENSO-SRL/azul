@@ -74,6 +74,8 @@ AZUL_3DS_METHOD_URL_SANDBOX    = "https://pruebas.azul.com.do/webservices/JSON/d
 AZUL_3DS_METHOD_URL_PROD       = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedsmethod"
 AZUL_3DS_CHALLENGE_URL_SANDBOX = "https://pruebas.azul.com.do/webservices/JSON/default.aspx?processthreedschallenge"
 AZUL_3DS_CHALLENGE_URL_PROD    = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedschallenge"
+AZUL_VERIFY_PAYMENT_URL_SANDBOX = "https://pruebas.azul.com.do/webservices/JSON/default.aspx?verifypayment"
+AZUL_VERIFY_PAYMENT_URL_PROD    = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?verifypayment"
 
 # URL base de la aplicación (para construir TermUrl y MethodNotificationUrl)
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
@@ -106,6 +108,10 @@ class AzulConfig:
     @property
     def threeds_challenge_url(self) -> str:
         return AZUL_3DS_CHALLENGE_URL_PROD if self.env == "production" else AZUL_3DS_CHALLENGE_URL_SANDBOX
+
+    @property
+    def verify_payment_url(self) -> str:
+        return AZUL_VERIFY_PAYMENT_URL_PROD if self.env == "production" else AZUL_VERIFY_PAYMENT_URL_SANDBOX
 
     @property
     def app_base_url(self) -> str:

@@ -57,6 +57,8 @@ class PaymentService:
         cardholder_name: str = "",
         cardholder_email: str = "",
         browser_info: dict[str, str] | None = None,
+        cardholder_info: dict[str, str] | None = None,
+        requestor_challenge_indicator: str = "01",
     ) -> Payment:
         """Create and execute a one-time CIT Sale.
 
@@ -90,6 +92,8 @@ class PaymentService:
             payment, card_number, expiration, cvc,
             save_token=save_card,
             browser_info=browser_info,
+            cardholder_info=cardholder_info,
+            requestor_challenge_indicator=requestor_challenge_indicator,
         )
 
         if save_card and payment.data_vault_token and self._cards:
@@ -145,6 +149,70 @@ class PaymentService:
 
         payment, txn = await self._gw.sale(payment, card_number, expiration, cvc)
 
+        await self._payments.save(payment)
+        await self._txns.save(txn)
+        return payment
+
+    async def process_hold(
+        self,
+        amount: int,
+        itbis: int,
+        card_number: str,
+        expiration: str,
+        cvc: str,
+        order_id: str = "",
+        cardholder_name: str = "",
+        cardholder_email: str = "",
+        idempotency_key: str = "",
+    ) -> Payment:
+        if idempotency_key:
+            existing = await self._payments.find_by_idempotency_key(idempotency_key)
+            if existing:
+                return existing
+
+        payment = Payment(
+            amount=amount,
+            itbis=itbis,
+            payment_type=PaymentType.SALE,
+            order_id=order_id,
+            auth_mode="splitit",
+            initiated_by="cardholder",
+            idempotency_key=idempotency_key,
+            cardholder_name=cardholder_name,
+            cardholder_email=cardholder_email,
+        )
+        payment, txn = await self._gw.hold(payment, card_number, expiration, cvc)
+        await self._payments.save(payment)
+        await self._txns.save(txn)
+        return payment
+
+    async def process_post(
+        self,
+        amount: int,
+        itbis: int,
+        azul_order_id: str,
+        order_id: str = "",
+        cardholder_name: str = "",
+        cardholder_email: str = "",
+        idempotency_key: str = "",
+    ) -> Payment:
+        if idempotency_key:
+            existing = await self._payments.find_by_idempotency_key(idempotency_key)
+            if existing:
+                return existing
+
+        payment = Payment(
+            amount=amount,
+            itbis=itbis,
+            payment_type=PaymentType.SALE,
+            order_id=order_id,
+            auth_mode="splitit",
+            initiated_by="merchant",
+            idempotency_key=idempotency_key,
+            cardholder_name=cardholder_name,
+            cardholder_email=cardholder_email,
+        )
+        payment, txn = await self._gw.post_capture(payment, azul_order_id=azul_order_id)
         await self._payments.save(payment)
         await self._txns.save(txn)
         return payment
@@ -305,3 +373,6 @@ class PaymentService:
 
     async def get_payment(self, payment_id: str) -> Payment | None:
         return await self._payments.get_by_id(payment_id)
+
+    async def verify_payment(self, custom_order_id: str) -> dict:
+        return await self._gw.verify_payment(custom_order_id=custom_order_id)
