@@ -69,9 +69,14 @@ _SECRET_KEY   = os.getenv("AZUL_SECRET_KEY",   "iamatlas/azul/dev/cert-key")
 AZUL_URL_SANDBOX    = "https://pruebas.azul.com.do/webservices/JSON/default.aspx"
 AZUL_URL_PRODUCTION = "https://pagos.azul.com.do/WebServices/JSON/default.aspx"
 
-# 3DS 2.0 specific endpoints (production only — sandbox uses same base)
-AZUL_3DS_METHOD_URL    = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedsmethod"
-AZUL_3DS_CHALLENGE_URL = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedschallenge"
+# 3DS 2.0 endpoints por entorno
+AZUL_3DS_METHOD_URL_SANDBOX    = "https://pruebas.azul.com.do/webservices/JSON/default.aspx?processthreedsmethod"
+AZUL_3DS_METHOD_URL_PROD       = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedsmethod"
+AZUL_3DS_CHALLENGE_URL_SANDBOX = "https://pruebas.azul.com.do/webservices/JSON/default.aspx?processthreedschallenge"
+AZUL_3DS_CHALLENGE_URL_PROD    = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedschallenge"
+
+# URL base de la aplicación (para construir TermUrl y MethodNotificationUrl)
+APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
 # ---------------------------------------------------------------------------
 # Dataclass
@@ -93,6 +98,18 @@ class AzulConfig:
     def api_url(self) -> str:
         """Return the correct Azul API URL for the configured environment."""
         return AZUL_URL_PRODUCTION if self.env == "production" else AZUL_URL_SANDBOX
+
+    @property
+    def threeds_method_url(self) -> str:
+        return AZUL_3DS_METHOD_URL_PROD if self.env == "production" else AZUL_3DS_METHOD_URL_SANDBOX
+
+    @property
+    def threeds_challenge_url(self) -> str:
+        return AZUL_3DS_CHALLENGE_URL_PROD if self.env == "production" else AZUL_3DS_CHALLENGE_URL_SANDBOX
+
+    @property
+    def app_base_url(self) -> str:
+        return APP_BASE_URL
 
 
 # ---------------------------------------------------------------------------

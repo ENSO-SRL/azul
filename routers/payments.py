@@ -21,6 +21,19 @@ router = APIRouter(prefix="/api/v1/payments", tags=["Payments"])
 # Schemas
 # ---------------------------------------------------------------------------
 
+class BrowserInfoSchema(BaseModel):
+    """Datos del navegador del tarjetahabiente — requerido para 3DS 2.0."""
+    accept_header: str     = Field("text/html", description="Accept header del navegador")
+    ip_address: str        = Field(..., description="IP pública del cliente")
+    language: str          = Field("es-DO", description="Idioma del navegador")
+    color_depth: str       = Field("24", description="Profundidad de color (bits)")
+    screen_width: str      = Field("1920", description="Ancho de pantalla en px")
+    screen_height: str     = Field("1080", description="Alto de pantalla en px")
+    time_zone: str         = Field("240", description="Offset UTC en minutos")
+    user_agent: str        = Field(..., description="User-Agent del navegador")
+    javascript_enabled: str = Field("true", description="Si JavaScript está activo")
+
+
 class SaleRequest(BaseModel):
     amount: int      = Field(..., description="Monto en centavos (ej. 1000 = $10.00)")
     itbis: int       = Field(0,   description="ITBIS en centavos")
@@ -30,9 +43,12 @@ class SaleRequest(BaseModel):
     order_id: str    = Field("",  description="Referencia de orden")
     auth_mode: str   = Field("splitit", description="splitit o 3dsecure")
     save_card: bool  = Field(False, description="Si True, tokeniza la tarjeta en DataVault")
-    # Obligatorios desde Azul API v1.2
     cardholder_name: str  = Field(..., description="Nombre del tarjetahabiente")
     cardholder_email: str = Field(..., description="Correo electrónico del tarjetahabiente")
+    browser_info: BrowserInfoSchema | None = Field(
+        None,
+        description="Datos del navegador — obligatorio si auth_mode=3dsecure",
+    )
 
     model_config = {"json_schema_extra": {"examples": [
         {
@@ -45,6 +61,7 @@ class SaleRequest(BaseModel):
             "save_card": False,
             "cardholder_name": "Juan Pérez",
             "cardholder_email": "juan@ejemplo.com",
+            "browser_info": None,
         }
     ]}}
 
@@ -74,6 +91,9 @@ class PaymentResponse(BaseModel):
     response_message: str
     azul_order_id: str
     data_vault_token: str
+    threeds_method_form: str = ""
+    threeds_redirect_url: str = ""
+    threeds_challenge_form: str = ""
     created_at: str
 
 
@@ -109,6 +129,7 @@ async def create_payment(
     idempotency_key: str  = Header("", alias="Idempotency-Key"),
     svc: PaymentService   = Depends(_get_service),
 ):
+    browser_info_dict = body.browser_info.model_dump() if body.browser_info else None
     payment = await svc.process_sale(
         amount=body.amount,
         itbis=body.itbis,
@@ -121,6 +142,7 @@ async def create_payment(
         idempotency_key=idempotency_key,
         cardholder_name=body.cardholder_name,
         cardholder_email=body.cardholder_email,
+        browser_info=browser_info_dict,
     )
     return _to_response(payment)
 
@@ -183,5 +205,8 @@ def _to_response(p) -> dict:
         "response_message": p.response_message,
         "azul_order_id": p.azul_order_id,
         "data_vault_token": p.data_vault_token,
+        "threeds_method_form": getattr(p, "threeds_method_form", ""),
+        "threeds_redirect_url": getattr(p, "threeds_redirect_url", ""),
+        "threeds_challenge_form": getattr(p, "threeds_challenge_form", ""),
         "created_at": p.created_at.isoformat(),
     }

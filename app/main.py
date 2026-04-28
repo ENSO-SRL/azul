@@ -20,6 +20,7 @@ from routers.health import router as health_router
 from routers.payments import router as payments_router
 from routers.recurring import router as recurring_router
 from routers.refunds import router as refunds_router
+from routers.threeds import router as threeds_router
 from routers.tokens import router as tokens_router
 
 
@@ -42,14 +43,19 @@ app = FastAPI(
         "- **Pagos de clubs** (CIT on-demand con token DataVault)\n"
         "- **Pagos recurrentes** (suscripciones MIT con DataVault)\n"
         "- **Tokenización** (DataVault CREATE / DELETE)\n"
-        "- **Cancelaciones** (Void ≤20 min | Refund >20 min)\n\n"
+        "- **Cancelaciones** (Void ≤20 min | Refund >20 min)\n"
+        "- **3DS 2.0** (autenticación 3D Secure para pagos CIT)\n\n"
+        "### 3DS 2.0\n"
+        "El flujo 3DS se activa con `auth_mode=\"3dsecure\"` y `browser_info`. "
+        "El pago puede pasar por estados `PENDING_3DS_METHOD` y "
+        "`PENDING_3DS_CHALLENGE` antes de finalizar.\n\n"
         "### Idempotencia\n"
         "Pasa el header `Idempotency-Key` en cualquier endpoint de cobro para "
         "reintentos seguros sin cobros duplicados.\n\n"
         "### Smoke test\n"
         "Usa `/test/smoke` para validar mTLS + autenticación contra el sandbox de Azul."
     ),
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -59,6 +65,7 @@ app.include_router(refunds_router)
 app.include_router(recurring_router)
 app.include_router(tokens_router)
 app.include_router(clubs_router)
+app.include_router(threeds_router)
 
 
 # ---------------------------------------------------------------------------

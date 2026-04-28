@@ -64,9 +64,6 @@ AZUL_URLS_SANDBOX = [
     "https://pruebas.azul.com.do/webservices/JSON/Default.aspx",
 ]
 
-# 3DS 2.0 special endpoints (production only)
-AZUL_3DS_METHOD_URL    = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedsmethod"
-AZUL_3DS_CHALLENGE_URL = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedschallenge"
 
 # ---------------------------------------------------------------------------
 # Custom exceptions
@@ -97,23 +94,25 @@ class AzulIntegrationError(Exception):
 # ---------------------------------------------------------------------------
 
 _PAN_RE = re.compile(r'"CardNumber"\s*:\s*"(\d{13,19})"')
+_CVC_RE = re.compile(r'"CVC"\s*:\s*"(\d{3,4})"')
 
 
-def _mask_pan(payload_json: str) -> str:
-    """Replace digits 7-15 of CardNumber with '*' in a JSON string.
+def _mask_sensitive(payload_json: str) -> str:
+    """Mask PAN (digits 7-15) and CVC entirely for PCI compliance.
 
-    Example:
-        "CardNumber": "4260550061845872"
-        →  "CardNumber": "426055*******872"
+    PAN:  "4260550061845872" → "426055*******872"
+    CVC:  "123" → "***"
     """
-    def _replace(m: re.Match) -> str:
+    def _replace_pan(m: re.Match) -> str:
         pan = m.group(1)
         if len(pan) < 13:
             return m.group(0)
         masked = pan[:6] + "*" * (len(pan) - 10) + pan[-4:]
         return f'"CardNumber": "{masked}"'
 
-    return _PAN_RE.sub(_replace, payload_json)
+    result = _PAN_RE.sub(_replace_pan, payload_json)
+    result = _CVC_RE.sub('"CVC": "***"', result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +207,7 @@ class AzulPaymentGateway:
         expiration: str,
         cvc: str,
         save_token: bool = False,
+        browser_info: dict[str, str] | None = None,
     ) -> tuple[Payment, Transaction]:
         """Execute a CIT Sale with full card data (first-time charge).
 
@@ -216,7 +216,11 @@ class AzulPaymentGateway:
 
         If ``save_token=True`` the card is stored in DataVault and the token
         is available on the returned Payment as ``data_vault_token``.
+
+        When ``auth_mode="3dsecure"`` and ``browser_info`` is provided,
+        includes ThreeDSAuth + BrowserInfo blocks for 3DS 2.0 authentication.
         """
+        cfg = load_azul_config()
         payload = self._base_payload(payment)
         payload.update({
             "CardNumber": card_number,
@@ -227,6 +231,24 @@ class AzulPaymentGateway:
             "ForceNo3DS": "1" if payment.auth_mode == "splitit" else "0",
             "cardholderInitiatedIndicator": "1",
         })
+
+        if payment.auth_mode == "3dsecure" and browser_info:
+            payload["ThreeDSAuth"] = {
+                "TermUrl": f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}",
+                "MethodNotificationUrl": f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}",
+                "RequestorChallengeIndicator": "01",
+            }
+            payload["BrowserInfo"] = {
+                "AcceptHeader": browser_info.get("accept_header", "text/html"),
+                "IPAddress": browser_info.get("ip_address", ""),
+                "Language": browser_info.get("language", "es-DO"),
+                "ColorDepth": browser_info.get("color_depth", "24"),
+                "ScreenWidth": browser_info.get("screen_width", "1920"),
+                "ScreenHeight": browser_info.get("screen_height", "1080"),
+                "TimeZone": browser_info.get("time_zone", "240"),
+                "UserAgent": browser_info.get("user_agent", ""),
+                "JavaScriptEnabled": browser_info.get("javascript_enabled", "true"),
+            }
 
         return await self._execute(payment, payload)
 
@@ -470,6 +492,74 @@ class AzulPaymentGateway:
             resp.raise_for_status()
             return resp.json()
 
+    # -- 3DS 2.0 continuation methods --------------------------------------
+
+    async def process_three_ds_method(
+        self,
+        azul_order_id: str,
+        method_notification_status: str = "RECEIVED",
+    ) -> dict[str, Any]:
+        """Continue 3DS after the Method iframe completed (or timed out).
+
+        Args:
+            azul_order_id: AZULOrderId from the initial Sale response.
+            method_notification_status: RECEIVED | EXPECTED_BUT_NOT_RECEIVED | NOT_EXPECTED
+
+        Returns:
+            Raw Azul response dict.  Caller must check IsoCode to decide
+            if the payment is approved, needs challenge, or was declined.
+        """
+        cfg = load_azul_config()
+        payload = {
+            "Channel": "EC",
+            "Store": cfg.merchant_id,
+            "AZULOrderId": azul_order_id,
+            "MethodNotificationStatus": method_notification_status,
+        }
+
+        async with self._build_client("3dsecure") as client:
+            resp = await client.post(cfg.threeds_method_url, json=payload)
+
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+
+        if data.get("ResponseCode") == AzulResponseCode.ERROR:
+            err = data.get("ErrorDescription", data.get("ResponseMessage", "Unknown error"))
+            raise AzulIntegrationError(f"ProcessThreeDSMethod failed: {err}")
+
+        return data
+
+    async def process_three_ds_challenge(
+        self,
+        azul_order_id: str,
+    ) -> dict[str, Any]:
+        """Complete 3DS after the cardholder finished the ACS challenge.
+
+        Args:
+            azul_order_id: AZULOrderId from the Sale or ProcessThreeDSMethod response.
+
+        Returns:
+            Raw Azul response dict with final approval or decline.
+        """
+        cfg = load_azul_config()
+        payload = {
+            "Channel": "EC",
+            "Store": cfg.merchant_id,
+            "AZULOrderId": azul_order_id,
+        }
+
+        async with self._build_client("3dsecure") as client:
+            resp = await client.post(cfg.threeds_challenge_url, json=payload)
+
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+
+        if data.get("ResponseCode") == AzulResponseCode.ERROR:
+            err = data.get("ErrorDescription", data.get("ResponseMessage", "Unknown error"))
+            raise AzulIntegrationError(f"ProcessThreeDSChallenge failed: {err}")
+
+        return data
+
     # -- internal ---------------------------------------------------------
 
     async def _execute(
@@ -487,8 +577,8 @@ class AzulPaymentGateway:
         """
         cfg = load_azul_config()
         request_json = json.dumps(payload, ensure_ascii=False)
-        # PCI: mask PAN before storing in audit log
-        masked_request_json = _mask_pan(request_json)
+        # PCI: mask PAN + CVC before storing in audit log
+        masked_request_json = _mask_sensitive(request_json)
 
         async with self._build_client(payment.auth_mode) as client:
             resp = await _post_with_failover(client, payload, cfg.env)
@@ -529,11 +619,20 @@ class AzulPaymentGateway:
         # Map iso_code → PaymentStatus
         if iso_raw == IsoCode.APPROVED:
             payment.status = PaymentStatus.APPROVED
-        elif iso_raw in (IsoCode.THREE_DS_CHALLENGE, "3D2METHOD"):
-            # 3DS flow — caller must handle the challenge
-            payment.status = PaymentStatus.PENDING
+        elif iso_raw == IsoCode.THREE_DS_METHOD:
+            payment.status = PaymentStatus.PENDING_3DS_METHOD
+            method_data = data.get("ThreeDSMethod", {})
+            if isinstance(method_data, dict):
+                payment.threeds_method_form = method_data.get("MethodForm", "")
+        elif iso_raw == IsoCode.THREE_DS_CHALLENGE:
+            payment.status = PaymentStatus.PENDING_3DS_CHALLENGE
+            payment.threeds_redirect_url = data.get("RedirectUrl", "")
+            challenge_data = data.get("ThreeDSChallenge", {})
+            if isinstance(challenge_data, dict):
+                payment.threeds_challenge_form = challenge_data.get("ChallengeForm", "")
+                if not payment.threeds_redirect_url:
+                    payment.threeds_redirect_url = challenge_data.get("RedirectUrl", "")
         else:
-            # Any other non-00 IsoCode from the processor = declined
             payment.status = PaymentStatus.DECLINED
 
         # Build masked audit transaction

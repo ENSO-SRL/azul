@@ -46,34 +46,52 @@ class RecurringService:
         description: str = "",
         cardholder_name: str = "",
         cardholder_email: str = "",
+        auth_mode: str = "splitit",
+        browser_info: dict[str, str] | None = None,
     ) -> tuple[RecurringPayment, Payment]:
         """First charge + tokenise the card via DataVault.
 
         Returns the new subscription and the initial payment.
         cardholder_name and cardholder_email are required by Azul API v1.2.
+
+        When auth_mode="3dsecure" and browser_info is provided, the first
+        charge goes through 3DS 2.0.  If 3DS requires method or challenge,
+        the payment will be in PENDING_3DS_METHOD or PENDING_3DS_CHALLENGE
+        and the subscription will NOT be created yet — the caller must
+        complete 3DS via /api/v1/3ds/ endpoints and then finalize.
         """
 
-        # 1. Execute first charge with save_token=True (CIT — user present)
         payment = Payment(
             amount=amount,
             itbis=itbis,
             payment_type=PaymentType.RECURRING,
-            auth_mode="splitit",
+            auth_mode=auth_mode,
             cardholder_name=cardholder_name,
             cardholder_email=cardholder_email,
         )
 
         payment, txn = await self._gw.sale(
-            payment, card_number, expiration, cvc, save_token=True
+            payment, card_number, expiration, cvc,
+            save_token=True,
+            browser_info=browser_info,
         )
 
         await self._payments.save(payment)
         await self._txns.save(txn)
 
-        # 2. Extract token from the payment entity (populated by gateway)
+        if payment.status.value.startswith("PENDING_3DS"):
+            recurring = RecurringPayment(
+                customer_id=customer_id,
+                amount=amount,
+                itbis=itbis,
+                frequency_days=frequency_days,
+                description=description,
+                card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
+            )
+            return recurring, payment
+
         token = payment.data_vault_token
 
-        # 3. Create subscription
         now = datetime.now(timezone.utc)
         recurring = RecurringPayment(
             customer_id=customer_id,

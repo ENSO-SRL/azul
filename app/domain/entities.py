@@ -17,13 +17,14 @@ from typing import Literal
 
 class IsoCode(str, Enum):
     """Azul IsoCode values returned in every transaction response."""
-    APPROVED           = "00"    # Única respuesta de éxito
-    THREE_DS_CHALLENGE = "3D"    # Tarjetahabiente debe completar challenge 3DS
-    DECLINED_FUNDS     = "51"    # Fondos insuficientes / declinada
-    NOT_AUTHENTICATED  = "08"    # ACS del emisor no disponible en 3DS
-    ERROR_GENERIC      = "99"    # Error genérico (CVC, tarjeta inválida, 3DS failed)
-    SECURITY_VIOLATION = "63"    # Violación de seguridad
-    UNKNOWN            = ""      # Respuesta sin IsoCode (error de validación pre-procesador)
+    APPROVED           = "00"        # Única respuesta de éxito
+    THREE_DS_CHALLENGE = "3D"        # Tarjetahabiente debe completar challenge 3DS
+    THREE_DS_METHOD    = "3D2METHOD" # ACS requiere ejecutar iframe 3DS Method
+    DECLINED_FUNDS     = "51"        # Fondos insuficientes / declinada
+    NOT_AUTHENTICATED  = "08"        # ACS del emisor no disponible en 3DS
+    ERROR_GENERIC      = "99"        # Error genérico (CVC, tarjeta inválida, 3DS failed)
+    SECURITY_VIOLATION = "63"        # Violación de seguridad
+    UNKNOWN            = ""          # Respuesta sin IsoCode (error de validación pre-procesador)
 
     @classmethod
     def _missing_(cls, value: object) -> "IsoCode":
@@ -47,10 +48,14 @@ class AzulResponseCode(str, Enum):
 
 
 class PaymentStatus(str, Enum):
-    PENDING  = "PENDING"
-    APPROVED = "APPROVED"
-    DECLINED = "DECLINED"
-    ERROR    = "ERROR"
+    PENDING               = "PENDING"
+    PENDING_3DS_METHOD    = "PENDING_3DS_METHOD"
+    PENDING_3DS_CHALLENGE = "PENDING_3DS_CHALLENGE"
+    APPROVED              = "APPROVED"
+    DECLINED              = "DECLINED"
+    ERROR                 = "ERROR"
+    VOIDED                = "VOIDED"
+    REFUNDED              = "REFUNDED"
 
 
 class PaymentType(str, Enum):
@@ -106,6 +111,11 @@ class Payment:
 
     # Token DataVault retornado si save_card=True
     data_vault_token: str = ""
+
+    # 3DS 2.0 — datos transitorios del flujo de autenticación
+    threeds_method_form: str = ""       # HTML iframe del 3DS Method (respuesta 3D2METHOD)
+    threeds_redirect_url: str = ""      # URL del ACS para challenge redirect
+    threeds_challenge_form: str = ""    # HTML/form para redirigir al ACS
 
     # Auto-generados
     id: str = field(default_factory=lambda: str(uuid.uuid4()))

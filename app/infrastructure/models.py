@@ -52,6 +52,11 @@ class PaymentModel(Base):
     service_type: Mapped[str] = mapped_column(String(50), default="")
     bill_reference: Mapped[str] = mapped_column(String(100), default="")
 
+    # 3DS 2.0
+    threeds_method_form: Mapped[str] = mapped_column(Text, default="")
+    threeds_redirect_url: Mapped[str] = mapped_column(String(500), default="")
+    threeds_challenge_form: Mapped[str] = mapped_column(Text, default="")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

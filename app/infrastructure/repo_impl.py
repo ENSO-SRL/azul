@@ -57,6 +57,9 @@ def _payment_to_model(p: Payment) -> PaymentModel:
         cardholder_email=p.cardholder_email,
         service_type=p.service_type,
         bill_reference=p.bill_reference,
+        threeds_method_form=p.threeds_method_form,
+        threeds_redirect_url=p.threeds_redirect_url,
+        threeds_challenge_form=p.threeds_challenge_form,
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
@@ -84,6 +87,9 @@ def _model_to_payment(m: PaymentModel) -> Payment:
         cardholder_email=getattr(m, "cardholder_email", ""),
         service_type=m.service_type,
         bill_reference=m.bill_reference,
+        threeds_method_form=getattr(m, "threeds_method_form", ""),
+        threeds_redirect_url=getattr(m, "threeds_redirect_url", ""),
+        threeds_challenge_form=getattr(m, "threeds_challenge_form", ""),
         created_at=m.created_at,
         updated_at=m.updated_at,
     )
@@ -193,19 +199,22 @@ class SQLPaymentRepository(PaymentRepository):
         )
         model = result.scalar_one_or_none()
         if model:
-            model.order_id         = payment.order_id
-            model.amount           = payment.amount
-            model.itbis            = payment.itbis
-            model.status           = payment.status.value
-            model.iso_code         = payment.iso_code
-            model.response_code    = payment.response_code
-            model.azul_order_id    = payment.azul_order_id
-            model.response_message = payment.response_message
-            model.card_number_masked = payment.card_number_masked
-            model.data_vault_token = payment.data_vault_token
-            model.service_type     = payment.service_type
-            model.bill_reference   = payment.bill_reference
-            model.updated_at       = datetime.now(timezone.utc)
+            model.order_id              = payment.order_id
+            model.amount                = payment.amount
+            model.itbis                 = payment.itbis
+            model.status                = payment.status.value
+            model.iso_code              = payment.iso_code
+            model.response_code         = payment.response_code
+            model.azul_order_id         = payment.azul_order_id
+            model.response_message      = payment.response_message
+            model.card_number_masked    = payment.card_number_masked
+            model.data_vault_token      = payment.data_vault_token
+            model.service_type          = payment.service_type
+            model.bill_reference        = payment.bill_reference
+            model.threeds_method_form   = payment.threeds_method_form
+            model.threeds_redirect_url  = payment.threeds_redirect_url
+            model.threeds_challenge_form = payment.threeds_challenge_form
+            model.updated_at            = datetime.now(timezone.utc)
             await self._session.commit()
         return payment
 

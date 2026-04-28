@@ -10,7 +10,13 @@ calling Azul again.  This prevents double charges on client retries.
 
 from __future__ import annotations
 
-from app.domain.entities import Payment, PaymentStatus, PaymentType
+from app.domain.entities import (
+    IsoCode,
+    Payment,
+    PaymentStatus,
+    PaymentType,
+    Transaction,
+)
 from app.domain.repositories import (
     PaymentRepository,
     SavedCardRepository,
@@ -50,14 +56,19 @@ class PaymentService:
         idempotency_key: str = "",
         cardholder_name: str = "",
         cardholder_email: str = "",
+        browser_info: dict[str, str] | None = None,
     ) -> Payment:
         """Create and execute a one-time CIT Sale.
 
         cardholder_name and cardholder_email are required by Azul API v1.2.
         If save_card=True the card is stored in DataVault and the token
         is persisted on the Payment record for future use.
+
+        When auth_mode="3dsecure", pass browser_info from the client to enable
+        3DS 2.0 authentication.  The payment may end in PENDING_3DS_METHOD or
+        PENDING_3DS_CHALLENGE — the caller must continue the flow via the
+        /api/v1/3ds/ endpoints.
         """
-        # Idempotency check
         if idempotency_key:
             existing = await self._payments.find_by_idempotency_key(idempotency_key)
             if existing:
@@ -76,10 +87,11 @@ class PaymentService:
         )
 
         payment, txn = await self._gw.sale(
-            payment, card_number, expiration, cvc, save_token=save_card
+            payment, card_number, expiration, cvc,
+            save_token=save_card,
+            browser_info=browser_info,
         )
 
-        # If tokenized, persist SavedCard separately
         if save_card and payment.data_vault_token and self._cards:
             from app.domain.entities import SavedCard
             card = SavedCard(
@@ -174,6 +186,114 @@ class PaymentService:
 
         await self._payments.save(payment)
         await self._txns.save(txn)
+        return payment
+
+    # ------------------------------------------------------------------
+    # 3DS 2.0 continuation
+    # ------------------------------------------------------------------
+
+    async def continue_three_ds_method(
+        self,
+        payment_id: str,
+        method_notification_status: str = "RECEIVED",
+    ) -> Payment:
+        """Continue 3DS after the Method iframe completed or timed out.
+
+        Called by the MethodNotificationUrl callback or by frontend polling.
+        Updates the payment to APPROVED, PENDING_3DS_CHALLENGE, or DECLINED.
+        """
+        payment = await self._payments.get_by_id(payment_id)
+        if not payment:
+            raise ValueError(f"Payment {payment_id} not found")
+        if payment.status != PaymentStatus.PENDING_3DS_METHOD:
+            raise ValueError(
+                f"Payment {payment_id} is {payment.status.value}, expected PENDING_3DS_METHOD"
+            )
+
+        data = await self._gw.process_three_ds_method(
+            azul_order_id=payment.azul_order_id,
+            method_notification_status=method_notification_status,
+        )
+
+        iso_raw = data.get("IsoCode", "")
+        payment.iso_code = iso_raw
+        payment.response_message = data.get("ResponseMessage", "")
+        payment.response_code = data.get("ResponseCode", "")
+
+        txn = Transaction(
+            payment_id=payment.id,
+            request_payload=f'{{"AZULOrderId":"{payment.azul_order_id}","MethodNotificationStatus":"{method_notification_status}"}}',
+            response_payload=str(data),
+            http_status=200,
+            iso_code=iso_raw,
+            response_code=payment.response_code,
+            response_message=payment.response_message,
+        )
+        await self._txns.save(txn)
+
+        if iso_raw == IsoCode.APPROVED:
+            payment.status = PaymentStatus.APPROVED
+            payment.data_vault_token = data.get("DataVaultToken", payment.data_vault_token)
+        elif iso_raw == IsoCode.THREE_DS_CHALLENGE:
+            payment.status = PaymentStatus.PENDING_3DS_CHALLENGE
+            payment.threeds_redirect_url = data.get("RedirectUrl", "")
+            challenge_data = data.get("ThreeDSChallenge", {})
+            if isinstance(challenge_data, dict):
+                payment.threeds_challenge_form = challenge_data.get("ChallengeForm", "")
+                if not payment.threeds_redirect_url:
+                    payment.threeds_redirect_url = challenge_data.get("RedirectUrl", "")
+        else:
+            payment.status = PaymentStatus.DECLINED
+
+        payment.threeds_method_form = ""
+        await self._payments.update(payment)
+        return payment
+
+    async def continue_three_ds_challenge(
+        self,
+        payment_id: str,
+    ) -> Payment:
+        """Complete 3DS after the cardholder finished the ACS challenge.
+
+        Called by the TermUrl callback when the bank redirects back.
+        """
+        payment = await self._payments.get_by_id(payment_id)
+        if not payment:
+            raise ValueError(f"Payment {payment_id} not found")
+        if payment.status != PaymentStatus.PENDING_3DS_CHALLENGE:
+            raise ValueError(
+                f"Payment {payment_id} is {payment.status.value}, expected PENDING_3DS_CHALLENGE"
+            )
+
+        data = await self._gw.process_three_ds_challenge(
+            azul_order_id=payment.azul_order_id,
+        )
+
+        iso_raw = data.get("IsoCode", "")
+        payment.iso_code = iso_raw
+        payment.response_message = data.get("ResponseMessage", "")
+        payment.response_code = data.get("ResponseCode", "")
+
+        txn = Transaction(
+            payment_id=payment.id,
+            request_payload=f'{{"AZULOrderId":"{payment.azul_order_id}"}}',
+            response_payload=str(data),
+            http_status=200,
+            iso_code=iso_raw,
+            response_code=payment.response_code,
+            response_message=payment.response_message,
+        )
+        await self._txns.save(txn)
+
+        if iso_raw == IsoCode.APPROVED:
+            payment.status = PaymentStatus.APPROVED
+            payment.data_vault_token = data.get("DataVaultToken", payment.data_vault_token)
+        else:
+            payment.status = PaymentStatus.DECLINED
+
+        payment.threeds_redirect_url = ""
+        payment.threeds_challenge_form = ""
+        await self._payments.update(payment)
         return payment
 
     # ------------------------------------------------------------------
