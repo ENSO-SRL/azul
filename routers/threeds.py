@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,6 +61,10 @@ class ThreeDSPaymentResponse(BaseModel):
     threeds_challenge_form: str = ""
 
 
+class TermCallbackRequest(BaseModel):
+    cres: str = Field("", description="cRes devuelto por el ACS")
+
+
 # ---------------------------------------------------------------------------
 # Dependency
 # ---------------------------------------------------------------------------
@@ -92,9 +96,14 @@ _METHOD_NOTIFICATION_RECEIVED: dict[str, bool] = {}
 )
 async def method_notification(
     payment_id: str = Query(..., description="ID del pago"),
+    three_ds_method_data: str = Form(default="", alias="threeDSMethodData"),
 ):
     """ACS calls this after the 3DS Method iframe completes."""
-    logger.info("[3ds] method-notification received for payment_id=%s", payment_id)
+    logger.info(
+        "[3ds] method-notification received for payment_id=%s has_data=%s",
+        payment_id,
+        bool(three_ds_method_data),
+    )
     _METHOD_NOTIFICATION_RECEIVED[payment_id] = True
     return Response(status_code=200)
 
@@ -109,12 +118,13 @@ async def method_notification(
 )
 async def term_callback(
     payment_id: str = Query(..., description="ID del pago"),
+    cres: str = Form(default="", alias="cRes"),
     svc: PaymentService = Depends(_get_service),
 ):
     """ACS redirects here after the cardholder completes the challenge."""
-    logger.info("[3ds] term callback received for payment_id=%s", payment_id)
+    logger.info("[3ds] term callback received for payment_id=%s has_cres=%s", payment_id, bool(cres))
     try:
-        payment = await svc.continue_three_ds_challenge(payment_id)
+        payment = await svc.continue_three_ds_challenge(payment_id, cres=cres)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -211,10 +221,11 @@ async def complete_method(
 )
 async def complete_challenge(
     payment_id: str,
+    body: TermCallbackRequest,
     svc: PaymentService = Depends(_get_service),
 ):
     try:
-        payment = await svc.continue_three_ds_challenge(payment_id)
+        payment = await svc.continue_three_ds_challenge(payment_id, cres=body.cres)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -532,6 +532,7 @@ class AzulPaymentGateway:
     async def process_three_ds_challenge(
         self,
         azul_order_id: str,
+        cres: str = "",
     ) -> dict[str, Any]:
         """Complete 3DS after the cardholder finished the ACS challenge.
 
@@ -547,6 +548,8 @@ class AzulPaymentGateway:
             "Store": cfg.merchant_id,
             "AZULOrderId": azul_order_id,
         }
+        if cres:
+            payload["cRes"] = cres
 
         async with self._build_client("3dsecure") as client:
             resp = await client.post(cfg.threeds_challenge_url, json=payload)

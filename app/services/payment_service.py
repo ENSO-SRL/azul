@@ -252,6 +252,7 @@ class PaymentService:
     async def continue_three_ds_challenge(
         self,
         payment_id: str,
+        cres: str = "",
     ) -> Payment:
         """Complete 3DS after the cardholder finished the ACS challenge.
 
@@ -267,6 +268,7 @@ class PaymentService:
 
         data = await self._gw.process_three_ds_challenge(
             azul_order_id=payment.azul_order_id,
+            cres=cres,
         )
 
         iso_raw = data.get("IsoCode", "")
@@ -274,9 +276,10 @@ class PaymentService:
         payment.response_message = data.get("ResponseMessage", "")
         payment.response_code = data.get("ResponseCode", "")
 
+        masked_cres = "***" if cres else ""
         txn = Transaction(
             payment_id=payment.id,
-            request_payload=f'{{"AZULOrderId":"{payment.azul_order_id}"}}',
+            request_payload=f'{{"AZULOrderId":"{payment.azul_order_id}","cRes":"{masked_cres}"}}',
             response_payload=str(data),
             http_status=200,
             iso_code=iso_raw,
