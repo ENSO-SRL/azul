@@ -20,6 +20,11 @@ from app.services.payment_service import PaymentService
 router = APIRouter(prefix="/api/v1/tests", tags=["Tests (Swagger)"])
 
 
+def _azul_order_number() -> str:
+    """Genera un OrderNumber numérico corto para evitar VALIDATION_ERROR."""
+    return str(uuid.uuid4().int % 1_000_000).zfill(6)
+
+
 class HoldPostVerifyRequest(BaseModel):
     amount: int = Field(1075, description="Monto en centavos")
     itbis: int = Field(121, description="ITBIS en centavos")
@@ -66,8 +71,8 @@ async def test_hold_post_verify(
     if os.getenv("AZUL_ENV", "sandbox") == "production":
         raise HTTPException(status_code=403, detail="Tests deshabilitados en producción")
 
-    hold_order = f"SWG-HOLD-{uuid.uuid4().hex[:8]}"
-    post_order = f"SWG-POST-{uuid.uuid4().hex[:8]}"
+    hold_order = _azul_order_number()
+    post_order = _azul_order_number()
 
     hold = await svc.process_hold(
         amount=body.amount,
@@ -87,6 +92,7 @@ async def test_hold_post_verify(
         amount=body.amount,
         itbis=body.itbis,
         azul_order_id=hold.azul_order_id,
+        cvc=body.cvc,
         order_id=post_order,
         cardholder_name=body.cardholder_name,
         cardholder_email=body.cardholder_email,

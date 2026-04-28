@@ -338,6 +338,7 @@ class AzulPaymentGateway:
         self,
         payment: Payment,
         azul_order_id: str,
+        cvc: str = "123",
     ) -> tuple[Payment, Transaction]:
         """Capture a prior Hold (TrxType Post)."""
         payload = self._base_payload(payment)
@@ -346,7 +347,7 @@ class AzulPaymentGateway:
             "AZULOrderId": azul_order_id,
             "CardNumber": "",
             "Expiration": "",
-            "CVC": "",
+            "CVC": cvc,
             "SaveToDataVault": "0",
             "DataVaultToken": "",
         })

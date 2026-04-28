@@ -193,6 +193,7 @@ class PaymentService:
         amount: int,
         itbis: int,
         azul_order_id: str,
+        cvc: str = "123",
         order_id: str = "",
         cardholder_name: str = "",
         cardholder_email: str = "",
@@ -214,7 +215,11 @@ class PaymentService:
             cardholder_name=cardholder_name,
             cardholder_email=cardholder_email,
         )
-        payment, txn = await self._gw.post_capture(payment, azul_order_id=azul_order_id)
+        payment, txn = await self._gw.post_capture(
+            payment,
+            azul_order_id=azul_order_id,
+            cvc=cvc,
+        )
         await self._payments.save(payment)
         await self._txns.save(txn)
         return payment
