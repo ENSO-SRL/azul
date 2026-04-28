@@ -129,6 +129,8 @@ class PostRequest(BaseModel):
     amount: int
     itbis: int = 0
     azul_order_id: str = Field(..., description="AZULOrderId devuelto por Hold")
+    card_number: str = Field("", description="Número de tarjeta (requerido por algunos sandbox)")
+    expiration: str = Field("", description="Expiración YYYYMM (requerido por algunos sandbox)")
     cvc: str = Field("123", description="CVC requerido por sandbox para Post")
     order_id: str = ""
     cardholder_name: str = ""
@@ -283,6 +285,8 @@ async def create_post(
         amount=body.amount,
         itbis=body.itbis,
         azul_order_id=body.azul_order_id,
+        card_number=body.card_number,
+        expiration=body.expiration,
         cvc=body.cvc,
         order_id=body.order_id,
         cardholder_name=body.cardholder_name,

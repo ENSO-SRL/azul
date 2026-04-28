@@ -92,6 +92,8 @@ async def test_hold_post_verify(
         amount=body.amount,
         itbis=body.itbis,
         azul_order_id=hold.azul_order_id,
+        card_number=body.card_number,
+        expiration=body.expiration,
         cvc=body.cvc,
         order_id=post_order,
         cardholder_name=body.cardholder_name,
