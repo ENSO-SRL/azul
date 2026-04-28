@@ -20,6 +20,7 @@ from routers.health import router as health_router
 from routers.payments import router as payments_router
 from routers.recurring import router as recurring_router
 from routers.refunds import router as refunds_router
+from routers.tests import router as tests_router
 from routers.threeds import router as threeds_router
 from routers.tokens import router as tokens_router
 
@@ -66,6 +67,7 @@ app.include_router(recurring_router)
 app.include_router(tokens_router)
 app.include_router(clubs_router)
 app.include_router(threeds_router)
+app.include_router(tests_router)
 
 
 # ---------------------------------------------------------------------------
