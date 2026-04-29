@@ -89,6 +89,35 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
 
         for sub in due:
             try:
+                # ----------------------------------------------------------
+                # Expiration guard — skip charge and pause if card has expired
+                # ----------------------------------------------------------
+                if sub.card_expiration:
+                    try:
+                        # card_expiration is YYYYMM, e.g. "202812"
+                        exp_year  = int(sub.card_expiration[:4])
+                        exp_month = int(sub.card_expiration[4:6])
+                        # Card is valid through the last day of expiration month
+                        from calendar import monthrange
+                        last_day   = monthrange(exp_year, exp_month)[1]
+                        exp_cutoff = datetime(exp_year, exp_month, last_day, 23, 59, 59, tzinfo=timezone.utc)
+                        if datetime.now(timezone.utc) > exp_cutoff:
+                            logger.warning(
+                                "[scheduler] sub=%s PAUSED — card expired %s. "
+                                "Customer must update payment method.",
+                                sub.id, sub.card_expiration,
+                            )
+                            sub.status = SubscriptionStatus.PAUSED
+                            sub.last_failure_reason = f"Tarjeta vencida (exp. {sub.card_expiration})"
+                            await recurring_repo.update(sub)
+                            continue
+                    except (ValueError, IndexError):
+                        # Malformed expiration — log and proceed anyway
+                        logger.warning(
+                            "[scheduler] sub=%s has invalid card_expiration=%r — skipping expiry check.",
+                            sub.id, sub.card_expiration,
+                        )
+
                 # Build idempotent CustomOrderId — same on retry, unique per cycle+attempt
                 custom_order_id = _build_custom_order_id(sub.id, sub.failed_attempts)
 
@@ -116,8 +145,8 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
                         datetime.now(timezone.utc) + timedelta(days=sub.frequency_days)
                     )
                     logger.info(
-                        "[scheduler] sub=%s charged OK — next=%s",
-                        sub.id, sub.next_charge_at.date(),
+                        "[scheduler] sub=%s charged OK — iso=%s next=%s",
+                        sub.id, payment.iso_code, sub.next_charge_at.date(),
                     )
                 else:
                     # Business decline — apply retry policy

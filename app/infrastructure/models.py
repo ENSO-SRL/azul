@@ -90,6 +90,7 @@ class RecurringPaymentModel(Base):
     data_vault_token: Mapped[str] = mapped_column(String(100), default="")
     card_brand: Mapped[str] = mapped_column(String(20), default="")
     card_last4: Mapped[str] = mapped_column(String(4), default="")
+    card_expiration: Mapped[str] = mapped_column(String(6), default="")  # YYYYMM
 
     # Scheduling
     next_charge_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -100,6 +101,25 @@ class RecurringPaymentModel(Base):
     last_failure_reason: Mapped[str] = mapped_column(String(500), default="")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ConsentModel(Base):
+    """Audit trail — one row per subscription enrolment consent.
+
+    Stores the exact text shown to the customer, their IP, and the
+    timestamp so we have documented evidence for Visa/MC disputes.
+    """
+
+    __tablename__ = "consent_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    subscription_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    customer_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    consent_text: Mapped[str] = mapped_column(Text, nullable=False)
+    ip_address: Mapped[str] = mapped_column(String(45), default="")   # IPv6 max length
+    user_agent: Mapped[str] = mapped_column(String(500), default="")
+
+    consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class TransactionModel(Base):

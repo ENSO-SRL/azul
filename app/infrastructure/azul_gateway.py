@@ -287,6 +287,59 @@ class AzulPaymentGateway:
 
         return await self._execute(payment, payload)
 
+    async def sale_recurring_cit(
+        self,
+        payment: Payment,
+        card_number: str,
+        expiration: str,
+        cvc: str,
+        browser_info: dict[str, str] | None = None,
+    ) -> tuple[Payment, Transaction]:
+        """First charge of a recurring subscription (CIT STANDING_ORDER).
+
+        Differs from ``sale()`` in two ways:
+        1. Uses ``cardholderInitiatedIndicator: "STANDING_ORDER"`` instead of "1".
+           This tells Visa/MC from the very first transaction that this is a
+           stored-credential arrangement — required for recurring approval rates.
+        2. Always sets ``SaveToDataVault: "1"`` to tokenise the card.
+
+        When auth_mode="3dsecure" and browser_info is provided, full 3DS 2.0
+        blocks are included (same as sale()).
+        """
+        cfg = load_azul_config()
+        payload = self._base_payload(payment)
+        payload.update({
+            "CardNumber": card_number,
+            "Expiration": expiration,
+            "CVC": cvc,
+            "SaveToDataVault": "1",
+            "DataVaultToken": "",
+            "ForceNo3DS": "1" if payment.auth_mode == "splitit" else "0",
+            "cardholderInitiatedIndicator": "STANDING_ORDER",
+        })
+
+        if payment.auth_mode == "3dsecure" and browser_info:
+            payload["ThreeDSAuth"] = {
+                "TermUrl": f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}",
+                "MethodNotificationUrl": (
+                    f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}"
+                ),
+                "RequestorChallengeIndicator": "01",
+            }
+            payload["BrowserInfo"] = {
+                "AcceptHeader": browser_info.get("accept_header", "text/html"),
+                "IPAddress": browser_info.get("ip_address", ""),
+                "Language": browser_info.get("language", "es-DO"),
+                "ColorDepth": browser_info.get("color_depth", "24"),
+                "ScreenWidth": browser_info.get("screen_width", "1920"),
+                "ScreenHeight": browser_info.get("screen_height", "1080"),
+                "TimeZone": browser_info.get("time_zone", "240"),
+                "UserAgent": browser_info.get("user_agent", ""),
+                "JavaScriptEnabled": browser_info.get("javascript_enabled", "true"),
+            }
+
+        return await self._execute(payment, payload)
+
     async def sale_cit(
         self,
         payment: Payment,

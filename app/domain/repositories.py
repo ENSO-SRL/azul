@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from app.domain.entities import Payment, RecurringPayment, SavedCard, Transaction
+from app.domain.entities import ConsentRecord, Payment, RecurringPayment, SavedCard, Transaction
 
 
 class PaymentRepository(ABC):
@@ -48,6 +48,21 @@ class RecurringRepository(ABC):
         """Return active subscriptions whose next_charge_at <= now."""
         ...
 
+    @abstractmethod
+    async def list_by_customer(self, customer_id: str) -> list[RecurringPayment]:
+        """Return all subscriptions (any status) for a given customer."""
+        ...
+
+    @abstractmethod
+    async def pause(self, recurring_id: str) -> RecurringPayment | None:
+        """Set status=PAUSED.  Returns the updated entity or None if not found."""
+        ...
+
+    @abstractmethod
+    async def resume(self, recurring_id: str) -> RecurringPayment | None:
+        """Set status=ACTIVE and reset failed_attempts.  Returns updated entity or None."""
+        ...
+
 
 class TransactionRepository(ABC):
 
@@ -71,3 +86,17 @@ class SavedCardRepository(ABC):
 
     @abstractmethod
     async def delete(self, token: str) -> None: ...
+
+
+class ConsentRepository(ABC):
+    """Persistence port for customer consent records."""
+
+    @abstractmethod
+    async def save(self, consent: ConsentRecord) -> ConsentRecord:
+        """Persist a new consent record."""
+        ...
+
+    @abstractmethod
+    async def get_by_subscription(self, subscription_id: str) -> ConsentRecord | None:
+        """Return the consent record for a subscription, or None."""
+        ...

@@ -157,6 +157,7 @@ class RecurringPayment:
     data_vault_token: str = ""
     card_brand: str = ""
     card_last4: str = ""
+    card_expiration: str = ""    # YYYYMM — necesario para verificar vencimiento antes de MIT
 
     # Scheduling
     next_charge_at: datetime | None = None
@@ -169,6 +170,33 @@ class RecurringPayment:
     # Auto-generados
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class ConsentRecord:
+    """Audit trail of customer consent for recurring charges.
+
+    Visa/Mastercard require documented evidence that the cardholder
+    explicitly authorised future recurring debits.  Store one record
+    per subscription at enrolment time.
+
+    Fields
+    ------
+    subscription_id : FK to RecurringPayment.id
+    consent_text    : exact text shown to the customer (e.g. "Acepto que se me cobre RD$X cada 30 días")
+    ip_address      : client IP at enrolment
+    user_agent      : browser UA at enrolment
+    consented_at    : UTC timestamp of acceptance
+    """
+
+    subscription_id: str
+    customer_id: str
+    consent_text: str
+    ip_address: str = ""
+    user_agent: str = ""
+
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    consented_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass

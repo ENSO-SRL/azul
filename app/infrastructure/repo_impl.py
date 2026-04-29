@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import (
+    ConsentRecord,
     Payment,
     PaymentStatus,
     PaymentType,
@@ -20,11 +21,13 @@ from app.domain.entities import (
     Transaction,
 )
 from app.domain.repositories import (
+    ConsentRepository,
     PaymentRepository,
     RecurringRepository,
     TransactionRepository,
 )
 from app.infrastructure.models import (
+    ConsentModel,
     PaymentModel,
     RecurringPaymentModel,
     TransactionModel,
@@ -107,6 +110,7 @@ def _recurring_to_model(r: RecurringPayment) -> RecurringPaymentModel:
         data_vault_token=r.data_vault_token,
         card_brand=r.card_brand,
         card_last4=r.card_last4,
+        card_expiration=r.card_expiration,
         next_charge_at=r.next_charge_at,
         last_charged_at=r.last_charged_at,
         failed_attempts=r.failed_attempts,
@@ -127,6 +131,7 @@ def _model_to_recurring(m: RecurringPaymentModel) -> RecurringPayment:
         data_vault_token=m.data_vault_token,
         card_brand=m.card_brand,
         card_last4=m.card_last4,
+        card_expiration=getattr(m, "card_expiration", ""),
         next_charge_at=m.next_charge_at,
         last_charged_at=m.last_charged_at,
         failed_attempts=getattr(m, "failed_attempts", 0),
@@ -160,6 +165,30 @@ def _model_to_txn(m: TransactionModel) -> Transaction:
         response_code=getattr(m, "response_code", ""),
         response_message=m.response_message,
         created_at=m.created_at,
+    )
+
+
+def _consent_to_model(c: ConsentRecord) -> ConsentModel:
+    return ConsentModel(
+        id=c.id,
+        subscription_id=c.subscription_id,
+        customer_id=c.customer_id,
+        consent_text=c.consent_text,
+        ip_address=c.ip_address,
+        user_agent=c.user_agent,
+        consented_at=c.consented_at,
+    )
+
+
+def _model_to_consent(m: ConsentModel) -> ConsentRecord:
+    return ConsentRecord(
+        id=m.id,
+        subscription_id=m.subscription_id,
+        customer_id=m.customer_id,
+        consent_text=m.consent_text,
+        ip_address=m.ip_address,
+        user_agent=m.user_agent,
+        consented_at=m.consented_at,
     )
 
 
@@ -249,6 +278,7 @@ class SQLRecurringRepository(RecurringRepository):
             model.data_vault_token     = recurring.data_vault_token
             model.card_brand           = recurring.card_brand
             model.card_last4           = recurring.card_last4
+            model.card_expiration      = recurring.card_expiration
             model.next_charge_at       = recurring.next_charge_at
             model.last_charged_at      = recurring.last_charged_at
             model.status               = recurring.status.value
@@ -276,6 +306,41 @@ class SQLRecurringRepository(RecurringRepository):
         )
         return [_model_to_recurring(r) for r in result.scalars().all()]
 
+    async def list_by_customer(self, customer_id: str) -> list[RecurringPayment]:
+        """Return all subscriptions (any status) for a given customer."""
+        result = await self._session.execute(
+            select(RecurringPaymentModel)
+            .where(RecurringPaymentModel.customer_id == customer_id)
+            .order_by(RecurringPaymentModel.created_at.desc())
+        )
+        return [_model_to_recurring(r) for r in result.scalars().all()]
+
+    async def pause(self, recurring_id: str) -> RecurringPayment | None:
+        """Set status=PAUSED without modifying the retry counter."""
+        result = await self._session.execute(
+            select(RecurringPaymentModel).where(RecurringPaymentModel.id == recurring_id)
+        )
+        model = result.scalar_one_or_none()
+        if not model:
+            return None
+        model.status = SubscriptionStatus.PAUSED.value
+        await self._session.commit()
+        return _model_to_recurring(model)
+
+    async def resume(self, recurring_id: str) -> RecurringPayment | None:
+        """Set status=ACTIVE and reset failed_attempts to 0."""
+        result = await self._session.execute(
+            select(RecurringPaymentModel).where(RecurringPaymentModel.id == recurring_id)
+        )
+        model = result.scalar_one_or_none()
+        if not model:
+            return None
+        model.status = SubscriptionStatus.ACTIVE.value
+        model.failed_attempts = 0
+        model.last_failure_reason = ""
+        await self._session.commit()
+        return _model_to_recurring(model)
+
 
 class SQLTransactionRepository(TransactionRepository):
 
@@ -294,3 +359,24 @@ class SQLTransactionRepository(TransactionRepository):
             ).order_by(TransactionModel.created_at.desc())
         )
         return [_model_to_txn(r) for r in result.scalars().all()]
+
+
+class SQLConsentRepository(ConsentRepository):
+    """Persists customer consent records for Visa/MC compliance."""
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def save(self, consent: ConsentRecord) -> ConsentRecord:
+        self._session.add(_consent_to_model(consent))
+        await self._session.commit()
+        return consent
+
+    async def get_by_subscription(self, subscription_id: str) -> ConsentRecord | None:
+        result = await self._session.execute(
+            select(ConsentModel).where(
+                ConsentModel.subscription_id == subscription_id
+            ).order_by(ConsentModel.consented_at.desc())
+        )
+        row = result.scalar_one_or_none()
+        return _model_to_consent(row) if row else None
