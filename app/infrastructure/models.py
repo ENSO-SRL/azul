@@ -135,3 +135,29 @@ class TransactionModel(Base):
     response_message: Mapped[str] = mapped_column(String(255), default="")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ReconciliationReportModel(Base):
+    """Daily reconciliation result — one row per payment checked.
+
+    Stores the comparison between what Atlas recorded locally and what
+    Azul reports via verify_payment. Rows with status='MISMATCH' need
+    manual review.
+    """
+
+    __tablename__ = "reconciliation_reports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)  # YYYY-MM-DD
+    payment_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    custom_order_id: Mapped[str] = mapped_column(String(128), default="")
+    local_status: Mapped[str] = mapped_column(String(20), default="")     # Atlas PaymentStatus
+    local_iso_code: Mapped[str] = mapped_column(String(10), default="")
+    azul_status: Mapped[str] = mapped_column(String(20), default="")      # From verify_payment
+    azul_iso_code: Mapped[str] = mapped_column(String(10), default="")
+    azul_order_id: Mapped[str] = mapped_column(String(50), default="")
+    status: Mapped[str] = mapped_column(String(20), default="OK")         # OK | MISMATCH | NOT_FOUND | ERROR
+    notes: Mapped[str] = mapped_column(String(500), default="")
+
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+

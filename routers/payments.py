@@ -65,6 +65,7 @@ class SaleRequest(BaseModel):
     cvc: str         = Field(..., description="CVC / CVV")
     order_id: str    = Field("",  description="Referencia de orden")
     auth_mode: str   = Field("splitit", description="splitit o 3dsecure")
+    currency: str    = Field("DOP", description="Moneda: DOP (peso) o USD")
     save_card: bool  = Field(False, description="Si True, tokeniza la tarjeta en DataVault")
     cardholder_name: str  = Field(..., description="Nombre del tarjetahabiente")
     cardholder_email: str = Field(..., description="Correo electrónico del tarjetahabiente")

@@ -59,6 +59,7 @@ class CreateSubscriptionRequest(BaseModel):
     cvc: str
     frequency_days: int = Field(30, description="Frecuencia de cobro en días")
     description: str = Field("", description="Descripción de la suscripción")
+    currency: str    = Field("DOP", description="Moneda: DOP (peso dominicano) o USD")
     cardholder_name: str  = Field(..., description="Nombre del tarjetahabiente")
     cardholder_email: str = Field(..., description="Correo electrónico del tarjetahabiente")
     auth_mode: str = Field("splitit", description="splitit o 3dsecure")

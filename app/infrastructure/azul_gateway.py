@@ -179,6 +179,12 @@ class AzulPaymentGateway:
     @staticmethod
     def _base_payload(payment: Payment) -> dict[str, Any]:
         cfg = load_azul_config()
+        # Resolve CurrencyPosCode: prefer currency_code enum, fall back to legacy string
+        currency_pos = (
+            payment.currency_code.azul_code
+            if hasattr(payment, "currency_code") and payment.currency_code
+            else payment.currency
+        )
         payload = {
             "Channel": "EC",
             "Store": cfg.merchant_id,
@@ -186,7 +192,7 @@ class AzulPaymentGateway:
             "TrxType": "Sale",
             "Amount": str(int(payment.amount)),
             "Itbis": str(int(payment.itbis)).zfill(3) if payment.itbis else "000",
-            "CurrencyPosCode": payment.currency,
+            "CurrencyPosCode": currency_pos,
             "Payments": "1",
             "Plan": "0",
             "AcquirerRefData": "1",

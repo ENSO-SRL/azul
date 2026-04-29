@@ -34,6 +34,7 @@ class ClubPayRequest(BaseModel):
     token: str        = Field(..., description="DataVault token de la tarjeta guardada")
     amount: int       = Field(..., description="Monto en centavos (ej. 5000 = $50.00)")
     itbis: int        = Field(0,   description="ITBIS en centavos")
+    currency: str     = Field("DOP", description="Moneda: DOP (peso) o USD")
 
     model_config = {"json_schema_extra": {"examples": [
         {

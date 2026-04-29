@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.domain.entities import Payment, PaymentStatus, PaymentType, SubscriptionStatus
 from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
+from app.services.notification_service import ctx_charge, send_notification
 
 logger = logging.getLogger(__name__)
 
@@ -148,9 +149,47 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
                         "[scheduler] sub=%s charged OK — iso=%s next=%s",
                         sub.id, payment.iso_code, sub.next_charge_at.date(),
                     )
+                    # Notify customer of successful charge
+                    await send_notification(
+                        "charge_approved",
+                        to_email=getattr(sub, "cardholder_email", ""),
+                        context=ctx_charge(
+                            amount=sub.amount,
+                            currency=getattr(sub, "currency_code", "DOP"),
+                            description=sub.description or "Suscripción",
+                            card_last4=sub.card_last4,
+                            next_charge_date=sub.next_charge_at,
+                        ),
+                    )
                 else:
                     # Business decline — apply retry policy
-                    sub = _handle_failure(sub, payment.response_message or f"IsoCode={payment.iso_code}")
+                    reason = payment.response_message or f"IsoCode={payment.iso_code}"
+                    sub = _handle_failure(sub, reason)
+                    # Notify customer of failed charge
+                    await send_notification(
+                        "charge_failed",
+                        to_email=getattr(sub, "cardholder_email", ""),
+                        context=ctx_charge(
+                            amount=sub.amount,
+                            currency=getattr(sub, "currency_code", "DOP"),
+                            description=sub.description or "Suscripción",
+                            card_last4=sub.card_last4,
+                            failure_reason=reason,
+                            failed_attempts=sub.failed_attempts,
+                        ),
+                    )
+                    if sub.status == SubscriptionStatus.PAUSED:
+                        await send_notification(
+                            "subscription_paused",
+                            to_email=getattr(sub, "cardholder_email", ""),
+                            context=ctx_charge(
+                                amount=sub.amount,
+                                currency=getattr(sub, "currency_code", "DOP"),
+                                description=sub.description or "Suscripción",
+                                card_last4=sub.card_last4,
+                                failure_reason=reason,
+                            ),
+                        )
 
             except AzulIntegrationError as exc:
                 # Our bug — log as ERROR, do NOT apply retry (would loop)
@@ -216,6 +255,60 @@ async def run_now(engine: AsyncEngine) -> int:
     return count
 
 
+async def run_reconciliation(engine: AsyncEngine) -> dict:
+    """Manually trigger the reconciliation job — used by the reconciliation endpoint."""
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        from app.services.reconciliation_service import ReconciliationService
+        return await ReconciliationService(session).run(days_back=1)
+
+
+async def _send_upcoming_charge_reminders(session_factory: async_sessionmaker) -> None:
+    """Job: send email reminders 3 days before next charge."""
+    from app.infrastructure.repo_impl import SQLRecurringRepository
+
+    reminder_window = datetime.now(timezone.utc) + timedelta(days=3)
+    reminder_start  = reminder_window.replace(hour=0, minute=0, second=0, microsecond=0)
+    reminder_end    = reminder_window.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    async with session_factory() as session:
+        from sqlalchemy import select
+        from app.infrastructure.models import RecurringPaymentModel
+        result = await session.execute(
+            select(RecurringPaymentModel).where(
+                RecurringPaymentModel.status == "ACTIVE",
+                RecurringPaymentModel.next_charge_at >= reminder_start,
+                RecurringPaymentModel.next_charge_at <= reminder_end,
+            )
+        )
+        subs = result.scalars().all()
+        logger.info("[scheduler] Sending %d upcoming charge reminder(s).", len(subs))
+        for sub in subs:
+            await send_notification(
+                "upcoming_charge",
+                to_email=getattr(sub, "cardholder_email", ""),
+                context=ctx_charge(
+                    amount=sub.amount,
+                    currency=getattr(sub, "currency_code", "DOP"),
+                    description=sub.description or "Suscripción",
+                    card_last4=sub.card_last4,
+                    next_charge_date=sub.next_charge_at,
+                ),
+            )
+
+
+async def _run_daily_reconciliation(session_factory: async_sessionmaker) -> None:
+    """Job: run daily reconciliation and log the summary."""
+    async with session_factory() as session:
+        from app.services.reconciliation_service import ReconciliationService
+        summary = await ReconciliationService(session).run(days_back=1)
+        if summary["mismatch"] > 0 or summary["not_found"] > 0:
+            logger.warning(
+                "[reconciliation] ALERT — %d mismatch(es), %d not found. Manual review required.",
+                summary["mismatch"], summary["not_found"],
+            )
+
+
 def start_scheduler(engine: AsyncEngine) -> None:
     """Start the APScheduler background job.
 
@@ -226,6 +319,8 @@ def start_scheduler(engine: AsyncEngine) -> None:
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     _scheduler = AsyncIOScheduler(timezone="UTC")
+
+    # Job 1: charge due subscriptions (every hour)
     _scheduler.add_job(
         _charge_due_subscriptions,
         trigger="interval",
@@ -234,8 +329,34 @@ def start_scheduler(engine: AsyncEngine) -> None:
         id="charge_due_subscriptions",
         replace_existing=True,
     )
+
+    # Job 2: upcoming charge reminder (daily at 09:00 UTC)
+    _scheduler.add_job(
+        _send_upcoming_charge_reminders,
+        trigger="cron",
+        hour=9,
+        minute=0,
+        kwargs={"session_factory": session_factory},
+        id="upcoming_charge_reminders",
+        replace_existing=True,
+    )
+
+    # Job 3: daily reconciliation (daily at 00:30 UTC)
+    _scheduler.add_job(
+        _run_daily_reconciliation,
+        trigger="cron",
+        hour=0,
+        minute=30,
+        kwargs={"session_factory": session_factory},
+        id="daily_reconciliation",
+        replace_existing=True,
+    )
+
     _scheduler.start()
-    logger.info("[scheduler] Started — checking subscriptions every hour.")
+    logger.info(
+        "[scheduler] Started — "
+        "charges: every 1h | reminders: 09:00 UTC | reconciliation: 00:30 UTC"
+    )
 
 
 def stop_scheduler() -> None:

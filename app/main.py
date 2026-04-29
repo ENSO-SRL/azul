@@ -17,7 +17,9 @@ from app.infrastructure.database import engine, init_db
 from app.services.scheduler import run_now, start_scheduler, stop_scheduler
 from routers.clubs import router as clubs_router
 from routers.health import router as health_router
+from routers.notifications import router as notifications_router
 from routers.payments import router as payments_router
+from routers.reconciliation import router as reconciliation_router
 from routers.recurring import router as recurring_router
 from routers.refunds import router as refunds_router
 from routers.tests import router as tests_router
@@ -68,6 +70,8 @@ app.include_router(tokens_router)
 app.include_router(clubs_router)
 app.include_router(threeds_router)
 app.include_router(tests_router)
+app.include_router(notifications_router)
+app.include_router(reconciliation_router)
 
 
 # ---------------------------------------------------------------------------

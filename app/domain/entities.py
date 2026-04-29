@@ -71,6 +71,22 @@ class SubscriptionStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+class Currency(str, Enum):
+    """Currencies supported by Azul and Atlas.
+
+    CurrencyPosCode mapping:
+      DOP → "$"    (peso dominicano — default)
+      USD → "US$"  (dólar estadounidense)
+    """
+    DOP = "DOP"
+    USD = "USD"
+
+    @property
+    def azul_code(self) -> str:
+        """Return the CurrencyPosCode string expected by the Azul API."""
+        return "$" if self == Currency.DOP else "US$"
+
+
 # ---------------------------------------------------------------------------
 # Entities
 # ---------------------------------------------------------------------------
@@ -85,7 +101,8 @@ class Payment:
     status: PaymentStatus = PaymentStatus.PENDING
     order_id: str = ""
     card_number_masked: str = ""                 # últimos 4 dígitos
-    currency: str = "$"
+    currency: str = "$"                          # CurrencyPosCode legacy — use currency_code
+    currency_code: Currency = Currency.DOP       # ISO currency (DOP | USD)
     auth_mode: str = "splitit"
 
     # CIT vs MIT — requerido por Visa/Mastercard para stored credentials

@@ -44,6 +44,7 @@ from app.domain.repositories import (
     TransactionRepository,
 )
 from app.infrastructure.azul_gateway import AzulPaymentGateway
+from app.services.notification_service import ctx_charge, send_notification
 
 
 class RecurringService:
@@ -262,6 +263,18 @@ class RecurringService:
         sub.status = SubscriptionStatus.CANCELLED
         sub.data_vault_token = ""  # clear local reference
         await self._recurring.update(sub)
+
+        # Notify customer of cancellation
+        await send_notification(
+            "subscription_cancelled",
+            to_email=getattr(sub, "cardholder_email", ""),
+            context=ctx_charge(
+                amount=sub.amount,
+                currency=getattr(sub, "currency_code", "DOP"),
+                description=sub.description or "Suscripción",
+                card_last4=sub.card_last4,
+            ),
+        )
         return sub
 
     # ------------------------------------------------------------------
