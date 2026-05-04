@@ -1,0 +1,50 @@
+# =============================================================================
+# .dockerignore — Azul Pagos Atlas
+# Excluye archivos que NO deben entrar al contexto de build Docker.
+# Los certs y .env se inyectan en runtime vía ECS secrets / volúmenes.
+# =============================================================================
+
+# Secretos y credenciales — NUNCA en la imagen
+.env
+.env.*
+certs/
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Base de datos local
+*.db
+*.db-shm
+*.db-wal
+
+# Tests — no necesarios en producción
+tests/
+scripts/
+smoke_test.py
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docs (reducir tamaño de imagen)
+*.md
+docs/
+
+# Control de versiones
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

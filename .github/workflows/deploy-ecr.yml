@@ -1,0 +1,140 @@
+name: Deploy to Amazon ECR
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+  workflow_dispatch:
+    inputs:
+      push_image:
+        description: "Push image to ECR? (yes/no)"
+        required: true
+        default: "yes"
+
+concurrency:
+  group: ecr-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REGISTRY: 293926505005.dkr.ecr.us-east-2.amazonaws.com
+  ECR_REPOSITORY: pago-azul
+
+jobs:
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    outputs:
+      image_uri: ${{ steps.meta.outputs.image_uri }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Calcular tags y decidir si se debe pushear
+      # -----------------------------------------------------------------------
+      - name: Compute tags and push flag
+        id: meta
+        run: |
+          SHA_SHORT=$(git rev-parse --short HEAD)
+          BRANCH=$(echo "${GITHUB_REF_NAME}" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
+          TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
+          IMAGE_URI="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${SHA_SHORT}"
+
+          # Determinar si se debe hacer push
+          SHOULD_PUSH="false"
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            SHOULD_PUSH="true"
+          fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.push_image }}" == "yes" ]]; then
+            SHOULD_PUSH="true"
+          fi
+
+          echo "sha_short=${SHA_SHORT}"     >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH}"           >> $GITHUB_OUTPUT
+          echo "timestamp=${TIMESTAMP}"     >> $GITHUB_OUTPUT
+          echo "image_uri=${IMAGE_URI}"     >> $GITHUB_OUTPUT
+          echo "should_push=${SHOULD_PUSH}" >> $GITHUB_OUTPUT
+
+          echo "### Image tags" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${SHA_SHORT}\`"          >> $GITHUB_STEP_SUMMARY
+          echo "- \`${BRANCH}\`"             >> $GITHUB_STEP_SUMMARY
+          echo "- \`latest\` (solo en main)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Push:** ${SHOULD_PUSH}"  >> $GITHUB_STEP_SUMMARY
+
+      # -----------------------------------------------------------------------
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # -----------------------------------------------------------------------
+      # Autenticación AWS via OIDC (no access keys guardadas)
+      # Requiere secret: AWS_ROLE_ARN
+      # -----------------------------------------------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: github-ecr-${{ steps.meta.outputs.sha_short }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # -----------------------------------------------------------------------
+      # Build y push — con cache en ECR para layers de dependencias
+      # -----------------------------------------------------------------------
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ steps.meta.outputs.should_push == 'true' }}
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.sha_short }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.branch }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:buildcache
+          cache-to: type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:buildcache,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.timestamp }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.sha_short }}
+
+      # -----------------------------------------------------------------------
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## ECR Deploy Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Registry | \`${{ env.ECR_REGISTRY }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Repository | \`${{ env.ECR_REPOSITORY }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| SHA | \`${{ steps.meta.outputs.sha_short }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | \`${{ steps.meta.outputs.branch }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Actor | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.meta.outputs.should_push }}" == "true" ]]; then
+            echo "| Pushed | si — imagen disponible en ECR |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Pushed | no — PR/branch solo valida build |" >> $GITHUB_STEP_SUMMARY
+          fi
