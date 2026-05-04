@@ -36,9 +36,9 @@ jobs:
   build-and-push:
     name: Build & Push to ECR
     runs-on: ubuntu-latest
+    environment: produccion       # ← usa los secrets del environment "produccion"
 
     permissions:
-      id-token: write
       contents: read
 
     outputs:
@@ -59,7 +59,6 @@ jobs:
           TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
           IMAGE_URI="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${SHA_SHORT}"
 
-          # Determinar si se debe hacer push
           SHOULD_PUSH="false"
           if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
             SHOULD_PUSH="true"
@@ -80,26 +79,25 @@ jobs:
           echo "- \`latest\` (solo en main)" >> $GITHUB_STEP_SUMMARY
           echo "- **Push:** ${SHOULD_PUSH}"  >> $GITHUB_STEP_SUMMARY
 
-      # -----------------------------------------------------------------------
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       # -----------------------------------------------------------------------
-      # Autenticación AWS via OIDC (no access keys guardadas)
-      # Requiere secret: AWS_ROLE_ARN
+      # Autenticación AWS con Access Keys del environment "produccion"
+      # Secrets: ACCESS_KEY_ID, SECRET_ACCESS_KEY
       # -----------------------------------------------------------------------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: github-ecr-${{ steps.meta.outputs.sha_short }}
 
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
       # -----------------------------------------------------------------------
-      # Build y push — con cache en ECR para layers de dependencias
+      # Build y push — con cache en ECR
       # -----------------------------------------------------------------------
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
