@@ -40,7 +40,12 @@ from app.domain.entities import (
     SavedCard,
     Transaction,
 )
-from app.infrastructure.azul_config import load_azul_config
+from app.infrastructure.azul_config import (
+    load_azul_config,
+    AZUL_URL_SANDBOX,
+    AZUL_URL_PRODUCTION,
+    AZUL_URL_PRODUCTION_SECONDARY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,18 +56,18 @@ logger = logging.getLogger(__name__)
 AuthMode = Literal["splitit", "3dsecure"]
 
 # ---------------------------------------------------------------------------
-# Azul API URLs — failover per environment
+# Azul API URLs — taken from azul_config (env var overridable)
 # ---------------------------------------------------------------------------
 
 # Production: attempt primary, then secondary on network/timeout failure
 AZUL_URLS_PROD = [
-    "https://pagos.azul.com.do/webservices/JSON/Default.aspx",
-    "https://contpagos.azul.com.do/Webservices/JSON/default.aspx",
+    AZUL_URL_PRODUCTION,
+    AZUL_URL_PRODUCTION_SECONDARY,
 ]
 
 # Sandbox: single endpoint (no secondary documented)
 AZUL_URLS_SANDBOX = [
-    "https://pruebas.azul.com.do/webservices/JSON/Default.aspx",
+    AZUL_URL_SANDBOX,
 ]
 
 

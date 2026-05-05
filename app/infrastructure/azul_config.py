@@ -86,17 +86,54 @@ _SECRET_CREDS = os.getenv("AZUL_SECRET_CREDS", "iamatlas/azul/dev/api-credential
 _SECRET_CERT  = os.getenv("AZUL_SECRET_CERT",  "iamatlas/azul/dev/cert-pem")
 _SECRET_KEY   = os.getenv("AZUL_SECRET_KEY",   "iamatlas/azul/dev/cert-key")
 
-# Azul API URLs
-AZUL_URL_SANDBOX    = "https://pruebas.azul.com.do/webservices/JSON/default.aspx"
-AZUL_URL_PRODUCTION = "https://pagos.azul.com.do/WebServices/JSON/default.aspx"
+# ---------------------------------------------------------------------------
+# Azul API URLs — configurables via env vars (defaults = valores oficiales AZUL)
+# ---------------------------------------------------------------------------
 
-# 3DS 2.0 endpoints por entorno
-AZUL_3DS_METHOD_URL_SANDBOX    = "https://pruebas.azul.com.do/webservices/JSON/default.aspx?processthreedsmethod"
-AZUL_3DS_METHOD_URL_PROD       = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedsmethod"
-AZUL_3DS_CHALLENGE_URL_SANDBOX = "https://pruebas.azul.com.do/webservices/JSON/default.aspx?processthreedschallenge"
-AZUL_3DS_CHALLENGE_URL_PROD    = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedschallenge"
-AZUL_VERIFY_PAYMENT_URL_SANDBOX = "https://pruebas.azul.com.do/webservices/JSON/default.aspx?verifypayment"
-AZUL_VERIFY_PAYMENT_URL_PROD    = "https://pagos.azul.com.do/WebServices/JSON/default.aspx?verifypayment"
+# Endpoint principal de pagos
+AZUL_URL_SANDBOX    = os.getenv(
+    "AZUL_URL_SANDBOX",
+    "https://pruebas.azul.com.do/webservices/JSON/default.aspx",
+)
+AZUL_URL_PRODUCTION = os.getenv(
+    "AZUL_URL_PRODUCTION",
+    "https://pagos.azul.com.do/WebServices/JSON/default.aspx",
+)
+# Failover URL (producción) — doc AZUL p.14
+AZUL_URL_PRODUCTION_SECONDARY = os.getenv(
+    "AZUL_URL_PRODUCTION_SECONDARY",
+    "https://contpagos.azul.com.do/Webservices/JSON/default.aspx",
+)
+
+# 3DS 2.0 — processthreedsmethod
+AZUL_3DS_METHOD_URL_SANDBOX = os.getenv(
+    "AZUL_3DS_METHOD_URL_SANDBOX",
+    "https://pruebas.azul.com.do/webservices/JSON/default.aspx?processthreedsmethod",
+)
+AZUL_3DS_METHOD_URL_PROD = os.getenv(
+    "AZUL_3DS_METHOD_URL_PROD",
+    "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedsmethod",
+)
+
+# 3DS 2.0 — processthreedschallenge
+AZUL_3DS_CHALLENGE_URL_SANDBOX = os.getenv(
+    "AZUL_3DS_CHALLENGE_URL_SANDBOX",
+    "https://pruebas.azul.com.do/webservices/JSON/default.aspx?processthreedschallenge",
+)
+AZUL_3DS_CHALLENGE_URL_PROD = os.getenv(
+    "AZUL_3DS_CHALLENGE_URL_PROD",
+    "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedschallenge",
+)
+
+# Verify Payment
+AZUL_VERIFY_PAYMENT_URL_SANDBOX = os.getenv(
+    "AZUL_VERIFY_PAYMENT_URL_SANDBOX",
+    "https://pruebas.azul.com.do/webservices/JSON/default.aspx?verifypayment",
+)
+AZUL_VERIFY_PAYMENT_URL_PROD = os.getenv(
+    "AZUL_VERIFY_PAYMENT_URL_PROD",
+    "https://pagos.azul.com.do/WebServices/JSON/default.aspx?verifypayment",
+)
 
 # URL base de la aplicación (para construir TermUrl y MethodNotificationUrl)
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
