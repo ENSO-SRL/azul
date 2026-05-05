@@ -177,7 +177,12 @@ def _load_from_aws() -> AzulConfig:
 
 
 def _load_from_env() -> AzulConfig:
-    """Build config from environment variables / .env file."""
+    """Build config from environment variables / .env file.
+
+    Certificate resolution order (first match wins):
+      1. AZUL_CERT_PEM + AZUL_KEY_PEM  → PEM content written to temp files
+      2. AZUL_CERT_PATH + AZUL_KEY_PATH → file paths (development only)
+    """
     merchant_id = os.environ.get("AZUL_MERCHANT_ID", "")
     if not merchant_id:
         raise RuntimeError(
@@ -193,14 +198,27 @@ def _load_from_env() -> AzulConfig:
     auth1_3ds     = os.environ.get("AZUL_AUTH1_3DS", auth1_default)
     auth2_3ds     = os.environ.get("AZUL_AUTH2_3DS", auth2_default)
 
-    cert_path = os.environ.get("AZUL_CERT_PATH", "")
-    key_path  = os.environ.get("AZUL_KEY_PATH", "")
+    # -----------------------------------------------------------------------
+    # Certificate resolution — PEM content takes priority over file paths
+    # -----------------------------------------------------------------------
+    cert_pem = os.environ.get("AZUL_CERT_PEM", "").strip()
+    key_pem  = os.environ.get("AZUL_KEY_PEM", "").strip()
 
-    if not cert_path or not key_path:
-        raise RuntimeError(
-            "AZUL_LOCAL_MODE=1 but AZUL_CERT_PATH and/or AZUL_KEY_PATH "
-            "are not set. Point them to your .crt and .key PEM files."
-        )
+    if cert_pem and key_pem:
+        # Content provided directly as env vars — write to temp files
+        cert_path = _write_temp_pem(cert_pem, ".crt")
+        key_path  = _write_temp_pem(key_pem, ".key")
+    else:
+        # Fall back to file paths (local development)
+        cert_path = os.environ.get("AZUL_CERT_PATH", "")
+        key_path  = os.environ.get("AZUL_KEY_PATH", "")
+
+        if not cert_path or not key_path:
+            raise RuntimeError(
+                "Certificates not configured. Provide one of:\n"
+                "  • AZUL_CERT_PEM + AZUL_KEY_PEM  (PEM content as env vars)\n"
+                "  • AZUL_CERT_PATH + AZUL_KEY_PATH (file paths for local dev)"
+            )
 
     env: Literal["sandbox", "production"] = (
         "production" if os.environ.get("AZUL_ENV", "sandbox") == "production" else "sandbox"
