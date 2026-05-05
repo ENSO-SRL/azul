@@ -36,21 +36,42 @@ from typing import Literal
 # ---------------------------------------------------------------------------
 
 def _load_dotenv() -> None:
-    """Load a .env file from project root into os.environ (if it exists)."""
+    """Load a .env file from project root into os.environ (if it exists).
+
+    Supports multi-line PEM values: a value that starts with
+    '-----BEGIN' continues until a line starting with '-----END'.
+    """
     env_path = Path(__file__).resolve().parents[2] / ".env"
     if not env_path.is_file():
         return
     with open(env_path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip("\"'")
-            os.environ.setdefault(key, value)
+        lines = fh.readlines()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip("\r\n")
+        i += 1
+
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+
+        key, _, value = stripped.partition("=")
+        key = key.strip()
+        value = value.strip().strip("\"'")
+
+        # Multi-line PEM detection: value starts with "-----BEGIN"
+        if value.startswith("-----BEGIN"):
+            pem_lines = [value]
+            while i < len(lines):
+                next_line = lines[i].rstrip("\r\n")
+                i += 1
+                pem_lines.append(next_line.strip())
+                if next_line.strip().startswith("-----END"):
+                    break
+            value = "\n".join(pem_lines)
+
+        os.environ.setdefault(key, value)
 
 _load_dotenv()
 
