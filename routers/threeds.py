@@ -82,7 +82,8 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
 # ACS Callbacks (llamados por el banco / ACS, no por tu frontend)
 # ---------------------------------------------------------------------------
 
-_METHOD_NOTIFICATION_RECEIVED: dict[str, bool] = {}
+# NOTA: threeds_method_notified se persiste en la DB (campo en PaymentModel)
+# para soportar múltiples instancias ECS sin perder el estado entre tareas.
 
 
 @router.post(
@@ -97,14 +98,24 @@ _METHOD_NOTIFICATION_RECEIVED: dict[str, bool] = {}
 async def method_notification(
     payment_id: str = Query(..., description="ID del pago"),
     three_ds_method_data: str = Form(default="", alias="threeDSMethodData"),
+    db: AsyncSession = Depends(get_db),
 ):
-    """ACS calls this after the 3DS Method iframe completes."""
+    """ACS calls this after the 3DS Method iframe completes.
+
+    Persists the notification in the DB so all ECS instances can read it.
+    """
+    from app.infrastructure.repo_impl import SQLPaymentRepository
+    repo = SQLPaymentRepository(db)
+    payment = await repo.get_by_id(payment_id)
+    if payment:
+        payment.threeds_method_notified = True
+        await repo.update(payment)
     logger.info(
-        "[3ds] method-notification received for payment_id=%s has_data=%s",
+        "[3ds] method-notification received for payment_id=%s has_data=%s found=%s",
         payment_id,
         bool(three_ds_method_data),
+        payment is not None,
     )
-    _METHOD_NOTIFICATION_RECEIVED[payment_id] = True
     return Response(status_code=200)
 
 

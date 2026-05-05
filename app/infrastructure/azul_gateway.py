@@ -196,9 +196,12 @@ class AzulPaymentGateway:
             "Payments": "1",
             "Plan": "0",
             "AcquirerRefData": "1",
+            "RRN": None,   # Requerido por doc AZUL p.27 — puede ser null
             "OrderNumber": payment.order_id or "",
-            "CustomerServicePhone": "",
-            "ECommerceUrl": "https://atlas.do",
+            # CustomerServicePhone: configurable via env var (doc AZUL p.19 — requerido)
+            "CustomerServicePhone": os.getenv("AZUL_CUSTOMER_SERVICE_PHONE", ""),
+            # ECommerceUrl: URL real del comercio (doc AZUL p.19)
+            "ECommerceUrl": os.getenv("AZUL_ECOMMERCE_URL", "https://atlas.do"),
             "CustomOrderId": payment.id,
             # Required since Azul API v1.2
             "CardHolderName": payment.cardholder_name,
@@ -768,8 +771,11 @@ class AzulPaymentGateway:
         payment.iso_code         = iso_raw
         payment.response_code    = rc_raw
         payment.response_message = message
-        payment.azul_order_id    = data.get("AzulOrderId", "")
+        # AzulOrderId: AZUL retorna ambas variantes de capitalización según versión
+        payment.azul_order_id    = data.get("AZULOrderId") or data.get("AzulOrderId", "")
         payment.data_vault_token = data.get("DataVaultToken", "")
+        payment.authorization_code = data.get("AuthorizationCode", "")
+        payment.rrn              = data.get("RRN", "")
 
         # Mask to last 4 from original card if present in payload
         raw_pan = payload.get("CardNumber", "")

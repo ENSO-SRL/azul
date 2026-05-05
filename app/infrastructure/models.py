@@ -40,6 +40,10 @@ class PaymentModel(Base):
     iso_code: Mapped[str] = mapped_column(String(10), default="")
     response_code: Mapped[str] = mapped_column(String(20), default="")
     response_message: Mapped[str] = mapped_column(String(255), default="")
+    # Código de autorización — crítico para conciliación y evidencia de disputas (doc AZUL p.30)
+    authorization_code: Mapped[str] = mapped_column(String(20), default="")
+    # RRN — número de referencia adquirente (doc AZUL p.27)
+    rrn: Mapped[str] = mapped_column(String(30), default="")
 
     # DataVault token (si se solicitó save_card=True)
     data_vault_token: Mapped[str] = mapped_column(String(100), default="")
@@ -56,6 +60,8 @@ class PaymentModel(Base):
     threeds_method_form: Mapped[str] = mapped_column(Text, default="")
     threeds_redirect_url: Mapped[str] = mapped_column(String(500), default="")
     threeds_challenge_form: Mapped[str] = mapped_column(Text, default="")
+    # Reemplaza el in-memory dict — seguro para multi-instancia ECS
+    threeds_method_notified: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

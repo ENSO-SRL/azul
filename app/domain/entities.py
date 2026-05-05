@@ -121,6 +121,10 @@ class Payment:
     iso_code: str = ""
     response_code: str = ""
     response_message: str = ""
+    # Código de autorización — crítico para conciliación bancaria y disputas
+    authorization_code: str = ""
+    # RRN — número de referencia de la adquirente (doc AZUL p.27)
+    rrn: str = ""
 
     # Metadata de servicio (solo para PaymentType.SERVICE)
     service_type: str = ""
@@ -133,6 +137,8 @@ class Payment:
     threeds_method_form: str = ""       # HTML iframe del 3DS Method (respuesta 3D2METHOD)
     threeds_redirect_url: str = ""      # URL del ACS para challenge redirect
     threeds_challenge_form: str = ""    # HTML/form para redirigir al ACS
+    # Flag persistido en DB — reemplaza el in-memory dict para multi-instancia ECS
+    threeds_method_notified: bool = False
 
     # Auto-generados
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
