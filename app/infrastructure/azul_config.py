@@ -195,9 +195,13 @@ def _write_temp_pem(content: str, suffix: str) -> str:
     The file is intentionally *not* deleted on close so that httpx can
     read it later.  It will be cleaned up when the OS reclaims temp space
     or when the process exits.
+
+    Windows note: PEM files MUST use LF (\n) — CRLF (\r\n) causes ssl.SSLError.
     """
+    # Normalize line endings to LF (critical for ssl on Windows)
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
     fd = tempfile.NamedTemporaryFile(
-        suffix=suffix, delete=False, mode="w", encoding="utf-8"
+        suffix=suffix, delete=False, mode="w", encoding="utf-8", newline="\n"
     )
     fd.write(content)
     fd.flush()
@@ -257,25 +261,30 @@ def _load_from_env() -> AzulConfig:
     auth2_3ds     = os.environ.get("AZUL_AUTH2_3DS", auth2_default)
 
     # -----------------------------------------------------------------------
-    # Certificate resolution — PEM content takes priority over file paths
+    # Certificate resolution — priority order:
+    #   1. AZUL_CERT_PATH / AZUL_KEY_PATH  (archivos físicos — dev local, más confiable)
+    #   2. AZUL_CERT_PEM / AZUL_KEY_PEM    (contenido inline — ECS / Docker / CI)
     # -----------------------------------------------------------------------
-    cert_pem = os.environ.get("AZUL_CERT_PEM", "").strip()
-    key_pem  = os.environ.get("AZUL_KEY_PEM", "").strip()
+    cert_path = os.environ.get("AZUL_CERT_PATH", "").strip()
+    key_path  = os.environ.get("AZUL_KEY_PATH",  "").strip()
 
-    if cert_pem and key_pem:
-        # Content provided directly as env vars — write to temp files
-        cert_path = _write_temp_pem(cert_pem, ".crt")
-        key_path  = _write_temp_pem(key_pem, ".key")
+    import pathlib
+    if cert_path and key_path and pathlib.Path(cert_path).is_file() and pathlib.Path(key_path).is_file():
+        # Use physical files directly (local development, always reliable)
+        pass
     else:
-        # Fall back to file paths (local development)
-        cert_path = os.environ.get("AZUL_CERT_PATH", "")
-        key_path  = os.environ.get("AZUL_KEY_PATH", "")
+        # Fall back to PEM content from env vars (ECS / Docker / CI)
+        cert_pem = os.environ.get("AZUL_CERT_PEM", "").strip()
+        key_pem  = os.environ.get("AZUL_KEY_PEM",  "").strip()
 
-        if not cert_path or not key_path:
+        if cert_pem and key_pem:
+            cert_path = _write_temp_pem(cert_pem, ".crt")
+            key_path  = _write_temp_pem(key_pem, ".key")
+        else:
             raise RuntimeError(
                 "Certificates not configured. Provide one of:\n"
-                "  • AZUL_CERT_PEM + AZUL_KEY_PEM  (PEM content as env vars)\n"
-                "  • AZUL_CERT_PATH + AZUL_KEY_PATH (file paths for local dev)"
+                "  • AZUL_CERT_PATH + AZUL_KEY_PATH  (file paths — local dev)\n"
+                "  • AZUL_CERT_PEM  + AZUL_KEY_PEM   (PEM content — ECS/Docker)"
             )
 
     env: Literal["sandbox", "production"] = (
