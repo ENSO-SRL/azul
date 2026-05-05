@@ -199,9 +199,16 @@ async def complete_method(
     payment_id: str,
     body: CompleteMethodRequest,
     svc: PaymentService = Depends(_get_service),
+    db: AsyncSession = Depends(get_db),
 ):
+    from app.infrastructure.repo_impl import SQLPaymentRepository
+    repo = SQLPaymentRepository(db)
+    payment_entity = await repo.get_by_id(payment_id)
+
     status = body.method_notification_status
-    if _METHOD_NOTIFICATION_RECEIVED.pop(payment_id, False) and status != "RECEIVED":
+    # Si el ACS notificó en DB (threeds_method_notified=True) y el frontend
+    # dice que no recibió, corregimos el status al valor real persistido.
+    if payment_entity and payment_entity.threeds_method_notified and status != "RECEIVED":
         status = "RECEIVED"
 
     try:
