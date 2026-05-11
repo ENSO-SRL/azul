@@ -39,6 +39,7 @@ import json
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -63,6 +64,9 @@ DISCOVER_1   = "6011000990099818"
 VISA_3DS     = "4005520000000129"   # Tarjeta que activa flujo 3DS
 
 
+_EVIDENCE_FILE = Path(__file__).parent.parent / "evidencia_transacciones.json"
+
+
 def _payment(
     amount: int = 10000,    # RD$ 100.00 (en centavos)
     itbis: int = 1500,      # RD$ 15.00 ITBIS 15%
@@ -78,6 +82,39 @@ def _payment(
         cardholder_email="sandbox@atlas.do",
         currency_code=currency_code,
     )
+
+
+def _record(evidence: list, test_name: str, card_masked: str, p: Payment) -> None:
+    """Append a transaction record to the session evidence list."""
+    evidence.append({
+        "test":               test_name,
+        "fecha":              datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "tarjeta_enmascarada": card_masked,
+        "monto_centavos":     p.amount,
+        "itbis_centavos":     p.itbis,
+        "status":             p.status.value if p.status else None,
+        "iso_code":           p.iso_code,
+        "AzulOrderId":        p.azul_order_id,
+        "AuthorizationCode":  p.authorization_code,
+        "RRN":                p.rrn,
+        "DataVaultToken":     p.data_vault_token or None,
+    })
+
+
+@pytest.fixture(scope="session")
+def evidence() -> list:
+    """Accumulates transaction evidence; writes JSON file at session end."""
+    records: list = []
+    yield records
+    output = {
+        "merchant_id":    "39038540035",
+        "ambiente":       "sandbox — pruebas.azul.com.do",
+        "fecha_ejecucion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "total":          len(records),
+        "transacciones":  records,
+    }
+    _EVIDENCE_FILE.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\n✅ Evidencia guardada en: {_EVIDENCE_FILE}")
 
 
 @pytest.fixture(scope="session")
@@ -96,36 +133,48 @@ class TestSaleApproved:
     """Verifica que las 6 tarjetas splitit de prueba son aprobadas."""
 
     @pytest.mark.asyncio
-    async def test_visa_1_approved(self, gw):
+    async def test_visa_1_approved(self, gw, evidence):
         p, t = await gw.sale(_payment(), VISA_1, EXPIRATION, CVC)
         assert p.status == PaymentStatus.APPROVED, f"{p.response_message}"
         assert p.iso_code == "00"
         assert t.http_status == 200
+        _record(evidence, "Sale-Visa-1", "426055******5872", p)
+        print(f"  AzulOrderId={p.azul_order_id}  AuthCode={p.authorization_code}")
 
     @pytest.mark.asyncio
-    async def test_visa_2_approved(self, gw):
+    async def test_visa_2_approved(self, gw, evidence):
         p, t = await gw.sale(_payment(), VISA_2, EXPIRATION, CVC)
         assert p.status == PaymentStatus.APPROVED, f"{p.response_message}"
+        _record(evidence, "Sale-Visa-2", "403587******4977", p)
+        print(f"  AzulOrderId={p.azul_order_id}  AuthCode={p.authorization_code}")
 
     @pytest.mark.asyncio
-    async def test_visa_3_approved(self, gw):
+    async def test_visa_3_approved(self, gw, evidence):
         p, t = await gw.sale(_payment(), VISA_3, EXPIRATION, CVC)
         assert p.status == PaymentStatus.APPROVED, f"{p.response_message}"
+        _record(evidence, "Sale-Visa-3", "401200******0026", p)
+        print(f"  AzulOrderId={p.azul_order_id}  AuthCode={p.authorization_code}")
 
     @pytest.mark.asyncio
-    async def test_mastercard_1_approved(self, gw):
+    async def test_mastercard_1_approved(self, gw, evidence):
         p, t = await gw.sale(_payment(), MASTERCARD_1, EXPIRATION, CVC)
         assert p.status == PaymentStatus.APPROVED, f"{p.response_message}"
+        _record(evidence, "Sale-Mastercard-1", "542418******1732", p)
+        print(f"  AzulOrderId={p.azul_order_id}  AuthCode={p.authorization_code}")
 
     @pytest.mark.asyncio
-    async def test_mastercard_2_approved(self, gw):
+    async def test_mastercard_2_approved(self, gw, evidence):
         p, t = await gw.sale(_payment(), MASTERCARD_2, EXPIRATION, CVC)
         assert p.status == PaymentStatus.APPROVED, f"{p.response_message}"
+        _record(evidence, "Sale-Mastercard-2", "542606******4979", p)
+        print(f"  AzulOrderId={p.azul_order_id}  AuthCode={p.authorization_code}")
 
     @pytest.mark.asyncio
-    async def test_discover_approved(self, gw):
+    async def test_discover_approved(self, gw, evidence):
         p, t = await gw.sale(_payment(), DISCOVER_1, EXPIRATION, CVC)
         assert p.status == PaymentStatus.APPROVED, f"{p.response_message}"
+        _record(evidence, "Sale-Discover", "601100******9818", p)
+        print(f"  AzulOrderId={p.azul_order_id}  AuthCode={p.authorization_code}")
 
 
 # ===========================================================================
@@ -136,26 +185,32 @@ class TestResponseFields:
     """authorization_code, AzulOrderId y RRN son obligatorios para producción."""
 
     @pytest.mark.asyncio
-    async def test_authorization_code_present(self, gw):
+    async def test_authorization_code_present(self, gw, evidence):
         """Sin authorization_code no se pueden ganar disputas (chargebacks)."""
         p, _ = await gw.sale(_payment(), VISA_1, EXPIRATION, CVC)
         assert p.status == PaymentStatus.APPROVED
         assert p.authorization_code, (
             "authorization_code vacío — CRÍTICO: no podrás ganar chargebacks en producción"
         )
+        _record(evidence, "ResponseFields-AuthCode", "426055******5872", p)
+        print(f"  AuthorizationCode={p.authorization_code}")
 
     @pytest.mark.asyncio
-    async def test_azul_order_id_present(self, gw):
+    async def test_azul_order_id_present(self, gw, evidence):
         """AzulOrderId es necesario para Void y Refund."""
         p, _ = await gw.sale(_payment(), MASTERCARD_1, EXPIRATION, CVC)
         assert p.status == PaymentStatus.APPROVED
         assert p.azul_order_id, "AzulOrderId vacío — Void/Refund no funcionará"
+        _record(evidence, "ResponseFields-AzulOrderId", "542418******1732", p)
+        print(f"  AzulOrderId={p.azul_order_id}")
 
     @pytest.mark.asyncio
-    async def test_rrn_field_exists_in_entity(self, gw):
+    async def test_rrn_field_exists_in_entity(self, gw, evidence):
         """El campo RRN debe existir en la entidad (puede ser vacío en sandbox)."""
         p, _ = await gw.sale(_payment(), VISA_2, EXPIRATION, CVC)
         assert hasattr(p, "rrn"), "Campo RRN no existe en Payment — agregar al modelo"
+        _record(evidence, "ResponseFields-RRN", "403587******4977", p)
+        print(f"  RRN={p.rrn}")
 
 
 # ===========================================================================
@@ -166,7 +221,7 @@ class TestDataVault:
     """Tokenización de tarjeta para pagos recurrentes."""
 
     @pytest.mark.asyncio
-    async def test_save_token_on_first_sale(self, gw):
+    async def test_save_token_on_first_sale(self, gw, evidence):
         """save_token=True debe retornar DataVaultToken no vacío."""
         p, _ = await gw.sale(_payment(), VISA_1, EXPIRATION, CVC, save_token=True)
         assert p.status == PaymentStatus.APPROVED, p.response_message
@@ -174,6 +229,8 @@ class TestDataVault:
             "DataVaultToken vacío — DataVault no está habilitado para este Merchant. "
             "Solicitar activación a Luis Recio."
         )
+        _record(evidence, "DataVault-SaveToken", "426055******5872", p)
+        print(f"  AzulOrderId={p.azul_order_id}  Token={p.data_vault_token}")
 
     @pytest.mark.asyncio
     async def test_create_token_standalone(self, gw):
@@ -220,20 +277,22 @@ class TestRecurringCharges:
     """Pagos recurrentes — obligatorio para Visa/MC stored credentials mandate."""
 
     @pytest.mark.asyncio
-    async def test_mit_charge_standing_order(self, gw):
+    async def test_mit_charge_standing_order(self, gw, evidence):
         """MIT debe incluir merchantInitiatedIndicator=STANDING_ORDER en el payload."""
-        # CIT inicial con token
         first, _ = await gw.sale(_payment(), MASTERCARD_1, EXPIRATION, CVC, save_token=True)
         assert first.status == PaymentStatus.APPROVED, first.response_message
         token = first.data_vault_token
         if not token:
             pytest.skip("DataVault no habilitado — sin token no se puede testear MIT")
+        _record(evidence, "MIT-CIT-inicial", "542418******1732", first)
 
         mit = _payment()
         mit.initiated_by = "merchant"
         mit, mit_txn = await gw.sale_mit(mit, token)
         assert mit.status == PaymentStatus.APPROVED, mit.response_message
         assert mit.iso_code == "00"
+        _record(evidence, "MIT-STANDING_ORDER", "(DataVaultToken)", mit)
+        print(f"  MIT AzulOrderId={mit.azul_order_id}  AuthCode={mit.authorization_code}")
 
         payload = json.loads(mit_txn.request_payload)
         assert payload.get("merchantInitiatedIndicator") == "STANDING_ORDER", (
@@ -242,14 +301,17 @@ class TestRecurringCharges:
         assert payload.get("ForceNo3DS") == "1", "MIT debe forzar ForceNo3DS=1"
 
     @pytest.mark.asyncio
-    async def test_cit_charge_standing_order(self, gw):
+    async def test_cit_charge_standing_order(self, gw, evidence):
         """CIT con token debe incluir cardholderInitiatedIndicator=STANDING_ORDER."""
         first, _ = await gw.sale(_payment(), VISA_1, EXPIRATION, CVC, save_token=True)
         if not first.data_vault_token:
             pytest.skip("DataVault no habilitado")
+        _record(evidence, "CIT-inicial", "426055******5872", first)
 
         cit, cit_txn = await gw.sale_cit(_payment(), first.data_vault_token)
         assert cit.status == PaymentStatus.APPROVED, cit.response_message
+        _record(evidence, "CIT-STANDING_ORDER", "(DataVaultToken)", cit)
+        print(f"  CIT AzulOrderId={cit.azul_order_id}  AuthCode={cit.authorization_code}")
 
         payload = json.loads(cit_txn.request_payload)
         assert payload.get("cardholderInitiatedIndicator") == "STANDING_ORDER"
@@ -368,19 +430,21 @@ class TestThreeDS:
     }
 
     @pytest.mark.asyncio
-    async def test_3ds_sale_triggers_3ds_flow(self, gw):
+    async def test_3ds_sale_triggers_3ds_flow(self, gw, evidence):
         """Con tarjeta 3DS y auth_mode=3dsecure debe retornar 3D2METHOD o 3D."""
         p = _payment(auth_mode="3dsecure")
         p, t = await gw.sale(p, VISA_3DS, EXPIRATION, CVC, browser_info=self.BROWSER)
         assert p.status in (
             PaymentStatus.PENDING_3DS_METHOD,
             PaymentStatus.PENDING_3DS_CHALLENGE,
-            PaymentStatus.APPROVED,   # Sandbox puede aprobar directo en algunos casos
+            PaymentStatus.APPROVED,
         ), f"3DS inesperado: {p.status} — {p.response_message}"
         assert p.iso_code in ("3D2METHOD", "3D", "00"), f"IsoCode 3DS inesperado: {p.iso_code}"
+        _record(evidence, "3DS-Method", "400552******0129", p)
+        print(f"  3DS AzulOrderId={p.azul_order_id}  IsoCode={p.iso_code}")
 
     @pytest.mark.asyncio
-    async def test_splitit_forces_no_3ds(self, gw):
+    async def test_splitit_forces_no_3ds(self, gw, evidence):
         """auth_mode=splitit debe incluir ForceNo3DS=1 y aprobar sin challenge."""
         p = _payment(auth_mode="splitit")
         p, t = await gw.sale(p, VISA_3DS, EXPIRATION, CVC)
@@ -391,6 +455,8 @@ class TestThreeDS:
         assert p.status == PaymentStatus.APPROVED, (
             f"ForceNo3DS=1 con VISA_3DS no fue aprobado: {p.response_message}"
         )
+        _record(evidence, "3DS-ForceNo3DS", "400552******0129", p)
+        print(f"  ForceNo3DS AzulOrderId={p.azul_order_id}  AuthCode={p.authorization_code}")
 
 
 # ===========================================================================
