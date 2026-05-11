@@ -309,6 +309,48 @@ async def _run_daily_reconciliation(session_factory: async_sessionmaker) -> None
             )
 
 
+async def _purge_old_transactions(session_factory: async_sessionmaker) -> None:
+    """Job: eliminar transacciones DECLINED/VOID antiguas (política de retención).
+
+    Configuración:
+        DATA_RETENTION_DAYS — días a retener (default 90).
+        Solo borra transacciones con status DECLINED o sin azul_order_id (fallidas).
+        Los pagos APPROVED se conservan indefinidamente para auditoría.
+    """
+    import os as _os
+    from sqlalchemy import delete, text
+    from app.infrastructure.models import PaymentModel, TransactionModel
+
+    retention_days = int(_os.getenv("DATA_RETENTION_DAYS", "90"))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+
+    async with session_factory() as session:
+        # 1. Delete transactions linked to old DECLINED payments
+        del_txns = await session.execute(
+            delete(TransactionModel).where(
+                TransactionModel.payment_id.in_(
+                    text(
+                        "SELECT id FROM payments "
+                        "WHERE status = 'DECLINED' "
+                        f"AND created_at < '{cutoff.isoformat()}'"
+                    )
+                )
+            )
+        )
+        # 2. Delete the old DECLINED payment records
+        del_pmts = await session.execute(
+            delete(PaymentModel).where(
+                PaymentModel.status == "DECLINED",
+                PaymentModel.created_at < cutoff,
+            )
+        )
+        await session.commit()
+        logger.info(
+            "[retention] Purged %d transaction(s) and %d payment(s) older than %d days.",
+            del_txns.rowcount, del_pmts.rowcount, retention_days,
+        )
+
+
 def start_scheduler(engine: AsyncEngine) -> None:
     """Start the APScheduler background job.
 
@@ -352,10 +394,22 @@ def start_scheduler(engine: AsyncEngine) -> None:
         replace_existing=True,
     )
 
+    # Job 4: data retention — purge old DECLINED records (daily at 02:00 UTC)
+    _scheduler.add_job(
+        _purge_old_transactions,
+        trigger="cron",
+        hour=2,
+        minute=0,
+        kwargs={"session_factory": session_factory},
+        id="data_retention",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info(
         "[scheduler] Started — "
-        "charges: every 1h | reminders: 09:00 UTC | reconciliation: 00:30 UTC"
+        "charges: every 1h | reminders: 09:00 UTC | "
+        "reconciliation: 00:30 UTC | retention: 02:00 UTC"
     )
 
 

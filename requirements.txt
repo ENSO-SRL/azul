@@ -9,3 +9,7 @@ apscheduler>=3.10.0
 python-multipart>=0.0.9
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+# SQLCipher — cifrado en reposo para SQLite (Req 3, TEMPORAL hasta PostgreSQL)
+# Activar con: DATABASE_ENCRYPTION_KEY=<hex_key>
+# Eliminar cuando se migre a PostgreSQL (RDS gestiona cifrado en reposo).
+sqlcipher3-binary>=0.5.3

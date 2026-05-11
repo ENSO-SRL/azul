@@ -31,15 +31,71 @@ env:
   AWS_REGION: us-east-2
   ECR_REGISTRY: 293926505005.dkr.ecr.us-east-2.amazonaws.com
   ECR_REPOSITORY: pago-azul
+  # ARN del IAM Role creado con infra/iam_github_oidc_trust.json
+  AWS_ROLE_ARN: arn:aws:iam::293926505005:role/GitHubActions-ECR-Deploy
 
 jobs:
-  build-and-push:
-    name: Build & Push to ECR
+  # ---------------------------------------------------------------------------
+  # Job 1: SAST + dependency scan (Req 6)
+  # ---------------------------------------------------------------------------
+  sast:
+    name: SAST & Dependency Scan
     runs-on: ubuntu-latest
-    environment: produccion       # ← usa los secrets del environment "produccion"
 
     permissions:
       contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install audit tools
+        run: pip install bandit pip-audit --quiet
+
+      - name: Bandit — SAST scan
+        run: |
+          bandit -r app/ routers/ \
+            --severity-level medium \
+            --confidence-level medium \
+            --format txt \
+            --exit-zero \
+            | tee bandit_report.txt
+          echo "### Bandit SAST" >> $GITHUB_STEP_SUMMARY
+          cat bandit_report.txt >> $GITHUB_STEP_SUMMARY
+
+      - name: pip-audit — dependency vulnerability scan
+        run: |
+          pip-audit -r requirements.txt --format markdown | tee pip_audit_report.md || true
+          echo "### pip-audit" >> $GITHUB_STEP_SUMMARY
+          cat pip_audit_report.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload SAST reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-reports
+          path: |
+            bandit_report.txt
+            pip_audit_report.md
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Build & Push — usa OIDC, sin claves estáticas (Req 8)
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    needs: sast
+    environment: produccion
+
+    # OIDC — sin AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+    permissions:
+      contents: read
+      id-token: write   # requerido para OIDC
 
     outputs:
       image_uri: ${{ steps.meta.outputs.image_uri }}
@@ -48,9 +104,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------------------------
-      # Calcular tags y decidir si se debe pushear
-      # -----------------------------------------------------------------------
       - name: Compute push flag
         id: meta
         run: |
@@ -75,14 +128,14 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # -----------------------------------------------------------------------
-      # Autenticación AWS con Access Keys
-      # Repo secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+      # OIDC — asume el IAM Role sin credenciales estáticas (Req 8)
+      # Prerequisito: crear el role con infra/iam_github_oidc_trust.json
+      # y añadir AWS_ROLE_ARN como variable de entorno del environment "produccion"
       # -----------------------------------------------------------------------
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -115,6 +168,7 @@ jobs:
           echo "| Registry | \`${{ env.ECR_REGISTRY }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Repository | \`${{ env.ECR_REPOSITORY }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Image | \`${{ steps.meta.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Auth | OIDC (sin claves estáticas) |" >> $GITHUB_STEP_SUMMARY
           echo "| Triggered by | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Actor | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ steps.meta.outputs.should_push }}" == "true" ]]; then

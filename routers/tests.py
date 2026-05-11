@@ -68,8 +68,12 @@ async def test_hold_post_verify(
     body: HoldPostVerifyRequest,
     svc: PaymentService = Depends(_get_service),
 ):
-    if os.getenv("AZUL_ENV", "sandbox") == "production":
-        raise HTTPException(status_code=403, detail="Tests deshabilitados en producción")
+    # Double-gate: env check here + require_api_key applied at router level in main.py
+    if os.getenv("AZUL_ENV", "sandbox") != "sandbox":
+        raise HTTPException(
+            status_code=403,
+            detail="Tests deshabilitados fuera de sandbox",
+        )
 
     hold_order = _azul_order_number()
     post_order = _azul_order_number()
