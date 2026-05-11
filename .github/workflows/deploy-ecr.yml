@@ -51,13 +51,10 @@ jobs:
       # -----------------------------------------------------------------------
       # Calcular tags y decidir si se debe pushear
       # -----------------------------------------------------------------------
-      - name: Compute tags and push flag
+      - name: Compute push flag
         id: meta
         run: |
-          SHA_SHORT=$(git rev-parse --short HEAD)
-          BRANCH=$(echo "${GITHUB_REF_NAME}" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
-          TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
-          IMAGE_URI="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${SHA_SHORT}"
+          IMAGE_URI="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest"
 
           SHOULD_PUSH="false"
           if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
@@ -67,17 +64,12 @@ jobs:
             SHOULD_PUSH="true"
           fi
 
-          echo "sha_short=${SHA_SHORT}"     >> $GITHUB_OUTPUT
-          echo "branch=${BRANCH}"           >> $GITHUB_OUTPUT
-          echo "timestamp=${TIMESTAMP}"     >> $GITHUB_OUTPUT
           echo "image_uri=${IMAGE_URI}"     >> $GITHUB_OUTPUT
           echo "should_push=${SHOULD_PUSH}" >> $GITHUB_OUTPUT
 
-          echo "### Image tags" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${SHA_SHORT}\`"          >> $GITHUB_STEP_SUMMARY
-          echo "- \`${BRANCH}\`"             >> $GITHUB_STEP_SUMMARY
-          echo "- \`latest\` (solo en main)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Push:** ${SHOULD_PUSH}"  >> $GITHUB_STEP_SUMMARY
+          echo "### Image tag" >> $GITHUB_STEP_SUMMARY
+          echo "- \`latest\`"               >> $GITHUB_STEP_SUMMARY
+          echo "- **Push:** ${SHOULD_PUSH}" >> $GITHUB_STEP_SUMMARY
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -105,17 +97,12 @@ jobs:
           context: .
           file: ./Dockerfile
           push: ${{ steps.meta.outputs.should_push == 'true' }}
-          tags: |
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.sha_short }}
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.branch }}
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
           cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:buildcache
           cache-to: type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:buildcache,mode=max
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created=${{ steps.meta.outputs.timestamp }}
-            org.opencontainers.image.version=${{ steps.meta.outputs.sha_short }}
 
       # -----------------------------------------------------------------------
       - name: Job summary
@@ -127,8 +114,7 @@ jobs:
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Registry | \`${{ env.ECR_REGISTRY }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Repository | \`${{ env.ECR_REPOSITORY }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| SHA | \`${{ steps.meta.outputs.sha_short }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Branch | \`${{ steps.meta.outputs.branch }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ steps.meta.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Triggered by | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Actor | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ steps.meta.outputs.should_push }}" == "true" ]]; then
