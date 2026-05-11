@@ -1,0 +1,20 @@
+# pyrefly.toml — Azul Pagos Atlas
+# Configura pyrefly para usar el virtualenv local del proyecto.
+# Referencia: https://pyrefly.org/en/stable/configuration/
+
+[pyrefly]
+# Intérprete del virtualenv local — contiene todas las dependencias de requirements.txt
+python_interpreter = ".venv/Scripts/python.exe"
+
+# Raíz del proyecto para imports internos (app.*, routers.*)
+search_path = ["."]
+
+# Excluir directorios innecesarios
+project_excludes = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    "certs",
+    "infra",
+]

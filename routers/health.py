@@ -11,9 +11,15 @@ from app.infrastructure.azul_gateway import AzulPaymentGateway
 router = APIRouter(tags=["Health"])
 
 
+@router.get("/", summary="Root / health check (ALB fallback)")
+async def root():
+    """Fallback health check for ALB/ECS targets configured to hit /."""
+    return {"status": "ok", "service": "pago-azul"}
+
+
 @router.get("/health", summary="Health check")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "service": "pago-azul"}
 
 
 @router.post("/test/smoke", summary="Smoke test against Azul sandbox")
