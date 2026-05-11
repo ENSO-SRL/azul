@@ -93,6 +93,8 @@ jobs:
     environment: produccion
 
     # OIDC — sin AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+    # OIDC Provider: arn:aws:iam::293926505005:oidc-provider/token.actions.githubusercontent.com
+    # IAM Role:      arn:aws:iam::293926505005:role/GitHubActions-ECR-Deploy
     permissions:
       contents: read
       id-token: write   # requerido para OIDC
@@ -128,9 +130,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # -----------------------------------------------------------------------
-      # OIDC — asume el IAM Role sin credenciales estáticas (Req 8)
-      # Prerequisito: crear el role con infra/iam_github_oidc_trust.json
-      # y añadir AWS_ROLE_ARN como variable de entorno del environment "produccion"
+      # OIDC — asume el IAM Role sin credenciales estáticas
       # -----------------------------------------------------------------------
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
