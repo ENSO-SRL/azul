@@ -13,7 +13,7 @@
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:iamAtlas/*:*"
+          "token.actions.githubusercontent.com:sub": "repo:ENSO-SRL/azul:*"
         }
       }
     }
