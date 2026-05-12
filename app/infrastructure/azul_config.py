@@ -192,26 +192,55 @@ def _get_secret(name: str, region: str = _REGION) -> str:
     return resp["SecretString"]
 
 
+def _normalize_pem(content: str) -> str:
+    """Reconstruct a valid PEM string from a potentially space-flattened value.
+
+    ECS (and many secret managers) store multi-line env vars as a single line
+    with spaces replacing newlines, e.g.:
+
+        "-----BEGIN CERTIFICATE----- MIIH...base64... -----END CERTIFICATE-----"
+
+    OpenSSL / Python ssl requires proper newlines and 64-char base64 wrapping.
+    This function detects that case and rebuilds the PEM correctly.
+    """
+    import re as _re
+
+    content = content.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    # If it already has newlines after the header, it's fine
+    if "\n" in content:
+        return content
+
+    # Space-flattened PEM — reconstruct it
+    # Match: -----BEGIN ...----- <base64 with spaces> -----END ...-----
+    match = _re.match(
+        r"(-----BEGIN [^-]+-----)\s+(.*?)\s+(-----END [^-]+-----)",
+        content,
+        _re.DOTALL,
+    )
+    if not match:
+        # Can't parse — return as-is and let ssl give a clear error
+        return content
+
+    header, b64_body, footer = match.group(1), match.group(2), match.group(3)
+    # Remove all whitespace from the body, then wrap in 64-char lines
+    b64_clean = "".join(b64_body.split())
+    b64_lines = "\n".join(b64_clean[i:i+64] for i in range(0, len(b64_clean), 64))
+    return f"{header}\n{b64_lines}\n{footer}\n"
+
+
 def _write_temp_pem(content: str, suffix: str) -> str:
     """Write PEM content to a *stable*, fixed-name temp file and return its path.
 
-    Using a deterministic path (instead of a random NamedTemporaryFile) ensures
-    the file survives for the lifetime of the process even when the OS reclaims
-    anonymous temp files under memory pressure — which caused the
-    ``ssl.SSLError: [SSL] PEM lib`` crash when ``lru_cache`` returned a stale
-    path pointing to a deleted file.
+    Uses a deterministic path so the lru_cache always points to the same file
+    and it is never garbage-collected between requests (which caused the
+    ``ssl.SSLError: [SSL] PEM lib`` crash with random NamedTemporaryFile paths).
 
-    Windows note: PEM files MUST use LF (\n) — CRLF (\r\n) causes ssl.SSLError.
+    Also normalizes PEM that arrives space-flattened from ECS env vars.
     """
-    # Normalize line endings to LF (critical for ssl on all platforms)
-    content = content.replace("\r\n", "\n").replace("\r", "\n")
-
-    # Use a fixed, deterministic name so the cache always points to the same file.
-    # suffix is ".crt" or ".key" — produces /tmp/azul_cert.crt / /tmp/azul_cert.key
     stable_name = f"azul_cert{suffix}"
     path = Path(tempfile.gettempdir()) / stable_name
-
-    path.write_text(content, encoding="utf-8", newline="\n")  # atomic overwrite
+    path.write_text(_normalize_pem(content), encoding="utf-8", newline="\n")
     return str(path)
 
 
