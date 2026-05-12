@@ -24,12 +24,15 @@ Supports TWO modes:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # .env loader (no external dependency)
@@ -190,23 +193,26 @@ def _get_secret(name: str, region: str = _REGION) -> str:
 
 
 def _write_temp_pem(content: str, suffix: str) -> str:
-    """Write PEM content to a named temp file and return its path.
+    """Write PEM content to a *stable*, fixed-name temp file and return its path.
 
-    The file is intentionally *not* deleted on close so that httpx can
-    read it later.  It will be cleaned up when the OS reclaims temp space
-    or when the process exits.
+    Using a deterministic path (instead of a random NamedTemporaryFile) ensures
+    the file survives for the lifetime of the process even when the OS reclaims
+    anonymous temp files under memory pressure — which caused the
+    ``ssl.SSLError: [SSL] PEM lib`` crash when ``lru_cache`` returned a stale
+    path pointing to a deleted file.
 
     Windows note: PEM files MUST use LF (\n) — CRLF (\r\n) causes ssl.SSLError.
     """
-    # Normalize line endings to LF (critical for ssl on Windows)
+    # Normalize line endings to LF (critical for ssl on all platforms)
     content = content.replace("\r\n", "\n").replace("\r", "\n")
-    fd = tempfile.NamedTemporaryFile(
-        suffix=suffix, delete=False, mode="w", encoding="utf-8", newline="\n"
-    )
-    fd.write(content)
-    fd.flush()
-    fd.close()
-    return fd.name
+
+    # Use a fixed, deterministic name so the cache always points to the same file.
+    # suffix is ".crt" or ".key" — produces /tmp/azul_cert.crt / /tmp/azul_cert.key
+    stable_name = f"azul_cert{suffix}"
+    path = Path(tempfile.gettempdir()) / stable_name
+
+    path.write_text(content, encoding="utf-8", newline="\n")  # atomic overwrite
+    return str(path)
 
 
 # ---------------------------------------------------------------------------
@@ -307,12 +313,34 @@ def _load_from_env() -> AzulConfig:
 
 
 @lru_cache(maxsize=1)
-def load_azul_config() -> AzulConfig:
-    """Build an AzulConfig from local env or AWS depending on AZUL_LOCAL_MODE.
-
-    Results are cached for the lifetime of the process so that we don't
-    hit Secrets Manager on every request.
-    """
+def _load_azul_config_cached() -> AzulConfig:
+    """Internal cached loader — do not call directly. Use ``load_azul_config()``."""
     if _LOCAL_MODE:
         return _load_from_env()
     return _load_from_aws()
+
+
+def load_azul_config() -> AzulConfig:
+    """Return an AzulConfig, reloading from source if cached cert files are missing.
+
+    The ``lru_cache`` on the inner function avoids hitting Secrets Manager on
+    every request.  However, if the OS reclaims the temp cert files that were
+    written during a previous load (possible under memory pressure or after an
+    ECS task restart), this guard detects the missing files, busts the cache,
+    and re-fetches from AWS — preventing the ``ssl.SSLError: [SSL] PEM lib``
+    crash that occurs when httpx tries to load a path that no longer exists.
+    """
+    cfg = _load_azul_config_cached()
+
+    # Guard: if either cert file has vanished, bust the cache and reload.
+    if not Path(cfg.cert_path).is_file() or not Path(cfg.key_path).is_file():
+        logger.warning(
+            "[azul_config] Cert file(s) missing (cert_exists=%s, key_exists=%s) — "
+            "busting lru_cache and reloading from source.",
+            Path(cfg.cert_path).is_file(),
+            Path(cfg.key_path).is_file(),
+        )
+        _load_azul_config_cached.cache_clear()
+        cfg = _load_azul_config_cached()
+
+    return cfg
