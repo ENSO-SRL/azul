@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database import Base
@@ -18,6 +18,7 @@ def _utcnow() -> datetime:
 
 class PaymentModel(Base):
     __tablename__ = "payments"
+    __table_args__ = {"schema": "pagos"}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     order_id: Mapped[str] = mapped_column(String(100), default="")
@@ -33,7 +34,8 @@ class PaymentModel(Base):
     initiated_by: Mapped[str] = mapped_column(String(20), default="cardholder")
 
     # Idempotencia — UNIQUE permite buscar por clave y evitar cobros dobles
-    idempotency_key: Mapped[str] = mapped_column(String(128), default="", index=True)
+    # NULL = sin clave (PostgreSQL UNIQUE acepta múltiples NULL; empty string no)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
     # Azul response fields
     azul_order_id: Mapped[str] = mapped_column(String(50), default="")
@@ -69,6 +71,7 @@ class PaymentModel(Base):
 
 class SavedCardModel(Base):
     __tablename__ = "saved_cards"
+    __table_args__ = {"schema": "pagos"}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     customer_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
@@ -83,6 +86,7 @@ class SavedCardModel(Base):
 
 class RecurringPaymentModel(Base):
     __tablename__ = "recurring_payments"
+    __table_args__ = {"schema": "pagos"}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     customer_id: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -117,6 +121,7 @@ class ConsentModel(Base):
     """
 
     __tablename__ = "consent_records"
+    __table_args__ = {"schema": "pagos"}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     subscription_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
@@ -130,6 +135,7 @@ class ConsentModel(Base):
 
 class TransactionModel(Base):
     __tablename__ = "transactions"
+    __table_args__ = {"schema": "pagos"}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     payment_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
@@ -152,6 +158,7 @@ class ReconciliationReportModel(Base):
     """
 
     __tablename__ = "reconciliation_reports"
+    __table_args__ = {"schema": "pagos"}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     run_date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)  # YYYY-MM-DD
