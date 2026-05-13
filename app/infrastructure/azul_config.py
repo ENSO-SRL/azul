@@ -297,31 +297,31 @@ def _load_from_env() -> AzulConfig:
 
     # -----------------------------------------------------------------------
     # Certificate resolution — priority order:
-    #   1. AZUL_CERT_PEM / AZUL_KEY_PEM    (inline PEM — always normalized via _normalize_pem)
-    #   2. AZUL_CERT_PATH / AZUL_KEY_PATH  (physical files — fallback for dev without .env PEM)
+    #   1. AZUL_CERT_PATH / AZUL_KEY_PATH  (physical files — validated matching pair)
+    #   2. AZUL_CERT_PEM / AZUL_KEY_PEM    (inline PEM — ECS/Docker fallback)
+    # NOTE: The inline PEM in .env may differ from physical files.
+    #       Physical files are the authoritative cert+key pair from Luis Recio.
     # -----------------------------------------------------------------------
-    cert_pem = os.environ.get("AZUL_CERT_PEM", "").strip()
-    key_pem  = os.environ.get("AZUL_KEY_PEM",  "").strip()
+    import pathlib
+    cert_path = os.environ.get("AZUL_CERT_PATH", "").strip()
+    key_path  = os.environ.get("AZUL_KEY_PATH",  "").strip()
 
-    if cert_pem and key_pem:
-        # Inline PEM — normalize (handles space-flattened ECS env vars and CRLF)
-        cert_path = _write_temp_pem(cert_pem, ".crt")
-        key_path  = _write_temp_pem(key_pem, ".key")
+    if cert_path and key_path and pathlib.Path(cert_path).is_file() and pathlib.Path(key_path).is_file():
+        # Use physical files directly — they are the validated matching pair
+        pass
     else:
-        # Fall back to physical files (dev env without inline PEM configured)
-        import pathlib
-        cert_path = os.environ.get("AZUL_CERT_PATH", "").strip()
-        key_path  = os.environ.get("AZUL_KEY_PATH",  "").strip()
+        # Fall back to inline PEM (ECS / Docker — no physical files available)
+        cert_pem = os.environ.get("AZUL_CERT_PEM", "").strip()
+        key_pem  = os.environ.get("AZUL_KEY_PEM",  "").strip()
 
-        if cert_path and key_path and pathlib.Path(cert_path).is_file() and pathlib.Path(key_path).is_file():
-            # Re-normalize physical files through _normalize_pem to fix any encoding issues
-            cert_path = _write_temp_pem(pathlib.Path(cert_path).read_text(encoding="utf-8"), ".crt")
-            key_path  = _write_temp_pem(pathlib.Path(key_path).read_text(encoding="utf-8"),  ".key")
+        if cert_pem and key_pem:
+            cert_path = _write_temp_pem(cert_pem, ".crt")
+            key_path  = _write_temp_pem(key_pem, ".key")
         else:
             raise RuntimeError(
                 "Certificates not configured. Provide one of:\n"
-                "  • AZUL_CERT_PEM  + AZUL_KEY_PEM   (PEM content — preferred)\n"
-                "  • AZUL_CERT_PATH + AZUL_KEY_PATH  (file paths — local dev fallback)"
+                "  • AZUL_CERT_PATH + AZUL_KEY_PATH  (physical files — local dev)\n"
+                "  • AZUL_CERT_PEM  + AZUL_KEY_PEM   (inline PEM — ECS/Docker)"
             )
 
     env: Literal["sandbox", "production"] = (

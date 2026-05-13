@@ -295,7 +295,12 @@ async def _run_tests(run_id: str, base_url: str) -> AsyncGenerator[str, None]:
 
 @router.get("/stream/{run_id}")
 async def cert_stream(run_id: str, request: Request):
-    base_url = str(request.base_url).rstrip("/")
+    # Use APP_BASE_URL env var if set — behind ALB, request.base_url resolves to
+    # the internal container IP (http://172.31.x.x:8000/) which Azul ACS cannot
+    # reach, causing IsoCode=08 decline on the TermUrl validation.
+    _env_base = os.getenv("APP_BASE_URL", "").rstrip("/")
+    base_url = _env_base if _env_base else str(request.base_url).rstrip("/")
+
     if run_id not in _sessions:
         _sessions[run_id] = {
             "method_event": asyncio.Event(),
