@@ -230,6 +230,8 @@ class AzulPaymentGateway:
         cardholder_info: dict[str, str] | None = None,
         requestor_challenge_indicator: str = "01",
         include_method_notification_url: bool = True,
+        term_url: str | None = None,
+        method_notification_url: str | None = None,
     ) -> tuple[Payment, Transaction]:
         """Execute a CIT Sale with full card data (first-time charge).
 
@@ -279,14 +281,17 @@ class AzulPaymentGateway:
             payload["CardHolderInfo"] = {k: v for k, v in ch.items() if v}
 
         if payment.auth_mode == "3dsecure" and browser_info:
-            payload["ThreeDSAuth"] = {
-                "TermUrl": f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}",
-                "MethodNotificationUrl": (
-                    f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}"
-                    if include_method_notification_url else ""
-                ),
+            _term_url = term_url or f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}"
+            _method_url = (
+                method_notification_url
+                or f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}"
+            )
+            three_ds_auth: dict[str, Any] = {
+                "TermUrl": _term_url,
                 "RequestorChallengeIndicator": requestor_challenge_indicator,
+                "MethodNotificationUrl": _method_url,
             }
+            payload["ThreeDSAuth"] = three_ds_auth
             payload["BrowserInfo"] = {
                 "AcceptHeader": browser_info.get("accept_header", "text/html"),
                 "IPAddress": browser_info.get("ip_address", ""),
@@ -654,10 +659,14 @@ class AzulPaymentGateway:
             if the payment is approved, needs challenge, or was declined.
         """
         cfg = load_azul_config()
+        # NOTA: El endpoint processthreedsmethod en sandbox espera "AzulOrderId" (mixed case)
+        # mientras que la respuesta del Sale retorna "AZULOrderId" (mayúsculas).
+        # Enviamos ambas variantes para garantizar compatibilidad sandbox + producción.
         payload = {
             "Channel": "EC",
             "Store": cfg.merchant_id,
             "AZULOrderId": azul_order_id,
+            "AzulOrderId": azul_order_id,
             "MethodNotificationStatus": method_notification_status,
         }
 

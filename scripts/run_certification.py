@@ -38,10 +38,17 @@ from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGat
 
 EXPIRATION   = "203412"
 CVC          = "123"
-VISA_1       = "4260550061845872"       # Visa principal
-MASTERCARD_1 = "5424180279791732"       # Mastercard
-DISCOVER_1   = "6011000990099818"       # Discover
-VISA_3DS     = "4005520000000129"       # Visa que activa 3DS
+
+# Tarjetas splitit — email Luis Recio 23-abr-2026 (Auth1/Auth2: splitit)
+VISA_1       = "4260550061845872"   # Visa principal
+MASTERCARD_1 = "5424180279791732"   # Mastercard
+DISCOVER_1   = "6011000990099818"   # Discover
+VISA_2       = "4035874000424977"   # Visa secundaria
+MASTERCARD_2 = "5426064000424979"   # Mastercard secundaria
+VISA_3       = "4012000033330026"   # Visa terciaria
+
+# Tarjeta 3DS — email Luis Recio 23-abr-2026 (Auth1/Auth2: 3dsecure)
+VISA_3DS     = "4005520000000129"   # UNICA tarjeta 3DS provista por Azul
 
 MERCHANT_ID  = "39038540035"
 ECOMMERCE_URL = "https://www.iamatlas.do"
@@ -274,30 +281,123 @@ async def run_all() -> None:
                         "motivo": "DataVault no habilitado en sandbox"})
 
     # -----------------------------------------------------------------------
-    # TEST 7 — 3DS 2.0
+    # TEST 7 — 3DS 2.0 — Flujo completo (4 escenarios de certificación BPD)
+    #
+    # Unica tarjeta 3DS provista por Luis Recio (email 23-abr-2026):
+    #   4005520000000129  Auth1/Auth2: 3dsecure
     # -----------------------------------------------------------------------
-    print("\n[7/9] 3DS 2.0 (VISA_3DS)...")
+    print(f"\n[7/9] 3DS 2.0  ({_mask(VISA_3DS)})...")
     try:
         p3 = _payment(auth_mode="3dsecure")
         p3, _ = await gw.sale(p3, VISA_3DS, EXPIRATION, CVC, browser_info=BROWSER_INFO)
-        iso = p3.iso_code or ""
-        ok = iso in ("3D2METHOD", "3D", "00")
-        extra = {
-            "ThreeDSMethodForm": "presente" if p3.threeds_method_form else "vacío",
-            "resultado_esperado": "3D2METHOD o flujo 3DS activado",
-        }
-        r = _rec(results, "3DS 2.0", VISA_3DS, p3, extra)
-        _print("3DS 2.0", ok,
-               f"IsoCode={iso}  Estado={r['estado']}  AzulOrderId={r['AzulOrderId']}")
-        if not ok:
-            failures.append(f"3DS 2.0: IsoCode inesperado {iso} — {p3.response_message}")
+        iso1     = p3.iso_code or ""
+        azul_oid = p3.azul_order_id or ""
+
+        if iso1 == "00":
+            _rec(results, "3DS 2.0", VISA_3DS, p3, {"paso": "Aprobado directamente"})
+            _print("3DS 2.0", True, f"IsoCode=00  AzulOrderId={azul_oid}")
+
+        elif iso1 == "3D2METHOD":
+            method_form_present = bool(p3.threeds_method_form)
+            _print("  Paso 2 Sale 3D2METHOD", True,
+                   f"AzulOrderId={azul_oid}  MethodForm={'si' if method_form_present else 'no'}")
+            await asyncio.sleep(2)
+
+            try:
+                method_resp = await gw.process_three_ds_method(azul_oid, "RECEIVED")
+                iso2 = method_resp.get("IsoCode", "")
+                _print("  Paso 5 ProcessThreeDSMethod", True, f"IsoCode={iso2}")
+
+                if iso2 == "00":
+                    p3.iso_code           = iso2
+                    p3.response_code      = method_resp.get("ResponseCode", "")
+                    p3.response_message   = method_resp.get("ResponseMessage", "APROBADA")
+                    p3.azul_order_id      = method_resp.get("AZULOrderId") or method_resp.get("AzulOrderId") or azul_oid
+                    p3.authorization_code = method_resp.get("AuthorizationCode", "")
+                    p3.status             = PaymentStatus.APPROVED
+                    _rec(results, "3DS 2.0", VISA_3DS, p3, {
+                        "paso_final":              "ProcessThreeDSMethod -> Frictionless APPROVED",
+                        "MethodNotificationStatus": "RECEIVED",
+                        "ThreeDSMethodForm":        "si" if method_form_present else "no",
+                    })
+                    _print("  3DS 2.0", True,
+                           f"APROBADO sin friccion  Auth={p3.authorization_code}")
+
+                elif iso2 == "3D":
+                    redirect_url = method_resp.get("RedirectPostUrl", "")
+                    creq         = method_resp.get("CReq", "")
+                    print(f"\n  {'='*52}")
+                    print(f"  CHALLENGE REQUERIDO  AzulOrderId={azul_oid}")
+                    print(f"  POST a : {redirect_url[:70]}")
+                    print(f"  creq   : {creq[:60]}...")
+                    print(f"  -> Abre navegador, POST creq al RedirectPostUrl")
+                    print(f"  -> En Modirum selecciona: Yes")
+                    print(f"  -> Tu TermUrl recibe cRes -> llama ProcessThreeDSChallenge")
+                    print(f"  {'='*52}\n")
+                    _rec(results, "3DS 2.0 (Challenge)", VISA_3DS, p3, {
+                        "paso":           "Challenge requerido - intervencion manual",
+                        "iso_step5":      iso2,
+                        "AzulOrderId":    azul_oid,
+                        "RedirectPostUrl": redirect_url[:80],
+                        "estado":         "PENDING_3DS_CHALLENGE",
+                    })
+                    skipped.append(f"3DS Challenge: requiere navegador (AzulOrderId={azul_oid})")
+                else:
+                    failures.append(f"3DS ProcessThreeDSMethod: IsoCode={iso2}")
+                    _print("  Paso 5", False, f"IsoCode={iso2}")
+
+            except AzulIntegrationError as e:
+                failures.append(f"3DS ProcessThreeDSMethod ERROR: {e}")
+                _print("  Paso 5", False, str(e))
+
+        elif iso1 == "3D":
+            redirect_url = p3.threeds_redirect_url or ""
+            print(f"\n  {'='*52}")
+            print(f"  CHALLENGE DIRECTO  AzulOrderId={azul_oid}")
+            print(f"  RedirectUrl: {redirect_url[:70]}")
+            print(f"  -> Abre en navegador -> Yes -> recoge cRes -> ProcessThreeDSChallenge")
+            print(f"  {'='*52}\n")
+            _rec(results, "3DS 2.0 (Challenge directo)", VISA_3DS, p3, {
+                "paso":        "Challenge directo sin 3DSMethod",
+                "AzulOrderId": azul_oid,
+                "RedirectUrl": redirect_url[:80],
+                "estado":      "PENDING_3DS_CHALLENGE",
+            })
+            skipped.append(f"3DS Challenge directo: requiere navegador (AzulOrderId={azul_oid})")
+        else:
+            failures.append(f"3DS 2.0: IsoCode inesperado {iso1}")
+            _rec(results, "3DS 2.0", VISA_3DS, p3)
+            _print("3DS 2.0", False, f"IsoCode={iso1}  {p3.response_message}")
+
     except AzulIntegrationError as e:
-        skipped.append(f"3DS 2.0 — No habilitado en sandbox: {e}")
+        skipped.append(f"3DS 2.0 — {e}")
         _print("3DS 2.0", False, f"SKIPPED — {e}")
         results.append({"test": "3DS 2.0", "estado": "SKIPPED", "motivo": str(e)})
     except Exception as e:
         failures.append(f"3DS 2.0 ERROR: {e}")
         _print("3DS 2.0", False, str(e))
+
+    # -----------------------------------------------------------------------
+    # TESTS EXTRA — Tarjetas adicionales de Luis Recio (email 23-abr-2026)
+    # VISA_2 (4035874000424977), MASTERCARD_2 (5426064000424979), VISA_3 (4012000033330026)
+    # -----------------------------------------------------------------------
+    for extra_card, extra_name in [
+        (VISA_2,       "Sale Visa 2 (4035...4977)"),
+        (MASTERCARD_2, "Sale Mastercard 2 (5426...4979)"),
+        (VISA_3,       "Sale Visa 3 (4012...0026)"),
+    ]:
+        print(f"\n[Extra] {extra_name}...")
+        try:
+            pe, _ = await gw.sale(_payment(), extra_card, EXPIRATION, CVC)
+            ok = pe.status == PaymentStatus.APPROVED
+            re = _rec(results, extra_name, extra_card, pe)
+            _print(extra_name, ok,
+                   f"AzulOrderId={re['AzulOrderId']}  Auth={re['AuthorizationCode']}  IsoCode={re['iso_code']}")
+            if not ok:
+                failures.append(f"{extra_name}: {pe.response_message}")
+        except Exception as e:
+            failures.append(f"{extra_name} ERROR: {e}")
+            _print(extra_name, False, str(e))
 
     # -----------------------------------------------------------------------
     # TEST 8 — Void (si disponible)
