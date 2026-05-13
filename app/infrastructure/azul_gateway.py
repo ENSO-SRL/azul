@@ -166,7 +166,7 @@ class AzulPaymentGateway:
     # -- client factory ---------------------------------------------------
 
     @staticmethod
-    def _build_client(auth_mode: AuthMode = "splitit") -> httpx.AsyncClient:
+    def _build_client(auth_mode: Literal["3dsecure", "splitit"] = "splitit") -> httpx.AsyncClient:
         cfg = load_azul_config()
         auth1, auth2 = cfg.auth_splitit if auth_mode == "splitit" else cfg.auth_3dsecure
         return httpx.AsyncClient(
@@ -195,8 +195,8 @@ class AzulPaymentGateway:
             "Store": cfg.merchant_id,
             "PosInputMode": "E-Commerce",
             "TrxType": "Sale",
-            "Amount": str(int(payment.amount)),
-            "Itbis": str(int(payment.itbis)).zfill(3) if payment.itbis else "000",
+            "Amount": str(payment.amount),
+            "Itbis": str(payment.itbis).zfill(3) if payment.itbis else "000",
             "CurrencyPosCode": currency_pos,
             "Payments": "1",
             "Plan": "0",
@@ -603,7 +603,7 @@ class AzulPaymentGateway:
             "SaveToDataVault": "0",
         })
         if amount is not None:
-            payload["Amount"] = str(int(amount))
+            payload["Amount"] = str(amount)
 
         return await self._execute(payment, payload)
 
@@ -757,7 +757,8 @@ class AzulPaymentGateway:
         # PCI: mask PAN + CVC before storing in audit log
         masked_request_json = _mask_sensitive(request_json)
 
-        async with self._build_client(payment.auth_mode) as client:
+        _am: Literal["3dsecure", "splitit"] = "3dsecure" if payment.auth_mode == "3dsecure" else "splitit"
+        async with self._build_client(_am) as client:
             resp = await _post_with_failover(client, payload, cfg.env)
 
         # Only raise on HTTP-level failures, not on Azul business errors
@@ -771,7 +772,7 @@ class AzulPaymentGateway:
 
         iso_raw = data.get("IsoCode", "")
         rc_raw  = data.get("ResponseCode", "")
-        message = data.get("ResponseMessage", data.get("ErrorDescription", ""))
+        message: str = str(data.get("ResponseMessage") or data.get("ErrorDescription") or "")
 
         # ---------------------------------------------------------------
         # ResponseCode=Error means WE sent a bad request (auth, payload…)

@@ -109,7 +109,7 @@ def _rec(results: list, test: str, card_raw: str, p: Payment, extra: dict | None
         "response_message":    p.response_message or "",
         "AzulOrderId":         p.azul_order_id or "",
         "AuthorizationCode":   p.authorization_code or "",
-        "CustomOrderId":       str(p.id),
+        "CustomOrderId":       p.id,
         "ECommerceUrl":        ECOMMERCE_URL,
         "estado":              p.status.value if p.status else "UNKNOWN",
         "DataVaultToken":      p.data_vault_token or "",

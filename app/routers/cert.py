@@ -164,7 +164,7 @@ async def _run_tests(run_id: str, base_url: str) -> AsyncGenerator[str, None]:
     for name, method in [("MIT STANDING_ORDER", "mit"), ("CIT STANDING_ORDER", "cit")]:
         async for ev in emit("test_start", name=name, card="DataVaultToken"):
             yield ev
-        if datavault_token:
+        if len(datavault_token) > 0:
             try:
                 if method == "mit":
                     p, _ = await gw.sale_mit(_payment(), datavault_token)
