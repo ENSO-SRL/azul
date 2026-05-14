@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
 
@@ -102,7 +103,7 @@ def _record(evidence: list, test_name: str, card_masked: str, p: Payment) -> Non
 
 
 @pytest.fixture(scope="session")
-def evidence() -> list:
+def evidence() -> Generator[list, None, None]:
     """Accumulates transaction evidence; writes JSON file at session end."""
     records: list = []
     yield records

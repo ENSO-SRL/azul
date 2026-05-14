@@ -43,14 +43,14 @@ EXPIRATION = "203412"
 CVC = "123"
 MERCHANT_ID = "39038540035"
 BROWSER_INFO = {
-    "accept_header": "text/html,application/xhtml+xml",
-    "ip_address": "127.0.0.1",
-    "language": "es-DO",
+    "accept_header": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+    "ip_address": "148.0.65.75",    # IP pública del servidor ECS en AWS
+    "language": "en-US",
     "color_depth": "24",
     "screen_width": "1920",
     "screen_height": "1080",
     "time_zone": "240",
-    "user_agent": "Mozilla/5.0 Atlas-Cert/1.0",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "javascript_enabled": "true",
 }
 

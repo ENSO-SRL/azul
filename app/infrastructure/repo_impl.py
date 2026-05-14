@@ -83,7 +83,7 @@ def _model_to_payment(m: PaymentModel) -> Payment:
         status=PaymentStatus(m.status),
         auth_mode=m.auth_mode,
         initiated_by=m.initiated_by,  # type: ignore[arg-type]
-        idempotency_key=m.idempotency_key,
+        idempotency_key=m.idempotency_key or "",
         azul_order_id=m.azul_order_id,
         iso_code=m.iso_code,
         response_code=m.response_code,

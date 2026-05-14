@@ -29,18 +29,19 @@ try:
     ctx_permisivo.check_hostname = False
     ctx_permisivo.verify_mode = ssl.CERT_NONE
 
-    conn = ssl.create_connection((ECS_HOST, 443), timeout=8)
+    conn = socket.create_connection((ECS_HOST, 443), timeout=8)
     sock = ctx_permisivo.wrap_socket(conn, server_hostname=ECS_HOST)
     cert = sock.getpeercert()
     der_cert = sock.getpeercert(binary_form=True)
     sock.close()
 
-    # Parsear campos del cert
-    subject = dict(x[0] for x in cert.get("subject", []))
-    issuer  = dict(x[0] for x in cert.get("issuer", []))
-    not_before = cert.get("notBefore", "N/A")
-    not_after  = cert.get("notAfter",  "N/A")
-    san        = cert.get("subjectAltName", [])
+    # Parsear campos del cert (None when CERT_NONE is set — use empty dict as fallback)
+    cert_safe  = cert or {}
+    subject = dict(x[0] for x in cert_safe.get("subject", []))
+    issuer  = dict(x[0] for x in cert_safe.get("issuer", []))
+    not_before = cert_safe.get("notBefore", "N/A")
+    not_after  = cert_safe.get("notAfter",  "N/A")
+    san        = cert_safe.get("subjectAltName", [])
 
     print_header(f"  Subject CN   : {subject.get('commonName', 'N/A')}", "green")
     print_header(f"  Issuer O     : {issuer.get('organizationName', 'N/A')}", "green")

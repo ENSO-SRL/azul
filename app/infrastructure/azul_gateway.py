@@ -757,6 +757,16 @@ class AzulPaymentGateway:
         # PCI: mask PAN + CVC before storing in audit log
         masked_request_json = _mask_sensitive(request_json)
 
+        # ── FULL REQUEST LOG (PAN ya enmascarado) ─────────────────────────
+        logger.warning(
+            "[AZUL REQUEST] ▶ TrxType=%s | auth_mode=%s | amount=%s | env=%s\n%s",
+            payload.get("TrxType", "?"),
+            payment.auth_mode,
+            payload.get("Amount", "?"),
+            cfg.env,
+            masked_request_json,
+        )
+
         _am: Literal["3dsecure", "splitit"] = "3dsecure" if payment.auth_mode == "3dsecure" else "splitit"
         async with self._build_client(_am) as client:
             resp = await _post_with_failover(client, payload, cfg.env)
@@ -765,9 +775,19 @@ class AzulPaymentGateway:
         resp.raise_for_status()
 
         response_json = resp.text
+        # ── FULL RESPONSE LOG ─────────────────────────────────────────────
         try:
-            data: dict[str, Any] = resp.json()
+            _resp_preview = resp.json()
+            logger.warning(
+                "[AZUL RESPONSE] ◀ HTTP=%s | IsoCode=%s | ResponseCode=%s\n%s",
+                resp.status_code,
+                _resp_preview.get("IsoCode", "?"),
+                _resp_preview.get("ResponseCode", "?"),
+                response_json[:2000],
+            )
+            data: dict[str, Any] = _resp_preview
         except Exception:
+            logger.warning("[AZUL RESPONSE] ◀ HTTP=%s | body no parseable: %s", resp.status_code, response_json[:500])
             data = {}
 
         iso_raw = data.get("IsoCode", "")

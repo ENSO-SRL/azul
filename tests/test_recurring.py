@@ -133,8 +133,8 @@ async def test_create_subscription_happy_path():
     assert recurring.next_charge_at is not None
 
     # Repos should have persisted both the payment and the subscription
-    svc._payments.save.assert_awaited_once()
-    svc._recurring.save.assert_awaited_once()
+    svc._payments.save.assert_awaited_once()   # type: ignore[attr-defined]
+    svc._recurring.save.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -160,7 +160,7 @@ async def test_create_subscription_declined_does_not_save():
     )
 
     # No subscription should be saved on decline
-    svc._recurring.save.assert_not_awaited()
+    svc._recurring.save.assert_not_awaited()  # type: ignore[attr-defined]
     assert initial_payment.status == PaymentStatus.DECLINED
 
 
@@ -182,7 +182,7 @@ async def test_charge_mit_happy_path():
 
     mit.assert_awaited_once()
     assert result.status == PaymentStatus.APPROVED
-    svc._recurring.update.assert_awaited_once()
+    svc._recurring.update.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -249,7 +249,7 @@ async def test_pause_subscription():
 
     result = await svc.pause_subscription("sub-test-id")
 
-    svc._recurring.pause.assert_awaited_once_with("sub-test-id")
+    svc._recurring.pause.assert_awaited_once_with("sub-test-id")  # type: ignore[attr-defined]
     assert result.status == SubscriptionStatus.PAUSED
 
 
@@ -264,7 +264,7 @@ async def test_resume_subscription():
 
     result = await svc.resume_subscription("sub-test-id")
 
-    svc._recurring.resume.assert_awaited_once_with("sub-test-id")
+    svc._recurring.resume.assert_awaited_once_with("sub-test-id")  # type: ignore[attr-defined]
     assert result.status == SubscriptionStatus.ACTIVE
     assert result.failed_attempts == 0
 
@@ -286,7 +286,7 @@ async def test_record_consent_persists_evidence():
         ip_address="10.0.0.1",
         user_agent="Mozilla/5.0",
     )
-    svc._consents.save.return_value = consent
+    svc._consents.save.return_value = consent  # type: ignore[attr-defined]
 
     result = await svc.record_consent(
         subscription_id="sub-test-id",
@@ -296,7 +296,7 @@ async def test_record_consent_persists_evidence():
         user_agent="Mozilla/5.0",
     )
 
-    svc._consents.save.assert_awaited_once()
+    svc._consents.save.assert_awaited_once()  # type: ignore[attr-defined]
     assert result.subscription_id == "sub-test-id"
     assert result.ip_address == "10.0.0.1"
     assert "30 días" in result.consent_text
