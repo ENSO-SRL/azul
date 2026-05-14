@@ -217,17 +217,39 @@ async def _run_tests(run_id: str, base_url: str) -> AsyncGenerator[str, None]:
             async for ev in emit("3ds_method", html=method_html, azul_order_id=azul_oid):
                 yield ev
 
-            # Esperar notificación del ACS (máx 8s)
+            # Esperar notificación del ACS (máx 20s)
+            # Modirum sandbox puede tardar hasta ~15s en hacer POST al MethodNotificationUrl.
+            # Si el timeout es demasiado corto se envía EXPECTED_BUT_NOT_RECEIVED
+            # y el ACS devuelve IsoCode 08 (Unavailable) aunque el Method sí fue ejecutado.
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "[CERT DEBUG] Esperando POST del ACS a /cert/notify/%s (timeout=20s) ...", run_id
+            )
             try:
-                await asyncio.wait_for(sess["method_event"].wait(), timeout=8)
+                await asyncio.wait_for(sess["method_event"].wait(), timeout=20)
+                _log.getLogger(__name__).warning(
+                    "[CERT DEBUG] method_event recibido OK — enviando RECEIVED"
+                )
             except asyncio.TimeoutError:
-                pass
+                _log.getLogger(__name__).warning(
+                    "[CERT DEBUG] method_event TIMEOUT — el ACS no hizo POST a /cert/notify/%s "
+                    "— enviando EXPECTED_BUT_NOT_RECEIVED (causa posible: red/firewall de Modirum)",
+                    run_id,
+                )
 
             method_resp = await gw.process_three_ds_method(
                 azul_oid,
                 "RECEIVED" if sess.get("method_received") else "EXPECTED_BUT_NOT_RECEIVED",
             )
             iso2 = method_resp.get("IsoCode", "")
+            # [DEBUG CERT] Confirma el IsoCode y URL usada en ProcessThreeDSMethod
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "[CERT DEBUG] ProcessThreeDSMethod iso2=%s method_url=%s resp_keys=%s",
+                iso2,
+                os.getenv("AZUL_3DS_METHOD_URL_SANDBOX", "(default)"),
+                list(method_resp.keys()),
+            )
 
             if iso2 == "00":
                 row = {"test": "3DS 2.0", "tarjeta": _mask(CARDS["visa_3ds"]),
@@ -255,8 +277,20 @@ async def _run_tests(run_id: str, base_url: str) -> AsyncGenerator[str, None]:
                     results.append({"test": "3DS 2.0", "estado": "TIMEOUT"})
                 else:
                     cres = sess.get("cres", "")
+                    # [DEBUG CERT] Confirma la URL que se usará en ProcessThreeDSChallenge
+                    import logging as _log
+                    _log.getLogger(__name__).warning(
+                        "[CERT DEBUG] ProcessThreeDSChallenge challenge_url=%s azul_order_id=%s cres_len=%d",
+                        os.getenv("AZUL_3DS_CHALLENGE_URL_SANDBOX", "(default)"),
+                        azul_oid,
+                        len(cres),
+                    )
                     chall_resp = await gw.process_three_ds_challenge(azul_oid, cres)
                     iso3 = chall_resp.get("IsoCode", "")
+                    _log.getLogger(__name__).warning(
+                        "[CERT DEBUG] ProcessThreeDSChallenge iso3=%s resp_keys=%s",
+                        iso3, list(chall_resp.keys()),
+                    )
                     ok3 = iso3 == "00"
                     row = {"test": "3DS 2.0 (Challenge)", "tarjeta": _mask(CARDS["visa_3ds"]),
                            "iso_code": iso3, "auth": chall_resp.get("AuthorizationCode", ""),
