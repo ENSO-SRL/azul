@@ -81,25 +81,61 @@ def _sse(event: str, data: dict) -> str:
 # ACS callbacks
 # ---------------------------------------------------------------------------
 
+import logging as _log
+_cert_log = _log.getLogger("cert.callbacks")
+
+
+@router.get("/ping", include_in_schema=False)
+async def cert_ping(request: Request):
+    """Endpoint de diagnóstico — confirma que el servidor es alcanzable."""
+    client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
+    _cert_log.warning("[CERT PING] GET /cert/ping desde IP=%s headers=%s", client_ip, dict(request.headers))
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"status": "reachable", "your_ip": client_ip, "server_time": datetime.now().isoformat()})
+
+
 @router.post("/notify/{run_id}", include_in_schema=False)
 async def cert_method_notify(run_id: str, request: Request):
     """ACS POSTs here after Method iframe completes."""
+    client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
+    body_raw = await request.body()
+    _cert_log.warning(
+        "[CERT NOTIFY] POST /cert/notify/%s recibido — IP=%s body_len=%d body_preview=%s session_exists=%s",
+        run_id, client_ip, len(body_raw), body_raw[:200], run_id in _sessions,
+    )
     sess = _sessions.get(run_id)
     if sess:
         sess["method_received"] = True
         sess["method_event"].set()
+        _cert_log.warning("[CERT NOTIFY] method_event SET para run_id=%s", run_id)
+    else:
+        _cert_log.error(
+            "[CERT NOTIFY] run_id=%s NO encontrado en _sessions (sesiones activas: %s)",
+            run_id, list(_sessions.keys()),
+        )
     return HTMLResponse("<html><body>OK</body></html>")
 
 
 @router.post("/term/{run_id}", include_in_schema=False)
 async def cert_term(run_id: str, request: Request):
     """ACS POSTs cRes here after challenge completes."""
+    client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
     body = await request.form()
-    cres = body.get("cRes") or body.get("cres") or ""
+    cres = str(body.get("cRes") or body.get("cres") or "")
+    _cert_log.warning(
+        "[CERT TERM] POST /cert/term/%s recibido — IP=%s cres_len=%d session_exists=%s",
+        run_id, client_ip, len(cres), run_id in _sessions,
+    )
     sess = _sessions.get(run_id)
     if sess:
         sess["cres"] = cres
         sess["cres_event"].set()
+        _cert_log.warning("[CERT TERM] cres_event SET para run_id=%s", run_id)
+    else:
+        _cert_log.error(
+            "[CERT TERM] run_id=%s NO encontrado en _sessions (sesiones activas: %s)",
+            run_id, list(_sessions.keys()),
+        )
     return HTMLResponse(
         "<html><body style='font-family:sans-serif;background:#0f172a;color:#22d3ee;"
         "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
