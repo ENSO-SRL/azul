@@ -694,9 +694,9 @@ function startCert() {
   document.getElementById('method-iframe-container').innerHTML = '<p style="color:#4a7fa5;font-size:13px">Esperando activación del Method iframe...</p>';
   document.getElementById('challenge-section').style.display = 'none';
   document.getElementById('challenge-iframe-container').style.display = 'none';
-  document.getElementById('btnChallenge').textContent = '\uD83D\uDD13 Cargar Challenge del ACS';
+  document.getElementById('btnChallenge').innerHTML = '&#128275; Cargar Challenge del ACS';
   document.getElementById('btnChallenge').disabled = false;
-  document.getElementById('btnChallengeTab').textContent = '\u2197 Abrir en nueva pestaña';
+  document.getElementById('btnChallengeTab').innerHTML = '&#8599; Abrir en nueva pesta\u00f1a';
   document.getElementById('btnChallengeTab').disabled = false;
   buildGrid();
   document.getElementById('btnStart').disabled = true;
