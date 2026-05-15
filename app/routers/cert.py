@@ -497,7 +497,7 @@ body{font-family:'Inter',sans-serif;background:#070d1a;color:#e2e8f0;min-height:
 .test-detail{font-size:12px;margin-top:6px;font-family:'JetBrains Mono',monospace;color:#7ba3cc;word-break:break-all}
 .test-detail.ok{color:#10b981}
 .test-detail.fail{color:#f87171}
-.test-detail.skip{color:#fbbf24}
+.test-detail.skip{color:#fbbf24} 
 .section-3ds{background:#0a1829;border:1px solid #1a3351;border-radius:12px;padding:24px;margin-bottom:24px;display:none}
 .section-3ds.visible{display:block}
 .section-3ds h3{font-size:16px;font-weight:600;color:#38bdf8;margin-bottom:16px;display:flex;align-items:center;gap:8px}
