@@ -505,6 +505,8 @@ body{font-family:'Inter',sans-serif;background:#070d1a;color:#e2e8f0;min-height:
 #challenge-section{display:none;text-align:center;padding:20px}
 #challenge-section h4{color:#fbbf24;margin-bottom:12px}
 #challenge-section p{color:#94a3b8;font-size:13px;margin-bottom:16px}
+#challenge-iframe-container{display:none;margin-top:16px;border:2px solid #0099ff;border-radius:10px;overflow:hidden;background:#fff}
+#challenge-iframe{display:block;width:100%;height:520px;border:none;background:#fff}
 .results-table{width:100%;border-collapse:collapse;margin-bottom:24px;display:none}
 .results-table.visible{display:table}
 .results-table th{background:#0d1f38;padding:12px 16px;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#4a7fa5;border-bottom:1px solid #1a3351}
@@ -554,11 +556,17 @@ body{font-family:'Inter',sans-serif;background:#070d1a;color:#e2e8f0;min-height:
       <p style="color:#4a7fa5;font-size:13px">Esperando activación del Method iframe...</p>
     </div>
     <div id="challenge-section">
-      <h4>&#9888; Challenge Requerido</h4>
-      <p>El banco solicita autenticación adicional. Haz clic para completarla en la página del ACS.</p>
-      <button class="btn btn-success" id="btnChallenge" onclick="openChallenge()">Completar Challenge en ACS</button>
-      <p style="margin-top:12px;font-size:12px;color:#4a7fa5">Se abrirá una ventana. Selecciona <strong style="color:#fbbf24">Yes</strong> y ciérrala.</p>
-      <form id="challengeForm" method="POST" target="acs_window" style="display:none"></form>
+      <h4>&#9888; Challenge Requerido — Autenticación del Banco</h4>
+      <p>El banco requiere verificación adicional. El formulario de autenticación aparecerá abajo. Selecciona <strong style="color:#fbbf24">Yes</strong> cuando se muestre.</p>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:8px">
+        <button class="btn btn-success" id="btnChallenge" onclick="openChallenge()">&#128275; Cargar Challenge del ACS</button>
+        <button class="btn" style="background:#1e3a5f;color:#7ba3cc;border:1px solid #2563eb" id="btnChallengeTab" onclick="openChallengeTab()" title="Abrir en nueva pestaña si el iframe no carga">&#8599; Abrir en nueva pestaña</button>
+      </div>
+      <p style="font-size:11px;color:#4a7fa5">Si el iframe no carga, usa "Abrir en nueva pestaña" y completa el challenge allí.</p>
+      <div id="challenge-iframe-container">
+        <iframe id="challenge-iframe" name="acs_challenge_frame" scrolling="yes" allow="payment"></iframe>
+      </div>
+      <form id="challengeForm" method="POST" target="acs_challenge_frame" style="display:none"></form>
     </div>
   </div>
 
@@ -756,12 +764,36 @@ function startCert() {
 }
 
 function openChallenge() {
-  if(!challengeUrl || !challengeCreq) return;
-  window.open('about:blank', 'acs_window', 'width=600,height=700,scrollbars=yes');
+  if(!challengeUrl || !challengeCreq) { alert('Challenge URL o CReq no disponibles. Reinicia la certificación.'); return; }
+  // Mostrar el iframe container
+  const container = document.getElementById('challenge-iframe-container');
+  container.style.display = 'block';
+  // Preparar el form para enviar CReq al iframe
   const form = document.getElementById('challengeForm');
+  form.action = challengeUrl;
+  form.innerHTML = `<input type="hidden" name="creq" value="${challengeCreq}">`;
+  form.target = 'acs_challenge_frame';
   form.submit();
-  document.getElementById('btnChallenge').textContent = '⏳ Esperando respuesta del ACS...';
+  document.getElementById('btnChallenge').textContent = '⏳ Autenticando con el ACS...';
   document.getElementById('btnChallenge').disabled = true;
+  document.getElementById('status-text').textContent = '3DS: Completa el challenge en el formulario de abajo';
+}
+
+function openChallengeTab() {
+  if(!challengeUrl || !challengeCreq) { alert('Challenge URL o CReq no disponibles. Reinicia la certificación.'); return; }
+  // Fallback: crear form dinámico y abrir en nueva pestaña
+  const win = window.open('', '_blank');
+  if(!win) { alert('El navegador bloqueó la ventana. Usa el botón "Cargar Challenge del ACS" en su lugar.'); return; }
+  win.document.write(`<!DOCTYPE html><html><body>
+    <form id="f" method="POST" action="${challengeUrl}">
+      <input type="hidden" name="creq" value="${challengeCreq}">
+    </form>
+    <script>document.getElementById('f').submit();<\/script>
+  </body></html>`);
+  win.document.close();
+  document.getElementById('btnChallengeTab').textContent = '⏳ Challenge abierto en pestaña...';
+  document.getElementById('btnChallengeTab').disabled = true;
+  document.getElementById('status-text').textContent = '3DS: Completa el challenge en la nueva pestaña';
 }
 
 buildGrid();
