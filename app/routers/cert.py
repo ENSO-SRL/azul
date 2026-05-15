@@ -297,32 +297,48 @@ async def _run_tests(run_id: str, base_url: str) -> AsyncGenerator[str, None]:
                     yield ev
 
             elif iso2 == "3D":
-                # Azul sandbox puede variar el casing de CReq / RedirectPostUrl
-                # — búsqueda case-insensitive para mayor robustez
-                resp_lower = {k.lower(): v for k, v in method_resp.items()}
+                import json as _json
+                import logging as _log
+                # Azul devuelve los datos del challenge dentro de ThreeDSChallenge (sub-objeto)
+                # NO como campos raíz CReq/RedirectPostUrl
+                raw_challenge = method_resp.get("ThreeDSChallenge") or {}
+                if isinstance(raw_challenge, str):
+                    try:
+                        raw_challenge = _json.loads(raw_challenge)
+                    except Exception:
+                        raw_challenge = {}
+
+                # Búsqueda case-insensitive en el sub-objeto y en raíz como fallback
+                chall_lower = {k.lower(): v for k, v in raw_challenge.items()} if raw_challenge else {}
+                resp_lower  = {k.lower(): v for k, v in method_resp.items()}
+
                 creq = (
-                    method_resp.get("CReq")
-                    or method_resp.get("creq")
-                    or method_resp.get("CREQ")
+                    raw_challenge.get("CReq")
+                    or raw_challenge.get("creq")
+                    or chall_lower.get("creq")
+                    or method_resp.get("CReq")
                     or resp_lower.get("creq", "")
-                )
+                ) or ""
+
                 redirect = (
-                    method_resp.get("RedirectPostUrl")
-                    or method_resp.get("redirectposturl")
-                    or method_resp.get("RedirectUrl")
+                    raw_challenge.get("RedirectPostUrl")
+                    or raw_challenge.get("RedirectUrl")
+                    or chall_lower.get("redirectposturl")
+                    or chall_lower.get("redirecturl")
+                    or method_resp.get("RedirectPostUrl")
                     or resp_lower.get("redirectposturl")
                     or resp_lower.get("redirecturl", "")
-                )
-                import logging as _log
+                ) or ""
+
                 _log.getLogger(__name__).warning(
-                    "[CERT DEBUG] 3D Challenge — creq_len=%d redirect=%s resp_keys=%s full_resp=%s",
-                    len(creq or ""), redirect, list(method_resp.keys()), str(method_resp)[:500]
+                    "[CERT DEBUG] 3D — ThreeDSChallenge=%s creq_len=%d redirect=%s full_resp=%s",
+                    str(raw_challenge)[:300], len(creq), redirect, str(method_resp)[:500]
                 )
                 async for ev in emit("3ds_challenge",
                                      creq=creq, redirect_url=redirect,
                                      azul_order_id=azul_oid, run_id=run_id,
                                      debug_keys=list(method_resp.keys()),
-                                     debug_resp=str(method_resp)[:300]):
+                                     debug_challenge=str(raw_challenge)[:400]):
                     yield ev
                 # Esperar cRes del ACS (máx 3 min)
                 try:
