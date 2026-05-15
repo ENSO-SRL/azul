@@ -297,11 +297,32 @@ async def _run_tests(run_id: str, base_url: str) -> AsyncGenerator[str, None]:
                     yield ev
 
             elif iso2 == "3D":
-                creq = method_resp.get("CReq", "")
-                redirect = method_resp.get("RedirectPostUrl", "")
+                # Azul sandbox puede variar el casing de CReq / RedirectPostUrl
+                # — búsqueda case-insensitive para mayor robustez
+                resp_lower = {k.lower(): v for k, v in method_resp.items()}
+                creq = (
+                    method_resp.get("CReq")
+                    or method_resp.get("creq")
+                    or method_resp.get("CREQ")
+                    or resp_lower.get("creq", "")
+                )
+                redirect = (
+                    method_resp.get("RedirectPostUrl")
+                    or method_resp.get("redirectposturl")
+                    or method_resp.get("RedirectUrl")
+                    or resp_lower.get("redirectposturl")
+                    or resp_lower.get("redirecturl", "")
+                )
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "[CERT DEBUG] 3D Challenge — creq_len=%d redirect=%s resp_keys=%s full_resp=%s",
+                    len(creq or ""), redirect, list(method_resp.keys()), str(method_resp)[:500]
+                )
                 async for ev in emit("3ds_challenge",
                                      creq=creq, redirect_url=redirect,
-                                     azul_order_id=azul_oid, run_id=run_id):
+                                     azul_order_id=azul_oid, run_id=run_id,
+                                     debug_keys=list(method_resp.keys()),
+                                     debug_resp=str(method_resp)[:300]):
                     yield ev
                 # Esperar cRes del ACS (máx 3 min)
                 try:
@@ -666,6 +687,17 @@ function startCert() {
   runId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36);
   totalTests = TESTS_ORDER.length;
   doneTests = 0;
+  // Reset challenge state from any previous run
+  challengeCreq = '';
+  challengeUrl = '';
+  document.getElementById('section-3ds').className = 'section-3ds';
+  document.getElementById('method-iframe-container').innerHTML = '<p style="color:#4a7fa5;font-size:13px">Esperando activación del Method iframe...</p>';
+  document.getElementById('challenge-section').style.display = 'none';
+  document.getElementById('challenge-iframe-container').style.display = 'none';
+  document.getElementById('btnChallenge').textContent = '\uD83D\uDD13 Cargar Challenge del ACS';
+  document.getElementById('btnChallenge').disabled = false;
+  document.getElementById('btnChallengeTab').textContent = '\u2197 Abrir en nueva pestaña';
+  document.getElementById('btnChallengeTab').disabled = false;
   buildGrid();
   document.getElementById('btnStart').disabled = true;
   document.getElementById('progress').className = 'progress visible';
@@ -731,13 +763,25 @@ function startCert() {
     const d = JSON.parse(e.data);
     challengeCreq = d.creq || '';
     challengeUrl = d.redirect_url || '';
+    console.log('[3DS Challenge] creq_len=' + challengeCreq.length + ' redirect=' + challengeUrl);
+    console.log('[3DS Challenge] debug_keys=' + (d.debug_keys||[]).join(','));
+    console.log('[3DS Challenge] debug_resp=' + (d.debug_resp||''));
     const cs = document.getElementById('challenge-section');
     cs.style.display = 'block';
-    document.getElementById('status-text').textContent = '3DS: Esperando challenge del ACS...';
-    if(challengeCreq && challengeUrl) {
+    document.getElementById('status-text').textContent = '3DS: Challenge listo — haz clic en "Cargar Challenge del ACS"';
+    if(!challengeCreq || !challengeUrl) {
+      // Mostrar debug info en la UI
+      cs.querySelector('p').innerHTML = `<strong style="color:#f87171">Datos de challenge incompletos recibidos del ACS.</strong><br>
+        CReq: ${challengeCreq ? challengeCreq.length + ' chars' : '<em>vacío</em>'} &nbsp;|
+        URL: ${challengeUrl || '<em>vacía</em>'}<br>
+        Llaves respuesta: ${(d.debug_keys||[]).join(', ')}<br>
+        <small style="color:#4a7fa5">${d.debug_resp||''}</small>`;
+    } else {
+      // Pre-cargar el form
       const form = document.getElementById('challengeForm');
       form.action = challengeUrl;
       form.innerHTML = `<input type="hidden" name="creq" value="${challengeCreq}">`;
+      form.target = 'acs_challenge_frame';
     }
   });
 
