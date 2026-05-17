@@ -118,19 +118,72 @@ async def cert_method_notify(run_id: str, request: Request):
 
 @router.post("/term/{run_id}", include_in_schema=False)
 async def cert_term(run_id: str, request: Request):
-    """ACS POSTs cRes here after challenge completes."""
+    """ACS POSTs cRes here after challenge completes.
+
+    The Modirum sandbox may use any casing for the field (cRes / CRes / CRES).
+    We read the raw body first to handle form-encoded and JSON payloads, and
+    log the full bytes for diagnostics.
+    """
     client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
-    body = await request.form()
-    cres = str(body.get("cRes") or body.get("cres") or "")
+    content_type = request.headers.get("content-type", "")
+
+    # Read raw bytes once — Starlette caches body so this is safe before form()
+    raw_bytes = await request.body()
     _cert_log.warning(
-        "[CERT TERM] POST /cert/term/%s recibido — IP=%s cres_len=%d session_exists=%s",
-        run_id, client_ip, len(cres), run_id in _sessions,
+        "[CERT TERM] POST /cert/term/%s — IP=%s content_type=%r body_len=%d body_preview=%r session_exists=%s",
+        run_id, client_ip, content_type, len(raw_bytes), raw_bytes[:400], run_id in _sessions,
     )
+
+    cres = ""
+
+    # Strategy 1: form-encoded (application/x-www-form-urlencoded or multipart)
+    try:
+        form_data = await request.form()
+        for key in ("cRes", "CRes", "cres", "CRES", "Cres"):
+            val = form_data.get(key, "")
+            if val:
+                cres = str(val)
+                _cert_log.warning("[CERT TERM] cRes encontrado via form key=%r len=%d", key, len(cres))
+                break
+    except Exception as form_exc:
+        _cert_log.warning("[CERT TERM] form parse falló: %s", form_exc)
+
+    # Strategy 2: JSON body (fallback if form parse missed it)
+    if not cres:
+        try:
+            import json as _json
+            body_json = _json.loads(raw_bytes)
+            if isinstance(body_json, dict):
+                for key in ("cRes", "CRes", "cres", "CRES", "Cres"):
+                    val = body_json.get(key, "")
+                    if val:
+                        cres = str(val)
+                        _cert_log.warning("[CERT TERM] cRes encontrado via JSON key=%r len=%d", key, len(cres))
+                        break
+        except Exception:
+            pass  # Not JSON — expected for form-encoded payloads
+
+    # Strategy 3: raw URL-encoded parse (handles edge-case encoders)
+    if not cres and raw_bytes:
+        try:
+            from urllib.parse import parse_qs
+            qs = parse_qs(raw_bytes.decode("latin-1", errors="replace"), keep_blank_values=False)
+            for key in ("cRes", "CRes", "cres", "CRES", "Cres"):
+                vals = qs.get(key, [])
+                if vals:
+                    cres = vals[0]
+                    _cert_log.warning("[CERT TERM] cRes encontrado via raw url-parse key=%r len=%d", key, len(cres))
+                    break
+        except Exception as qs_exc:
+            _cert_log.warning("[CERT TERM] raw url-parse falló: %s", qs_exc)
+
+    _cert_log.warning("[CERT TERM] cres_final_len=%d run_id=%s", len(cres), run_id)
+
     sess = _sessions.get(run_id)
     if sess:
         sess["cres"] = cres
         sess["cres_event"].set()
-        _cert_log.warning("[CERT TERM] cres_event SET para run_id=%s", run_id)
+        _cert_log.warning("[CERT TERM] cres_event SET run_id=%s cres_empty=%s", run_id, not cres)
     else:
         _cert_log.error(
             "[CERT TERM] run_id=%s NO encontrado en _sessions (sesiones activas: %s)",
@@ -139,7 +192,7 @@ async def cert_term(run_id: str, request: Request):
     return HTMLResponse(
         "<html><body style='font-family:sans-serif;background:#0f172a;color:#22d3ee;"
         "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
-        "<div style='text-align:center'><h2>✅ Autenticación completada</h2>"
+        "<div style='text-align:center'><h2>&#x2705; Autenticaci\u00f3n completada</h2>"
         "<p>Puedes cerrar esta ventana.</p></div></body></html>"
     )
 
@@ -350,7 +403,6 @@ async def _run_tests(run_id: str, base_url: str) -> AsyncGenerator[str, None]:
                     results.append({"test": "3DS 2.0", "estado": "TIMEOUT"})
                 else:
                     cres = sess.get("cres", "")
-                    # [DEBUG CERT] Confirma la URL que se usará en ProcessThreeDSChallenge
                     import logging as _log
                     _log.getLogger(__name__).warning(
                         "[CERT DEBUG] ProcessThreeDSChallenge challenge_url=%s azul_order_id=%s cres_len=%d",
@@ -358,20 +410,38 @@ async def _run_tests(run_id: str, base_url: str) -> AsyncGenerator[str, None]:
                         azul_oid,
                         len(cres),
                     )
-                    chall_resp = await gw.process_three_ds_challenge(azul_oid, cres)
-                    iso3 = chall_resp.get("IsoCode", "")
-                    _log.getLogger(__name__).warning(
-                        "[CERT DEBUG] ProcessThreeDSChallenge iso3=%s resp_keys=%s",
-                        iso3, list(chall_resp.keys()),
-                    )
-                    ok3 = iso3 == "00"
-                    row = {"test": "3DS 2.0 (Challenge)", "tarjeta": _mask(CARDS["visa_3ds"]),
-                           "iso_code": iso3, "auth": chall_resp.get("AuthorizationCode", ""),
-                           "azul_order_id": azul_oid,
-                           "estado": "APPROVED" if ok3 else "DECLINED"}
-                    results.append(row)
-                    async for ev in emit("test_done", ok=ok3, **row):
-                        yield ev
+                    # Guard: Azul rejects ProcessThreeDSChallenge if cRes is missing.
+                    # This happens when the Modirum ACS sandbox completes without posting
+                    # a cRes value.  In that case we surface a clear error and the user
+                    # should retry — it's a sandbox ACS limitation, not a code bug.
+                    if not cres:
+                        _log.getLogger(__name__).error(
+                            "[CERT DEBUG] cRes vacío después del challenge — "
+                            "el ACS no envió cRes en el POST a TermUrl. "
+                            "azul_order_id=%s", azul_oid,
+                        )
+                        async for ev in emit(
+                            "test_fail", name="3DS 2.0",
+                            error="ACS no envió cRes al TermUrl. "
+                                  "Abre el challenge en nueva pestaña y selecciona 'Yes'. "
+                                  f"(AzulOrderId={azul_oid})",
+                        ):
+                            yield ev
+                    else:
+                        chall_resp = await gw.process_three_ds_challenge(azul_oid, cres)
+                        iso3 = chall_resp.get("IsoCode", "")
+                        _log.getLogger(__name__).warning(
+                            "[CERT DEBUG] ProcessThreeDSChallenge iso3=%s resp_keys=%s",
+                            iso3, list(chall_resp.keys()),
+                        )
+                        ok3 = iso3 == "00"
+                        row = {"test": "3DS 2.0 (Challenge)", "tarjeta": _mask(CARDS["visa_3ds"]),
+                               "iso_code": iso3, "auth": chall_resp.get("AuthorizationCode", ""),
+                               "azul_order_id": azul_oid,
+                               "estado": "APPROVED" if ok3 else "DECLINED"}
+                        results.append(row)
+                        async for ev in emit("test_done", ok=ok3, **row):
+                            yield ev
             else:
                 async for ev in emit("test_fail", name="3DS 2.0",
                                     error=f"ProcessThreeDSMethod IsoCode={iso2}"):
