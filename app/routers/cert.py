@@ -181,9 +181,18 @@ async def cert_term(run_id: str, request: Request):
 
     sess = _sessions.get(run_id)
     if sess:
-        sess["cres"] = cres
-        sess["cres_event"].set()
-        _cert_log.warning("[CERT TERM] cres_event SET run_id=%s cres_empty=%s", run_id, not cres)
+        if cres:
+            sess["cres"] = cres
+            sess["cres_event"].set()
+            _cert_log.warning("[CERT TERM] cres_event SET run_id=%s cres_empty=False", run_id)
+        else:
+            # cRes vacío — el ACS hizo POST sin datos útiles.
+            # No disparamos el event para no desbloquear el flujo con basura.
+            _cert_log.error(
+                "[CERT TERM] cRes VACÍO — POST ignorado para run_id=%s "
+                "(el ACS envió POST sin cRes; el flujo sigue esperando)",
+                run_id,
+            )
     else:
         _cert_log.error(
             "[CERT TERM] run_id=%s NO encontrado en _sessions (sesiones activas: %s)",
@@ -404,28 +413,55 @@ async def _run_tests(run_id: str, base_url: str) -> AsyncGenerator[str, None]:
                 else:
                     cres = sess.get("cres", "")
                     import logging as _log
+                    import json as _json
+                    import base64 as _b64
+
                     _log.getLogger(__name__).warning(
                         "[CERT DEBUG] ProcessThreeDSChallenge challenge_url=%s azul_order_id=%s cres_len=%d",
                         os.getenv("AZUL_3DS_CHALLENGE_URL_SANDBOX", "(default)"),
-                        azul_oid,
-                        len(cres),
+                        azul_oid, len(cres),
                     )
-                    # Guard: Azul rejects ProcessThreeDSChallenge if cRes is missing.
-                    # This happens when the Modirum ACS sandbox completes without posting
-                    # a cRes value.  In that case we surface a clear error and the user
-                    # should retry — it's a sandbox ACS limitation, not a code bug.
+
+                    # Validate cRes: decode base64 and check for ACS error payloads.
+                    # Modirum sandbox sends errorCode=402 "Transaction timed-out" when the
+                    # challenge window expires before the user completes it.  Passing that
+                    # to Azul produces VALIDATION_ERROR:PaRes or CRes mandatory.
+                    cres_error: str = ""
                     if not cres:
-                        _log.getLogger(__name__).error(
-                            "[CERT DEBUG] cRes vacío después del challenge — "
-                            "el ACS no envió cRes en el POST a TermUrl. "
-                            "azul_order_id=%s", azul_oid,
+                        cres_error = (
+                            "ACS no envió cRes al TermUrl. "
+                            "Abre el challenge en nueva pestaña y selecciona 'Yes' rápidamente. "
+                            f"(AzulOrderId={azul_oid})"
                         )
-                        async for ev in emit(
-                            "test_fail", name="3DS 2.0",
-                            error="ACS no envió cRes al TermUrl. "
-                                  "Abre el challenge en nueva pestaña y selecciona 'Yes'. "
-                                  f"(AzulOrderId={azul_oid})",
-                        ):
+                    else:
+                        try:
+                            # URL-safe base64 → pad if needed
+                            padded = cres + "=" * (-len(cres) % 4)
+                            cres_decoded = _json.loads(_b64.urlsafe_b64decode(padded).decode("utf-8", errors="replace"))
+                            err_code = cres_decoded.get("errorCode", "")
+                            err_desc = cres_decoded.get("errorDescription", "")
+                            trans_status = cres_decoded.get("transStatus", "")
+                            _log.getLogger(__name__).warning(
+                                "[CERT DEBUG] cRes decoded: messageType=%s transStatus=%s errorCode=%s",
+                                cres_decoded.get("messageType", "?"), trans_status, err_code,
+                            )
+                            if err_code:
+                                cres_error = (
+                                    f"ACS error en challenge: [{err_code}] {err_desc}. "
+                                    f"Reinicia la certificación y selecciona 'Yes' en menos de 60 s. "
+                                    f"(AzulOrderId={azul_oid})"
+                                )
+                        except Exception as _dec_exc:
+                            _log.getLogger(__name__).warning(
+                                "[CERT DEBUG] No se pudo decodificar cRes (no es base64/JSON): %s", _dec_exc
+                            )
+                            # Non-decodable cRes — send as-is; let Azul decide
+
+                    if cres_error:
+                        _log.getLogger(__name__).error(
+                            "[CERT DEBUG] cRes inválido/error — %s", cres_error,
+                        )
+                        async for ev in emit("test_fail", name="3DS 2.0", error=cres_error):
                             yield ev
                     else:
                         chall_resp = await gw.process_three_ds_challenge(azul_oid, cres)
@@ -663,8 +699,9 @@ body{font-family:'Inter',sans-serif;background:#070d1a;color:#e2e8f0;min-height:
       <p style="color:#4a7fa5;font-size:13px">Esperando activación del Method iframe...</p>
     </div>
     <div id="challenge-section">
-      <h4>&#9888; Challenge Requerido — Autenticación del Banco</h4>
-      <p>El banco requiere verificación adicional. El formulario de autenticación aparecerá abajo. Selecciona <strong style="color:#fbbf24">Yes</strong> cuando se muestre.</p>
+      <h4>&#9888; Challenge Requerido — Haz clic en <strong style="color:#fbbf24">Yes</strong> dentro de 60 segundos</h4>
+      <p>El banco requiere verificación. Haz clic en un botón <strong>solo una vez</strong>, luego selecciona <strong style="color:#fbbf24">Yes</strong> rápidamente. Si el ACS tarda, el challenge expira.</p>
+      <div id="challenge-countdown" style="display:none;font-size:22px;font-weight:700;color:#f87171;margin:8px 0"></div>
       <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:8px">
         <button class="btn btn-success" id="btnChallenge" onclick="openChallenge()">&#128275; Cargar Challenge del ACS</button>
         <button class="btn" style="background:#1e3a5f;color:#7ba3cc;border:1px solid #2563eb" id="btnChallengeTab" onclick="openChallengeTab()" title="Abrir en nueva pestaña si el iframe no carga">&#8599; Abrir en nueva pestaña</button>
@@ -893,8 +930,31 @@ function startCert() {
   };
 }
 
+function startChallengeCountdown() {
+  const el = document.getElementById('challenge-countdown');
+  el.style.display = 'block';
+  let secs = 60;
+  el.textContent = '⏱ ' + secs + 's para completar el challenge';
+  const t = setInterval(() => {
+    secs--;
+    if (secs <= 0) {
+      clearInterval(t);
+      el.textContent = '❌ Tiempo agotado — si el ACS expiró, reinicia la certificación';
+      el.style.color = '#f87171';
+    } else {
+      el.textContent = '⏱ ' + secs + 's para completar el challenge';
+      el.style.color = secs <= 15 ? '#f87171' : '#fbbf24';
+    }
+  }, 1000);
+}
+
 function openChallenge() {
   if(!challengeUrl || !challengeCreq) { alert('Challenge URL o CReq no disponibles. Reinicia la certificación.'); return; }
+  // Deshabilitar AMBOS botones para evitar doble envío de CReq al ACS
+  document.getElementById('btnChallenge').textContent = '⏳ Autenticando con el ACS...';
+  document.getElementById('btnChallenge').disabled = true;
+  document.getElementById('btnChallengeTab').disabled = true;
+  startChallengeCountdown();
   // Mostrar el iframe container
   const container = document.getElementById('challenge-iframe-container');
   container.style.display = 'block';
@@ -904,13 +964,16 @@ function openChallenge() {
   form.innerHTML = `<input type="hidden" name="creq" value="${challengeCreq}">`;
   form.target = 'acs_challenge_frame';
   form.submit();
-  document.getElementById('btnChallenge').textContent = '⏳ Autenticando con el ACS...';
-  document.getElementById('btnChallenge').disabled = true;
   document.getElementById('status-text').textContent = '3DS: Completa el challenge en el formulario de abajo';
 }
 
 function openChallengeTab() {
   if(!challengeUrl || !challengeCreq) { alert('Challenge URL o CReq no disponibles. Reinicia la certificación.'); return; }
+  // Deshabilitar AMBOS botones para evitar doble envío de CReq al ACS
+  document.getElementById('btnChallengeTab').textContent = '⏳ Challenge abierto en pestaña...';
+  document.getElementById('btnChallengeTab').disabled = true;
+  document.getElementById('btnChallenge').disabled = true;
+  startChallengeCountdown();
   // Fallback: crear form dinámico y abrir en nueva pestaña
   const win = window.open('', '_blank');
   if(!win) { alert('El navegador bloqueó la ventana. Usa el botón "Cargar Challenge del ACS" en su lugar.'); return; }
@@ -921,8 +984,6 @@ function openChallengeTab() {
     <script>document.getElementById('f').submit();<\/script>
   </body></html>`);
   win.document.close();
-  document.getElementById('btnChallengeTab').textContent = '⏳ Challenge abierto en pestaña...';
-  document.getElementById('btnChallengeTab').disabled = true;
   document.getElementById('status-text').textContent = '3DS: Completa el challenge en la nueva pestaña';
 }
 
