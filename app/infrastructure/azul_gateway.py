@@ -698,7 +698,7 @@ class AzulPaymentGateway:
         cfg = load_azul_config()
         # NOTE: Azul sandbox validates "AzulOrderId" (mixed case) while
         # production may use "AZULOrderId" (all caps).  Send both to ensure
-        # compatibility across environments — same pattern as process_three_ds_method.
+        # compatibility  across environments — same pattern as process_three_ds_method.
         payload = {
             "Channel": "EC",
             "Store": cfg.merchant_id,
