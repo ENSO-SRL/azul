@@ -186,7 +186,7 @@ async def cert_term(run_id: str, request: Request):
             sess["cres_event"].set()
             _cert_log.warning("[CERT TERM] cres_event SET run_id=%s cres_empty=False", run_id)
         else:
-            # cRes vacío — el ACS hizo POST sin datos útiles.
+            # cRes vacío — el ACS hizo  POST sin datos útiles.
             # No disparamos el event para no desbloquear el flujo con basura.
             _cert_log.error(
                 "[CERT TERM] cRes VACÍO — POST ignorado para run_id=%s "
