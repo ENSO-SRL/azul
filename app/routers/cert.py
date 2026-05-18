@@ -67,6 +67,24 @@ def _payment(auth_mode: str = "splitit") -> Payment:
     )
 
 
+def _payment_3ds() -> Payment:
+    """Payment object para el test 3DS 2.0.
+
+    La tarjeta 4005520000000129 en el sandbox de Azul retorna IsoCode=51
+    (INSUF FONDOS) con montos altos.  Los ejemplos en el PDF técnico de Azul
+    usan importes pequeños (~RD$10) que sí dan IsoCode=00.
+    """
+    return Payment(
+        amount=1000,           # RD$10.00
+        itbis=0,
+        payment_type=PaymentType.SALE,
+        auth_mode="3dsecure",
+        cardholder_name="Atlas Cert Test",
+        cardholder_email="cert@iamatlas.do",
+        currency_code=Currency.DOP,
+    )
+
+
 def _mask(pan: str) -> str:
     if len(pan) < 10:
         return pan
@@ -288,7 +306,7 @@ async def _run_tests(run_id: str, base_url: str) -> AsyncGenerator[str, None]:
     async for ev in emit("test_start", name="3DS 2.0", card=_mask(CARDS["visa_3ds"])):
         yield ev
     try:
-        p3 = _payment(auth_mode="3dsecure")
+        p3 = _payment_3ds()
         term_url = f"{base_url}/cert/term/{run_id}"
         method_url = f"{base_url}/cert/notify/{run_id}"
         p3, _ = await gw.sale(
