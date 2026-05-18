@@ -340,8 +340,28 @@ async def _run_tests(run_id: str, base_url: str) -> AsyncGenerator[str, None]:
                 "RECEIVED" if sess.get("method_received") else "EXPECTED_BUT_NOT_RECEIVED",
             )
             iso2 = method_resp.get("IsoCode", "")
-            # [DEBUG CERT] Confirma el IsoCode y URL usada en ProcessThreeDSMethod
             import logging as _log
+
+            # CRITICAL: ProcessThreeDSMethod may return a NEW AzulOrderId.
+            # The sandbox requires this updated ID for ProcessThreeDSChallenge.
+            # Using the Sale's original AzulOrderId causes VALIDATION_ERROR.
+            method_azul_oid = (
+                method_resp.get("AzulOrderId")
+                or method_resp.get("AZULOrderId")
+                or ""
+            )
+            if method_azul_oid and method_azul_oid != azul_oid:
+                _log.getLogger(__name__).warning(
+                    "[CERT DEBUG] AzulOrderId updated by ProcessThreeDSMethod: %s -> %s",
+                    azul_oid, method_azul_oid,
+                )
+                azul_oid = method_azul_oid
+            else:
+                _log.getLogger(__name__).warning(
+                    "[CERT DEBUG] AzulOrderId unchanged after ProcessThreeDSMethod: %s",
+                    azul_oid,
+                )
+
             _log.getLogger(__name__).warning(
                 "[CERT DEBUG] ProcessThreeDSMethod iso2=%s method_url=%s resp_keys=%s",
                 iso2,
