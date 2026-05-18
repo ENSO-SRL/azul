@@ -698,7 +698,7 @@ class AzulPaymentGateway:
         cfg = load_azul_config()
         # NOTE: Azul sandbox validates "AzulOrderId" (mixed case) while
         # production may use "AZULOrderId" (all caps).  Send both to ensure
-        # compatibility  across environments — same pattern as process_three_ds_method.
+        # compatibility across environments — same pattern as process_three_ds_method.
         payload = {
             "Channel": "EC",
             "Store": cfg.merchant_id,
@@ -706,13 +706,29 @@ class AzulPaymentGateway:
             "AzulOrderId": azul_order_id,
         }
         if cres:
-            payload["cRes"] = cres
+            # Azul docs use "CRes" (capital C, capital R) for the challenge response field.
+            payload["CRes"] = cres
+            payload["cRes"] = cres  # also send lowercase variant as fallback
+
+        logger.warning(
+            "[3DS CHALLENGE REQUEST] azul_order_id=%s cres_len=%d payload_keys=%s",
+            azul_order_id, len(cres), list(payload.keys()),
+        )
 
         async with self._build_client("3dsecure") as client:
             resp = await client.post(cfg.threeds_challenge_url, json=payload)
 
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
+
+        logger.warning(
+            "[3DS CHALLENGE RESPONSE] status=%s ResponseCode=%s IsoCode=%s ErrorDescription=%s full=%s",
+            resp.status_code,
+            data.get("ResponseCode", "?"),
+            data.get("IsoCode", "?"),
+            data.get("ErrorDescription", ""),
+            str(data)[:500],
+        )
 
         if data.get("ResponseCode") == AzulResponseCode.ERROR:
             err = data.get("ErrorDescription", data.get("ResponseMessage", "Unknown error"))
