@@ -37,8 +37,8 @@ try:
 
     # Parsear campos del cert (None when CERT_NONE is set — use empty dict as fallback)
     cert_safe  = cert or {}
-    subject = dict(x[0] for x in cert_safe.get("subject", []))
-    issuer  = dict(x[0] for x in cert_safe.get("issuer", []))
+    subject = {k: v for k, v in (x[0] for x in cert_safe.get("subject", []))}
+    issuer  = {k: v for k, v in (x[0] for x in cert_safe.get("issuer", []))}
     not_before = cert_safe.get("notBefore", "N/A")
     not_after  = cert_safe.get("notAfter",  "N/A")
     san        = cert_safe.get("subjectAltName", [])
@@ -48,7 +48,7 @@ try:
     print_header(f"  Issuer CN    : {issuer.get('commonName', 'N/A')}", "green")
     print_header(f"  Valido Desde : {not_before}", "green")
     print_header(f"  Valido Hasta : {not_after}", "green")
-    san_list = [v for t, v in san if t == "DNS"]
+    san_list: list[str] = [str(v) for t, v in san if t == "DNS"]
     print_header(f"  SANs (DNS)   : {', '.join(san_list[:5])}", "green")
 
 except Exception as e:
