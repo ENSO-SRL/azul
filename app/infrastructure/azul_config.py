@@ -38,11 +38,23 @@ logger = logging.getLogger(__name__)
 # .env loader (no external dependency)
 # ---------------------------------------------------------------------------
 
+# Keys that the .env file must always win over stale OS-level env vars.
+# Using setdefault for everything else preserves Docker/ECS injection.
+_DOTENV_OVERRIDE_KEYS = frozenset({
+    "AZUL_ENV",
+    "AZUL_LOCAL_MODE",
+})
+
+
 def _load_dotenv() -> None:
     """Load a .env file from project root into os.environ (if it exists).
 
     Supports multi-line PEM values: a value that starts with
     '-----BEGIN' continues until a line starting with '-----END'.
+
+    Critical keys listed in ``_DOTENV_OVERRIDE_KEYS`` are set with direct
+    assignment so the .env file always wins over stale OS-level values.
+    All other keys use ``setdefault`` to preserve Docker / ECS injection.
     """
     env_path = Path(__file__).resolve().parents[2] / ".env"
     if not env_path.is_file():
@@ -74,7 +86,12 @@ def _load_dotenv() -> None:
                     break
             value = "\n".join(pem_lines)
 
-        os.environ.setdefault(key, value)
+        # Critical keys: .env always wins (override stale OS env).
+        # All others: only set if not already present (preserve ECS injection).
+        if key in _DOTENV_OVERRIDE_KEYS:
+            os.environ[key] = value
+        else:
+            os.environ.setdefault(key, value)
 
 _load_dotenv()
 
@@ -352,24 +369,44 @@ def _load_azul_config_cached() -> AzulConfig:
 
 
 def load_azul_config() -> AzulConfig:
-    """Return an AzulConfig, reloading from source if cached cert files are missing.
+    """Return an AzulConfig, reloading from source when stale.
 
     The ``lru_cache`` on the inner function avoids hitting Secrets Manager on
-    every request.  However, if the OS reclaims the temp cert files that were
-    written during a previous load (possible under memory pressure or after an
-    ECS task restart), this guard detects the missing files, busts the cache,
-    and re-fetches from AWS — preventing the ``ssl.SSLError: [SSL] PEM lib``
-    crash that occurs when httpx tries to load a path that no longer exists.
+    every request.  This wrapper busts the cache in two scenarios:
+
+    1. **Missing cert files** — OS reclaimed the temp files written during a
+       previous load (memory pressure or ECS task restart).  Prevents the
+       ``ssl.SSLError: [SSL] PEM lib`` crash.
+
+    2. **Env mismatch** — The cached ``cfg.env`` no longer matches the current
+       ``AZUL_ENV`` env var (e.g. .env was changed from sandbox→production
+       without a full process restart).  Prevents ``VALIDATION_ERROR:ForceNo3DS``
+       from being sent to the production gateway because the cache still held
+       a sandbox config that included ``ForceNo3DS: "1"``.
     """
     cfg = _load_azul_config_cached()
 
-    # Guard: if either cert file has vanished, bust the cache and reload.
-    if not Path(cfg.cert_path).is_file() or not Path(cfg.key_path).is_file():
+    # Guard 1: bust cache if cert files have vanished.
+    certs_ok = Path(cfg.cert_path).is_file() and Path(cfg.key_path).is_file()
+    if not certs_ok:
         logger.warning(
             "[azul_config] Cert file(s) missing (cert_exists=%s, key_exists=%s) — "
             "busting lru_cache and reloading from source.",
             Path(cfg.cert_path).is_file(),
             Path(cfg.key_path).is_file(),
+        )
+        _load_azul_config_cached.cache_clear()
+        cfg = _load_azul_config_cached()
+        return cfg
+
+    # Guard 2: bust cache if AZUL_ENV changed since the cache was populated.
+    # This catches the "server started on sandbox, .env later set to production"
+    # scenario that caused VALIDATION_ERROR:ForceNo3DS on the production endpoint.
+    current_env = "production" if os.environ.get("AZUL_ENV", "sandbox") == "production" else "sandbox"
+    if cfg.env != current_env:
+        logger.warning(
+            "[azul_config] Cached env=%r but AZUL_ENV=%r — busting lru_cache.",
+            cfg.env, current_env,
         )
         _load_azul_config_cached.cache_clear()
         cfg = _load_azul_config_cached()

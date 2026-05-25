@@ -30,6 +30,7 @@ from routers.tests import router as tests_router
 from routers.threeds import router as threeds_router
 from routers.tokens import router as tokens_router
 from app.routers.cert import router as cert_router
+from routers.checkout import router as checkout_router
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +115,11 @@ async def audit_log_middleware(request: Request, call_next) -> Response:
 # Routers — health y 3DS callbacks son públicos; el resto requiere API Key
 # ---------------------------------------------------------------------------
 
-# Públicos: health checks, callbacks ACS y dashboard de certificación
+# Públicos: health checks, callbacks ACS, dashboard y formulario de pago
 app.include_router(health_router)
 app.include_router(threeds_router)          # /method-notification y /term son callbacks del ACS
 app.include_router(cert_router)             # /cert  — dashboard interactivo de certificación
+app.include_router(checkout_router)         # /checkout — formulario de pago para pruebas
 
 # Protegidos con X-API-Key
 _auth = [Depends(require_api_key)]

@@ -55,6 +55,34 @@ logger = logging.getLogger(__name__)
 
 AuthMode = Literal["splitit", "3dsecure"]
 
+
+def _force_no3ds(cfg, value: str = "1") -> dict:
+    """ForceNo3DS solo se envía en sandbox — producción lo rechaza con VALIDATION_ERROR."""
+    if cfg.env == "production":
+        return {}
+    return {"ForceNo3DS": value}
+
+
+def _datavault_fields(save_token: bool, token: str = "") -> dict:
+    """Build DataVault-related payload fields.
+
+    Only include these fields when actually needed:
+      - save_token=True  → SaveToDataVault: "1", DataVaultToken: ""
+      - token provided   → SaveToDataVault: "0", DataVaultToken: <token>
+      - neither          → omit both fields entirely
+
+    Some production merchant accounts don't have DataVault enabled.
+    Sending SaveToDataVault=0 / DataVaultToken="" on those accounts
+    triggers a "DataVault not enabled" error from the gateway even
+    though we're not requesting tokenisation.
+    """
+    if save_token:
+        return {"SaveToDataVault": "1", "DataVaultToken": ""}
+    if token:
+        return {"SaveToDataVault": "0", "DataVaultToken": token}
+    # Not saving and no token — omit DataVault fields completely
+    return {}
+
 # ---------------------------------------------------------------------------
 # Azul API URLs — taken from azul_config (env var overridable)
 # ---------------------------------------------------------------------------
@@ -246,13 +274,13 @@ class AzulPaymentGateway:
         """
         cfg = load_azul_config()
         payload = self._base_payload(payment)
+        force = _force_no3ds(cfg, "1" if payment.auth_mode == "splitit" else "0")
         payload.update({
             "CardNumber": card_number,
             "Expiration": expiration,
             "CVC": cvc,
-            "SaveToDataVault": "1" if save_token else "0",
-            "DataVaultToken": "",
-            "ForceNo3DS": "1" if payment.auth_mode == "splitit" else "0",
+            **_datavault_fields(save_token),
+            **force,
             "cardholderInitiatedIndicator": "1",
         })
 
@@ -327,13 +355,13 @@ class AzulPaymentGateway:
         """
         cfg = load_azul_config()
         payload = self._base_payload(payment)
+        force = _force_no3ds(cfg, "1" if payment.auth_mode == "splitit" else "0")
         payload.update({
             "CardNumber": card_number,
             "Expiration": expiration,
             "CVC": cvc,
-            "SaveToDataVault": "1",
-            "DataVaultToken": "",
-            "ForceNo3DS": "1" if payment.auth_mode == "splitit" else "0",
+            **_datavault_fields(True),  # recurring CIT always saves token
+            **force,
             "cardholderInitiatedIndicator": "STANDING_ORDER",
         })
 
@@ -373,13 +401,13 @@ class AzulPaymentGateway:
         Uses ``cardholderInitiatedIndicator: "STANDING_ORDER"`` per Azul v1.2.
         """
         payload = self._base_payload(payment)
+        cfg = load_azul_config()
         payload.update({
             "CardNumber": "",
             "Expiration": "",
             "CVC": "",
-            "SaveToDataVault": "0",
-            "DataVaultToken": token,
-            "ForceNo3DS": "1",
+            **_datavault_fields(False, token),
+            **_force_no3ds(cfg),
             "cardholderInitiatedIndicator": "STANDING_ORDER",
         })
 
@@ -394,14 +422,14 @@ class AzulPaymentGateway:
     ) -> tuple[Payment, Transaction]:
         """Execute a pre-authorization (TrxType Hold)."""
         payload = self._base_payload(payment)
+        cfg = load_azul_config()
         payload.update({
             "TrxType": "Hold",
             "CardNumber": card_number,
             "Expiration": expiration,
             "CVC": cvc,
-            "SaveToDataVault": "0",
-            "DataVaultToken": "",
-            "ForceNo3DS": "1",
+            **_datavault_fields(False),
+            **_force_no3ds(cfg),
             "cardholderInitiatedIndicator": "1",
         })
         return await self._execute(payment, payload)
@@ -422,8 +450,7 @@ class AzulPaymentGateway:
             "CardNumber": card_number,
             "Expiration": expiration,
             "CVC": cvc,
-            "SaveToDataVault": "0",
-            "DataVaultToken": "",
+            **_datavault_fields(False),
         })
         return await self._execute(payment, payload)
 
@@ -440,13 +467,13 @@ class AzulPaymentGateway:
         Uses ``merchantInitiatedIndicator: "STANDING_ORDER"`` per Azul v1.2.
         """
         payload = self._base_payload(payment)
+        cfg = load_azul_config()
         payload.update({
             "CardNumber": "",
             "Expiration": "",
             "CVC": "",
-            "SaveToDataVault": "0",
-            "DataVaultToken": token,
-            "ForceNo3DS": "1",
+            **_datavault_fields(False, token),
+            **_force_no3ds(cfg),
             "merchantInitiatedIndicator": "STANDING_ORDER",
         })
 
@@ -628,9 +655,8 @@ class AzulPaymentGateway:
             "CustomerServicePhone": "",
             "ECommerceUrl": "https://atlas.do",
             "CustomOrderId": "smoke-test",
-            "DataVaultToken": "",
-            "SaveToDataVault": "0",
-            "ForceNo3DS": "1",
+            **_datavault_fields(False),
+            **_force_no3ds(cfg),
             "CardHolderName": "Test User",
             "CardHolderEmail": "test@atlas.do",
             "cardholderInitiatedIndicator": "1",
