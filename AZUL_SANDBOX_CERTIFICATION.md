@@ -178,7 +178,7 @@ zad.duran@gmail.com
 | **Despliegue** | AWS ECS (Express Mode) — `us-east-2` |
 | **Contenedor** | ECR `293926505005.dkr.ecr.us-east-2.amazonaws.com/pago-azul` |
 | **mTLS** | Certificado BPD-SCA (4096 bits) — `iamatlas.local` |
-| **DB** | SQLite (sandbox) → PostgreSQL RDS (producción) |
+| **DB** | PostgreSQL RDS (AWS `us-east-2`) |
 | **CI/CD** | GitHub Actions → ECR automático en cada push |
 | **URL servicio** | `pa-f36fc80df7394359a19c677914c92ef1.ecs.us-east-2.on.aws` |
 

@@ -111,10 +111,10 @@ async def test_connection(auth_mode: AuthMode = "splitit") -> dict:
         "CustomOrderId": "smoke-test",
         "DataVaultToken": "",
         "SaveToDataVault": "0",
-        "ForceNo3DS": "1",        # Skip 3DS for smoke test
     }
 
+    url = cfg.api_url  # respeta AZUL_ENV=sandbox|production del .env
     async with build_client(auth_mode) as client:
-        resp = await client.post(AZUL_SANDBOX_URL, json=payload)
+        resp = await client.post(url, json=payload)
         resp.raise_for_status()
         return resp.json()

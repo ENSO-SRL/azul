@@ -40,7 +40,7 @@
               │                  │
     ┌─────────▼──────┐  ┌────────▼────────┐
     │  AZUL API       │  │  PostgreSQL /   │
-    │  (sandbox/prod) │  │  SQLite (local) │
+    │  (sandbox/prod) │  │  PostgreSQL RDS  │
     └────────────────┘  └─────────────────┘
 ```
 
@@ -53,7 +53,7 @@
 | HTTP client | httpx (mTLS) |
 | Notificaciones | AWS SES (boto3) |
 | Seguridad | mTLS + Auth headers + PAN masking |
-| Base de datos | SQLite (dev) / PostgreSQL (prod) |
+| Base de datos | PostgreSQL (AWS RDS — `Atlas_User_Service`) |
 | Config | AWS Secrets Manager (prod) / .env (dev) |
 
 ---
