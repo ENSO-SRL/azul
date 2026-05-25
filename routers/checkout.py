@@ -392,6 +392,94 @@ def _html_form(error: str = "") -> str:
 </html>"""
 
 
+def _html_3ds_method(payment_id: str, method_form: str, amount: int) -> str:
+    """Página intermedia — renderiza el iframe silencioso 3DS Method y continúa."""
+    return f"""<!DOCTYPE html>
+<html lang="es"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Verificando seguridad — Atlas</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:#0f0f1a;color:#e2e8f0;font-family:'Inter',sans-serif;
+      min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem;}}
+.card{{background:#1a1a2e;border:1px solid #2d2d4e;border-radius:1.5rem;
+       padding:2.5rem;max-width:420px;width:100%;text-align:center;
+       box-shadow:0 25px 50px rgba(0,0,0,.5);}}
+.spinner-wrap{{margin:1.5rem auto;width:56px;height:56px;
+  background:linear-gradient(135deg,#6c63ff,#a78bfa);
+  border-radius:50%;display:flex;align-items:center;justify-content:center;}}
+.ring{{width:40px;height:40px;border:3px solid rgba(255,255,255,.3);
+  border-top-color:#fff;border-radius:50%;animation:spin .9s linear infinite;}}
+@keyframes spin{{to{{transform:rotate(360deg)}}}}
+h2{{font-size:1.2rem;font-weight:700;margin-bottom:.5rem;}}
+.sub{{color:#94a3b8;font-size:.88rem;margin-bottom:1.5rem;}}
+.step{{font-size:.78rem;color:#64748b;margin-top:1rem;}}
+/* Iframe 3DS Method — debe ser 0x0 (invisible) segun spec EMV 3DS */
+.method-iframe{{width:0;height:0;border:none;position:absolute;top:-9999px;}}
+</style></head>
+<body><div class="card">
+  <div class="spinner-wrap"><div class="ring"></div></div>
+  <h2>Verificando tu tarjeta</h2>
+  <div class="sub">Tu banco está confirmando tu identidad.<br>Esto toma solo unos segundos…</div>
+  <div class="step" id="stepMsg">Iniciando verificación segura…</div>
+</div>
+
+<!-- Iframe 3DS Method (invisible) -->
+{method_form}
+
+<script>
+(function() {{
+  'use strict';
+  var paymentId = {payment_id!r};
+  var waited = false;
+  var notified = false;
+
+  // Escuchar cuando el ACS notifica el method-notification (postMessage o polling)
+  window.addEventListener('message', function(e) {{
+    notified = true;
+  }});
+
+  function continueFlow(status) {{
+    if (waited) return;
+    waited = true;
+    document.getElementById('stepMsg').textContent = 'Finalizando verificación…';
+    fetch('/checkout/3ds-continue', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+      body: 'payment_id=' + encodeURIComponent(paymentId) +
+            '&method_status=' + encodeURIComponent(status)
+    }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+      if (data.redirect_url) {{
+        document.getElementById('stepMsg').textContent = 'Redirigiendo a tu banco…';
+        window.location.href = data.redirect_url;
+      }} else if (data.challenge_form) {{
+        document.getElementById('stepMsg').textContent = 'Autenticando con tu banco…';
+        document.open(); document.write(data.challenge_form); document.close();
+      }} else {{
+        window.location.href = data.result_url || '/checkout';
+      }}
+    }}).catch(function() {{
+      window.location.href = '/checkout?err=3ds';
+    }});
+  }}
+
+  // Esperar hasta 10 segundos el callback del ACS, luego continuar
+  setTimeout(function() {{
+    continueFlow(notified ? 'RECEIVED' : 'EXPECTED_BUT_NOT_RECEIVED');
+  }}, 10000);
+
+  // Si el ACS notificó rápido, continuar de inmediato
+  window.addEventListener('message', function() {{
+    if (!waited) {{
+      setTimeout(function() {{ continueFlow('RECEIVED'); }}, 500);
+    }}
+  }});
+}})();
+</script>
+</body></html>"""
+
+
 def _html_result(status: str, message: str, payment_id: str, amount: int, iso: str) -> str:
     ok = status == "APPROVED"
     color = "#10b981" if ok else "#f43f5e"
@@ -482,13 +570,107 @@ async def process_checkout(
             cvc=cvc.strip(),
             order_id=f"CHK-{uuid.uuid4().hex[:8].upper()}",
             auth_mode="splitit",
-            save_card=False,  # DataVault no habilitado en producción — cambiar a (save_card == "1") cuando AZUL lo active
+            save_card=False,  # DataVault no habilitado — cambiar a (save_card == "1") cuando AZUL lo active
             cardholder_name=cardholder_name.strip(),
             cardholder_email=cardholder_email.strip(),
         )
     except Exception as exc:
         return HTMLResponse(_html_form(f"Error al procesar: {exc}"), status_code=422)
 
+    from app.domain.entities import PaymentStatus
+
+    # 3DS Method — el banco pide ejecutar iframe silencioso antes de continuar
+    if payment.status == PaymentStatus.PENDING_3DS_METHOD and payment.threeds_method_form:
+        html = _html_3ds_method(
+            payment_id=payment.id,
+            method_form=payment.threeds_method_form,
+            amount=payment.amount + payment.itbis,
+        )
+        resp = HTMLResponse(html)
+        resp.headers["X-Frame-Options"] = "SAMEORIGIN"  # necesario para renderizar el iframe 3DS
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
+
+    # 3DS Challenge — el banco pide autenticación activa del usuario
+    if payment.status == PaymentStatus.PENDING_3DS_CHALLENGE:
+        challenge_form = payment.threeds_challenge_form or ""
+        redirect_url  = payment.threeds_redirect_url or ""
+        if challenge_form:
+            resp = HTMLResponse(challenge_form)
+            resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+            return resp
+        if redirect_url:
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=redirect_url)
+        return HTMLResponse(_html_form("Error 3DS: sin URL de challenge."), status_code=502)
+
+    # Resultado final (APPROVED / DECLINED)
+    status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
+    msg = payment.response_message or ""
+    token_info = f" · Token: {payment.data_vault_token[:12]}…" if payment.data_vault_token else ""
+
+    html = _html_result(
+        status=status,
+        message=msg + token_info,
+        payment_id=payment.id,
+        amount=payment.amount + payment.itbis,
+        iso=payment.iso_code,
+    )
+    resp = HTMLResponse(html)
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@router.post("/3ds-continue", include_in_schema=False)
+async def continue_3ds(
+    payment_id: str = Form(...),
+    method_status: str = Form("RECEIVED"),
+    svc: PaymentService = Depends(_get_service),
+):
+    """Continuación interna del flujo 3DS — llamada por el JS del iframe Method.
+
+    Llama a processThreeDSMethod en AZUL y retorna JSON con el siguiente paso:
+      - challenge_form / redirect_url → el usuario debe completar challenge
+      - result_url → pago terminado (aprobado o declinado)
+    """
+    from app.domain.entities import PaymentStatus
+    from fastapi.responses import JSONResponse
+
+    try:
+        payment = await svc.continue_three_ds_method(payment_id, method_status)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc), "result_url": "/checkout"}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc), "result_url": "/checkout"}, status_code=502)
+
+    if payment.status == PaymentStatus.PENDING_3DS_CHALLENGE:
+        return JSONResponse({
+            "status": payment.status.value,
+            "challenge_form": payment.threeds_challenge_form or "",
+            "redirect_url": payment.threeds_redirect_url or "",
+        })
+
+    # Pago finalizado (APPROVED o DECLINED)
+    result_url = (
+        f"/checkout/result/{payment.id}"
+        if payment.status == PaymentStatus.APPROVED
+        else f"/checkout/result/{payment.id}"
+    )
+    return JSONResponse({"status": payment.status.value, "result_url": result_url})
+
+
+@router.get("/result/{payment_id}", response_class=HTMLResponse, include_in_schema=False)
+async def checkout_result(
+    payment_id: str,
+    svc: PaymentService = Depends(_get_service),
+):
+    """Página de resultado final — usada tras el flujo 3DS."""
+    payment = await svc.get_payment(payment_id)
+    if not payment:
+        return HTMLResponse(_html_form("Pago no encontrado."), status_code=404)
+
+    from app.domain.entities import PaymentStatus
     status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
     msg = payment.response_message or ""
     token_info = f" · Token: {payment.data_vault_token[:12]}…" if payment.data_vault_token else ""
