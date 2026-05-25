@@ -37,20 +37,32 @@ logger = logging.getLogger(__name__)
 _AZUL_ENV = os.getenv("AZUL_ENV", "sandbox")
 
 # ---------------------------------------------------------------------------
-# Logging — asegurar que los logs de checkout y gateway siempre aparezcan
-# en la terminal de uvicorn (nivel WARNING para evitar spam, pero visible)
+# Logging — uvicorn reemplaza basicConfig con su propio dictConfig, por eso
+# los logger.warning() no aparecen si usamos basicConfig.
+# Solución: agregar StreamHandler directamente a cada logger con propagate=False
+# para que los mensajes lleguen al stdout SIEMPRE, independientemente del
+# sistema de logging de uvicorn.
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+_fmt = logging.Formatter(
+    fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
-    force=True,    # override cualquier config previa de uvicorn
 )
-# Loggers clave que deben ser visibles SIEMPRE (incluye DEBUG si uvicorn corre con --log-level debug)
-logging.getLogger("checkout").setLevel(logging.WARNING)
-logging.getLogger("app.infrastructure.azul_gateway").setLevel(logging.WARNING)
-logging.getLogger("app.services.payment_service").setLevel(logging.WARNING)
-logging.getLogger("app.infrastructure.repo_impl").setLevel(logging.WARNING)
+_sh = logging.StreamHandler()   # escribe a stdout/stderr (visible en la terminal)
+_sh.setFormatter(_fmt)
+_sh.setLevel(logging.WARNING)
+
+for _logger_name in [
+    "checkout",
+    "app.infrastructure.azul_gateway",
+    "app.services.payment_service",
+    "app.infrastructure.repo_impl",
+    "app.main",
+]:
+    _log = logging.getLogger(_logger_name)
+    _log.setLevel(logging.WARNING)
+    if not _log.handlers:          # evitar handlers duplicados en --reload
+        _log.addHandler(_sh)
+    _log.propagate = False         # no pasar a root (que uvicorn puede haber redirigido)
 
 
 # ---------------------------------------------------------------------------
