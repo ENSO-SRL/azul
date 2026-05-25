@@ -359,18 +359,54 @@ class PaymentService:
             logger.warning("[SVC] → 3DS approved | payment_id=%s", payment.id)
         elif iso_raw == IsoCode.THREE_DS_CHALLENGE:
             payment.status = PaymentStatus.PENDING_3DS_CHALLENGE
-            payment.threeds_redirect_url = data.get("RedirectUrl", "")
             challenge_data = data.get("ThreeDSChallenge", {})
+
             if isinstance(challenge_data, dict):
-                payment.threeds_challenge_form = challenge_data.get("ChallengeForm", "")
-                if not payment.threeds_redirect_url:
-                    payment.threeds_redirect_url = challenge_data.get("RedirectUrl", "")
+                # Azul returns RedirectPostUrl + CReq (EMV 3DS 2.x Cardinal Commerce format)
+                redirect_post_url = (
+                    challenge_data.get("RedirectPostUrl")
+                    or challenge_data.get("RedirectUrl")
+                    or data.get("RedirectUrl", "")
+                )
+                creq = challenge_data.get("CReq", "")
+
+                logger.warning(
+                    "[SVC] 3DS challenge fields | redirect_post_url=%r creq_len=%d "
+                    "challenge_keys=%s",
+                    redirect_post_url[:80] if redirect_post_url else "",
+                    len(creq),
+                    list(challenge_data.keys()),
+                )
+
+                if redirect_post_url and creq:
+                    # Build auto-submit POST form — browser will redirect to ACS (Cardinal/bank)
+                    payment.threeds_redirect_url = redirect_post_url
+                    payment.threeds_challenge_form = (
+                        f'<!DOCTYPE html><html><body>'
+                        f'<form id="cform" method="POST" action="{redirect_post_url}">'
+                        f'<input type="hidden" name="creq" value="{creq}"/>'
+                        f'</form>'
+                        f'<script>document.getElementById("cform").submit();</script>'
+                        f'</body></html>'
+                    )
+                    logger.warning(
+                        "[SVC] built challenge form | payment_id=%s url=%s creq_len=%d",
+                        payment.id, redirect_post_url[:60], len(creq),
+                    )
+                elif redirect_post_url:
+                    payment.threeds_redirect_url = redirect_post_url
+                else:
+                    # Fallback: try legacy ChallengeForm field
+                    payment.threeds_challenge_form = challenge_data.get("ChallengeForm", "")
+                    payment.threeds_redirect_url = challenge_data.get("RedirectUrl", "") or data.get("RedirectUrl", "")
+
             logger.warning(
                 "[SVC] → 3DS challenge needed | payment_id=%s form_len=%d redirect=%r",
                 payment.id,
                 len(payment.threeds_challenge_form or ""),
                 (payment.threeds_redirect_url or "")[:80],
             )
+
         else:
             payment.status = PaymentStatus.DECLINED
             logger.warning(
