@@ -37,6 +37,23 @@ logger = logging.getLogger(__name__)
 _AZUL_ENV = os.getenv("AZUL_ENV", "sandbox")
 
 # ---------------------------------------------------------------------------
+# Logging — asegurar que los logs de checkout y gateway siempre aparezcan
+# en la terminal de uvicorn (nivel WARNING para evitar spam, pero visible)
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+    force=True,    # override cualquier config previa de uvicorn
+)
+# Loggers clave que deben ser visibles SIEMPRE (incluye DEBUG si uvicorn corre con --log-level debug)
+logging.getLogger("checkout").setLevel(logging.WARNING)
+logging.getLogger("app.infrastructure.azul_gateway").setLevel(logging.WARNING)
+logging.getLogger("app.services.payment_service").setLevel(logging.WARNING)
+logging.getLogger("app.infrastructure.repo_impl").setLevel(logging.WARNING)
+
+
+# ---------------------------------------------------------------------------
 # Swagger UI — deshabilitado en producción (Req 6+7)
 # ---------------------------------------------------------------------------
 _docs_url    = None if _AZUL_ENV == "production" else "/docs"

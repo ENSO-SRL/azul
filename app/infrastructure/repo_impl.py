@@ -50,7 +50,9 @@ def _payment_to_model(p: Payment) -> PaymentModel:
         status=p.status.value,
         auth_mode=p.auth_mode,
         initiated_by=p.initiated_by,
-        idempotency_key=p.idempotency_key,
+        # PostgreSQL UNIQUE allows many NULLs but rejects duplicate empty strings.
+        # Convert "" -> None so multiple payments without an idempotency key can coexist.
+        idempotency_key=p.idempotency_key or None,
         azul_order_id=p.azul_order_id,
         iso_code=p.iso_code,
         response_code=p.response_code,

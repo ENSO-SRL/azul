@@ -14,6 +14,7 @@ del usuario pueda acceder. La seguridad se implementa con:
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 
@@ -26,6 +27,8 @@ from app.infrastructure.repo_impl import SQLPaymentRepository, SQLTransactionRep
 from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
 from app.services.payment_service import PaymentService
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger("checkout")
 
 router = APIRouter(prefix="/checkout", tags=["Checkout"])
 
@@ -202,14 +205,6 @@ def _html_form(error: str = "") -> str:
       padding-top:.5rem;border-top:1px solid var(--border);margin-bottom:1.2rem;
     }}
     select option {{ background:#1a1a2e; }}
-    .save-card-row {{
-      display:flex;align-items:center;gap:.5rem;
-      margin-bottom:1rem;padding:.6rem .75rem;
-      background:rgba(108,99,255,.07);border:1px solid rgba(108,99,255,.2);
-      border-radius:.6rem;cursor:pointer;
-    }}
-    .save-card-row input[type=checkbox] {{ width:auto;cursor:pointer; }}
-    .save-card-row label {{ margin:0;font-size:.82rem;color:var(--text-muted);cursor:pointer; }}
   </style>
 </head>
 <body>
@@ -291,6 +286,17 @@ def _html_form(error: str = "") -> str:
 
       <!-- DataVault deshabilitado en producción — se habilita cuando AZUL active el servicio -->
 
+      <!-- Campos browser fingerprint para 3DS 2.0 (Azul producción los requiere) -->
+      <input type="hidden" name="browser_accept_header" id="browserAccept"/>
+      <input type="hidden" name="browser_ip" id="browserIp" value=""/>
+      <input type="hidden" name="browser_language" id="browserLang"/>
+      <input type="hidden" name="browser_color_depth" id="browserColor"/>
+      <input type="hidden" name="browser_screen_width" id="browserWidth"/>
+      <input type="hidden" name="browser_screen_height" id="browserHeight"/>
+      <input type="hidden" name="browser_time_zone" id="browserTz"/>
+      <input type="hidden" name="browser_user_agent" id="browserUA"/>
+      <input type="hidden" name="browser_java" id="browserJava" value="false"/>
+
       <button type="submit" class="btn" id="submitBtn">
         <span id="btnText">🔒 Pagar RD$2.36</span>
         <div class="spinner" id="spinner"></div>
@@ -360,6 +366,18 @@ def _html_form(error: str = "") -> str:
     return sum%10===0;
   }}
 
+  // --- Recopilar datos del navegador para 3DS 2.0 ---
+  function collectBrowserInfo() {{
+    document.getElementById('browserAccept').value = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
+    document.getElementById('browserLang').value = navigator.language || 'es-DO';
+    document.getElementById('browserColor').value = String(screen.colorDepth || 24);
+    document.getElementById('browserWidth').value = String(screen.width || 1920);
+    document.getElementById('browserHeight').value = String(screen.height || 1080);
+    document.getElementById('browserTz').value = String(new Date().getTimezoneOffset());
+    document.getElementById('browserUA').value = navigator.userAgent || '';
+    document.getElementById('browserJava').value = String(navigator.javaEnabled ? navigator.javaEnabled() : false);
+  }}
+
   // --- Validación y submit ---
   document.getElementById('payForm').addEventListener('submit', function(e) {{
     e.preventDefault();
@@ -378,6 +396,9 @@ def _html_form(error: str = "") -> str:
 
     const cvc = document.getElementById('cardCvc').value;
     if(cvc.length < 3) {{ alert('CVC inválido.'); return; }}
+
+    // Recopilar browser fingerprint antes de enviar
+    collectBrowserInfo();
 
     // Mostrar spinner
     document.getElementById('btnText').style.display = 'none';
@@ -544,23 +565,72 @@ async def process_checkout(
     cvc: str = Form(...),
     cardholder_email: str = Form(...),
     save_card: str = Form(""),
+    # Browser fingerprint para 3DS 2.0 (Azul producción lo requiere)
+    browser_accept_header: str = Form("text/html"),
+    browser_ip: str = Form(""),
+    browser_language: str = Form("es-DO"),
+    browser_color_depth: str = Form("24"),
+    browser_screen_width: str = Form("1280"),
+    browser_screen_height: str = Form("720"),
+    browser_time_zone: str = Form("240"),
+    browser_user_agent: str = Form(""),
+    browser_java: str = Form("false"),
     svc: PaymentService = Depends(_get_service),
 ):
     """Procesa el pago — recibe el form POST, llama a AZUL, redirige al resultado."""
-    # Sanitizar número de tarjeta (quitar espacios)
     card_clean = card_number.replace(" ", "").strip()
+    card_masked = f"{'*' * (len(card_clean) - 4)}{card_clean[-4:]}" if len(card_clean) >= 4 else "****"
+
+    logger.warning(
+        "[CHECKOUT] ▶ POST /checkout/process | card=%s exp=%s email=%s ua=%s ip=%s",
+        card_masked, expiration, cardholder_email,
+        request.headers.get("User-Agent", "")[:60],
+        request.headers.get("X-Forwarded-For", request.client.host if request.client else "?"),
+    )
 
     # Convertir expiración MM/AA → YYYYMM
     try:
         mm, yy = expiration.strip().split("/")
         exp_azul = f"20{yy.strip()}{mm.strip().zfill(2)}"
     except Exception:
+        logger.error("[CHECKOUT] ✗ Expiration parse failed: %r", expiration)
         return HTMLResponse(_html_form("Fecha de vencimiento inválida. Usa MM/AA."), status_code=422)
 
     # Monto fijo de prueba: RD$2.00 + ITBIS RD$0.36 = RD$2.36
     amount = 200
-    itbis = 36
+    itbis  = 36
 
+    # IP real del cliente
+    client_ip = (
+        request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        or (request.client.host if request.client else "")
+        or browser_ip
+    )
+
+    # Browser fingerprint para 3DS 2.0
+    browser_info = {
+        "accept_header": browser_accept_header or "text/html",
+        "ip_address": client_ip,
+        "language": browser_language or "es-DO",
+        "color_depth": browser_color_depth or "24",
+        "screen_width": browser_screen_width or "1280",
+        "screen_height": browser_screen_height or "720",
+        "time_zone": browser_time_zone or "240",
+        "user_agent": browser_user_agent or request.headers.get("User-Agent", ""),
+        "javascript_enabled": "true",
+    }
+    logger.warning(
+        "[CHECKOUT] browser_info → ip=%s lang=%s w=%s h=%s tz=%s",
+        client_ip, browser_info["language"],
+        browser_info["screen_width"], browser_info["screen_height"],
+        browser_info["time_zone"],
+    )
+
+    # ── Llamada a Azul ────────────────────────────────────────────────────
+    logger.warning(
+        "[CHECKOUT] → calling process_sale | amount=%d itbis=%d auth_mode=3dsecure card=%s",
+        amount, itbis, card_masked,
+    )
     try:
         payment = await svc.process_sale(
             amount=amount,
@@ -569,32 +639,79 @@ async def process_checkout(
             expiration=exp_azul,
             cvc=cvc.strip(),
             order_id=f"CHK-{uuid.uuid4().hex[:8].upper()}",
-            auth_mode="splitit",
-            save_card=False,  # DataVault no habilitado — cambiar a (save_card == "1") cuando AZUL lo active
+            auth_mode="3dsecure",
+            save_card=False,
             cardholder_name=cardholder_name.strip(),
             cardholder_email=cardholder_email.strip(),
+            browser_info=browser_info,
         )
     except Exception as exc:
+        logger.error(
+            "[CHECKOUT] ✗ process_sale EXCEPTION | type=%s msg=%s",
+            type(exc).__name__, str(exc)[:400],
+        )
         return HTMLResponse(_html_form(f"Error al procesar: {exc}"), status_code=422)
+
+    logger.warning(
+        "[CHECKOUT] ← Azul response | payment_id=%s status=%s iso=%s rc=%s msg=%r "
+        "azul_order_id=%s method_form_len=%d",
+        payment.id,
+        payment.status.value if hasattr(payment.status, "value") else payment.status,
+        payment.iso_code,
+        payment.response_code,
+        payment.response_message,
+        payment.azul_order_id,
+        len(payment.threeds_method_form or ""),
+    )
 
     from app.domain.entities import PaymentStatus
 
-    # 3DS Method — el banco pide ejecutar iframe silencioso antes de continuar
-    if payment.status == PaymentStatus.PENDING_3DS_METHOD and payment.threeds_method_form:
-        html = _html_3ds_method(
-            payment_id=payment.id,
-            method_form=payment.threeds_method_form,
-            amount=payment.amount + payment.itbis,
-        )
-        resp = HTMLResponse(html)
-        resp.headers["X-Frame-Options"] = "SAMEORIGIN"  # necesario para renderizar el iframe 3DS
-        resp.headers["X-Content-Type-Options"] = "nosniff"
-        return resp
+    # ── 3DS Method ────────────────────────────────────────────────────────
+    if payment.status == PaymentStatus.PENDING_3DS_METHOD:
+        if payment.threeds_method_form:
+            logger.warning(
+                "[CHECKOUT] → 3DS METHOD | payment_id=%s form_len=%d → rendering iframe",
+                payment.id, len(payment.threeds_method_form),
+            )
+            html = _html_3ds_method(
+                payment_id=payment.id,
+                method_form=payment.threeds_method_form,
+                amount=payment.amount + payment.itbis,
+            )
+            resp = HTMLResponse(html)
+            resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            return resp
+        else:
+            logger.warning(
+                "[CHECKOUT] → 3DS METHOD | payment_id=%s form_len=0 → auto-continue NOT_EXPECTED",
+                payment.id,
+            )
+            try:
+                payment = await svc.continue_three_ds_method(payment.id, "NOT_EXPECTED")
+                logger.warning(
+                    "[CHECKOUT] ← 3DS METHOD auto-continue | payment_id=%s new_status=%s iso=%s msg=%r",
+                    payment.id,
+                    payment.status.value if hasattr(payment.status, "value") else payment.status,
+                    payment.iso_code,
+                    payment.response_message,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[CHECKOUT] ✗ 3DS METHOD auto-continue EXCEPTION | payment_id=%s type=%s msg=%s",
+                    payment.id, type(exc).__name__, str(exc)[:400],
+                )
+                return HTMLResponse(_html_form(f"Error 3DS (método): {exc}"), status_code=502)
+            # Fall through to challenge / result handling below
 
-    # 3DS Challenge — el banco pide autenticación activa del usuario
+    # ── 3DS Challenge ─────────────────────────────────────────────────────
     if payment.status == PaymentStatus.PENDING_3DS_CHALLENGE:
         challenge_form = payment.threeds_challenge_form or ""
-        redirect_url  = payment.threeds_redirect_url or ""
+        redirect_url   = payment.threeds_redirect_url or ""
+        logger.warning(
+            "[CHECKOUT] → 3DS CHALLENGE | payment_id=%s challenge_form_len=%d redirect_url=%r",
+            payment.id, len(challenge_form), redirect_url[:80] if redirect_url else "",
+        )
         if challenge_form:
             resp = HTMLResponse(challenge_form)
             resp.headers["X-Frame-Options"] = "SAMEORIGIN"
@@ -602,12 +719,20 @@ async def process_checkout(
         if redirect_url:
             from fastapi.responses import RedirectResponse
             return RedirectResponse(url=redirect_url)
+        logger.error("[CHECKOUT] ✗ 3DS CHALLENGE | payment_id=%s no challenge_form and no redirect_url", payment.id)
         return HTMLResponse(_html_form("Error 3DS: sin URL de challenge."), status_code=502)
 
-    # Resultado final (APPROVED / DECLINED)
+    # ── Resultado final ───────────────────────────────────────────────────
     status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
     msg = payment.response_message or ""
     token_info = f" · Token: {payment.data_vault_token[:12]}…" if payment.data_vault_token else ""
+
+    logger.warning(
+        "[CHECKOUT] ■ FINAL RESULT | payment_id=%s status=%s iso=%s rc=%s msg=%r token=%s",
+        payment.id, status, payment.iso_code, payment.response_code,
+        payment.response_message,
+        payment.data_vault_token[:12] + "…" if payment.data_vault_token else "(none)",
+    )
 
     html = _html_result(
         status=status,
@@ -628,34 +753,55 @@ async def continue_3ds(
     method_status: str = Form("RECEIVED"),
     svc: PaymentService = Depends(_get_service),
 ):
-    """Continuación interna del flujo 3DS — llamada por el JS del iframe Method.
-
-    Llama a processThreeDSMethod en AZUL y retorna JSON con el siguiente paso:
-      - challenge_form / redirect_url → el usuario debe completar challenge
-      - result_url → pago terminado (aprobado o declinado)
-    """
+    """Continuación interna del flujo 3DS — llamada por el JS del iframe Method."""
     from app.domain.entities import PaymentStatus
     from fastapi.responses import JSONResponse
+
+    logger.warning(
+        "[CHECKOUT] ▶ POST /3ds-continue | payment_id=%s method_status=%s",
+        payment_id, method_status,
+    )
 
     try:
         payment = await svc.continue_three_ds_method(payment_id, method_status)
     except ValueError as exc:
+        logger.error("[CHECKOUT] ✗ 3ds-continue ValueError | payment_id=%s error=%s", payment_id, exc)
         return JSONResponse({"error": str(exc), "result_url": "/checkout"}, status_code=400)
     except Exception as exc:
+        logger.error(
+            "[CHECKOUT] ✗ 3ds-continue EXCEPTION | payment_id=%s type=%s msg=%s",
+            payment_id, type(exc).__name__, str(exc)[:400],
+        )
         return JSONResponse({"error": str(exc), "result_url": "/checkout"}, status_code=502)
 
+    logger.warning(
+        "[CHECKOUT] ← 3ds-continue result | payment_id=%s status=%s iso=%s rc=%s msg=%r",
+        payment.id,
+        payment.status.value if hasattr(payment.status, "value") else payment.status,
+        payment.iso_code,
+        payment.response_code,
+        payment.response_message,
+    )
+
     if payment.status == PaymentStatus.PENDING_3DS_CHALLENGE:
+        logger.warning(
+            "[CHECKOUT] → 3DS CHALLENGE from 3ds-continue | payment_id=%s form_len=%d redirect=%r",
+            payment.id,
+            len(payment.threeds_challenge_form or ""),
+            (payment.threeds_redirect_url or "")[:80],
+        )
         return JSONResponse({
             "status": payment.status.value,
             "challenge_form": payment.threeds_challenge_form or "",
             "redirect_url": payment.threeds_redirect_url or "",
         })
 
-    # Pago finalizado (APPROVED o DECLINED)
-    result_url = (
-        f"/checkout/result/{payment.id}"
-        if payment.status == PaymentStatus.APPROVED
-        else f"/checkout/result/{payment.id}"
+    result_url = f"/checkout/result/{payment.id}"
+    logger.warning(
+        "[CHECKOUT] ■ 3ds-continue FINAL | payment_id=%s status=%s → %s",
+        payment.id,
+        payment.status.value if hasattr(payment.status, "value") else payment.status,
+        result_url,
     )
     return JSONResponse({"status": payment.status.value, "result_url": result_url})
 
@@ -666,14 +812,21 @@ async def checkout_result(
     svc: PaymentService = Depends(_get_service),
 ):
     """Página de resultado final — usada tras el flujo 3DS."""
+    logger.warning("[CHECKOUT] ▶ GET /result/%s", payment_id)
     payment = await svc.get_payment(payment_id)
     if not payment:
+        logger.error("[CHECKOUT] ✗ payment not found | payment_id=%s", payment_id)
         return HTMLResponse(_html_form("Pago no encontrado."), status_code=404)
 
     from app.domain.entities import PaymentStatus
     status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
     msg = payment.response_message or ""
     token_info = f" · Token: {payment.data_vault_token[:12]}…" if payment.data_vault_token else ""
+
+    logger.warning(
+        "[CHECKOUT] ■ result page | payment_id=%s status=%s iso=%s msg=%r",
+        payment.id, status, payment.iso_code, payment.response_message,
+    )
 
     html = _html_result(
         status=status,

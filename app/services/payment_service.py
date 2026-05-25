@@ -10,6 +10,8 @@ calling Azul again.  This prevents double charges on client retries.
 
 from __future__ import annotations
 
+import logging
+
 from app.domain.entities import (
     IsoCode,
     Payment,
@@ -23,6 +25,8 @@ from app.domain.repositories import (
     TransactionRepository,
 )
 from app.infrastructure.azul_gateway import AzulPaymentGateway
+
+logger = logging.getLogger(__name__)
 
 
 class PaymentService:
@@ -107,8 +111,30 @@ class PaymentService:
             )
             await self._cards.save(card)
 
-        await self._payments.save(payment)
-        await self._txns.save(txn)
+        logger.warning(
+            "[SVC] saving payment | payment_id=%s status=%s idempotency_key=%r",
+            payment.id, payment.status.value,
+            payment.idempotency_key or "(none)",
+        )
+        try:
+            await self._payments.save(payment)
+        except Exception as exc:
+            logger.error(
+                "[SVC] ✗ payments.save FAILED | payment_id=%s type=%s msg=%s",
+                payment.id, type(exc).__name__, str(exc)[:400],
+            )
+            raise
+
+        try:
+            await self._txns.save(txn)
+        except Exception as exc:
+            logger.error(
+                "[SVC] ✗ txns.save FAILED | payment_id=%s type=%s msg=%s",
+                payment.id, type(exc).__name__, str(exc)[:400],
+            )
+            raise
+
+        logger.warning("[SVC] payment saved OK | payment_id=%s", payment.id)
         return payment
 
     # ------------------------------------------------------------------
@@ -276,15 +302,27 @@ class PaymentService:
         payment_id: str,
         method_notification_status: str = "RECEIVED",
     ) -> Payment:
-        """Continue 3DS after the Method iframe completed or timed out.
+        """Continue 3DS after the Method iframe completed or timed out."""
+        logger.warning(
+            "[SVC] continue_three_ds_method | payment_id=%s method_status=%s",
+            payment_id, method_notification_status,
+        )
 
-        Called by the MethodNotificationUrl callback or by frontend polling.
-        Updates the payment to APPROVED, PENDING_3DS_CHALLENGE, or DECLINED.
-        """
         payment = await self._payments.get_by_id(payment_id)
         if not payment:
+            logger.error("[SVC] ✗ payment not found | payment_id=%s", payment_id)
             raise ValueError(f"Payment {payment_id} not found")
+
+        logger.warning(
+            "[SVC] payment found | payment_id=%s current_status=%s azul_order_id=%s",
+            payment.id, payment.status.value, payment.azul_order_id,
+        )
+
         if payment.status != PaymentStatus.PENDING_3DS_METHOD:
+            logger.error(
+                "[SVC] ✗ wrong status | payment_id=%s status=%s expected=PENDING_3DS_METHOD",
+                payment_id, payment.status.value,
+            )
             raise ValueError(
                 f"Payment {payment_id} is {payment.status.value}, expected PENDING_3DS_METHOD"
             )
@@ -298,6 +336,11 @@ class PaymentService:
         payment.iso_code = iso_raw
         payment.response_message = data.get("ResponseMessage", "")
         payment.response_code = data.get("ResponseCode", "")
+
+        logger.warning(
+            "[SVC] 3DS method result | payment_id=%s iso=%s rc=%s msg=%r",
+            payment.id, iso_raw, payment.response_code, payment.response_message,
+        )
 
         txn = Transaction(
             payment_id=payment.id,
@@ -313,6 +356,7 @@ class PaymentService:
         if iso_raw == IsoCode.APPROVED:
             payment.status = PaymentStatus.APPROVED
             payment.data_vault_token = data.get("DataVaultToken", payment.data_vault_token)
+            logger.warning("[SVC] → 3DS approved | payment_id=%s", payment.id)
         elif iso_raw == IsoCode.THREE_DS_CHALLENGE:
             payment.status = PaymentStatus.PENDING_3DS_CHALLENGE
             payment.threeds_redirect_url = data.get("RedirectUrl", "")
@@ -321,11 +365,22 @@ class PaymentService:
                 payment.threeds_challenge_form = challenge_data.get("ChallengeForm", "")
                 if not payment.threeds_redirect_url:
                     payment.threeds_redirect_url = challenge_data.get("RedirectUrl", "")
+            logger.warning(
+                "[SVC] → 3DS challenge needed | payment_id=%s form_len=%d redirect=%r",
+                payment.id,
+                len(payment.threeds_challenge_form or ""),
+                (payment.threeds_redirect_url or "")[:80],
+            )
         else:
             payment.status = PaymentStatus.DECLINED
+            logger.warning(
+                "[SVC] → 3DS declined | payment_id=%s iso=%s msg=%r",
+                payment.id, iso_raw, payment.response_message,
+            )
 
         payment.threeds_method_form = ""
         await self._payments.update(payment)
+        logger.warning("[SVC] payment updated | payment_id=%s final_status=%s", payment.id, payment.status.value)
         return payment
 
     async def continue_three_ds_challenge(

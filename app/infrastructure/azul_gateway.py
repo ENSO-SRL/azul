@@ -626,8 +626,9 @@ class AzulPaymentGateway:
             "CardNumber": "",
             "Expiration": "",
             "CVC": "",
-            "DataVaultToken": "",
-            "SaveToDataVault": "0",
+            # Use _datavault_fields(False) to omit DataVault fields entirely
+            # on merchants without DataVault (avoids "DataVault not enabled" error).
+            **_datavault_fields(False),
         })
         if amount is not None:
             payload["Amount"] = str(amount)
@@ -674,20 +675,8 @@ class AzulPaymentGateway:
         azul_order_id: str,
         method_notification_status: str = "RECEIVED",
     ) -> dict[str, Any]:
-        """Continue 3DS after the Method iframe completed (or timed out).
-
-        Args:
-            azul_order_id: AZULOrderId from the initial Sale response.
-            method_notification_status: RECEIVED | EXPECTED_BUT_NOT_RECEIVED | NOT_EXPECTED
-
-        Returns:
-            Raw Azul response dict.  Caller must check IsoCode to decide
-            if the payment is approved, needs challenge, or was declined.
-        """
+        """Continue 3DS after the Method iframe completed (or timed out)."""
         cfg = load_azul_config()
-        # NOTA: El endpoint processthreedsmethod en sandbox espera "AzulOrderId" (mixed case)
-        # mientras que la respuesta del Sale retorna "AZULOrderId" (mayúsculas).
-        # Enviamos ambas variantes para garantizar compatibilidad sandbox + producción.
         payload = {
             "Channel": "EC",
             "Store": cfg.merchant_id,
@@ -696,14 +685,30 @@ class AzulPaymentGateway:
             "MethodNotificationStatus": method_notification_status,
         }
 
+        logger.warning(
+            "[3DS METHOD REQUEST] ▶ azul_order_id=%s status=%s url=%s",
+            azul_order_id, method_notification_status, cfg.threeds_method_url,
+        )
+
         async with self._build_client("3dsecure") as client:
             resp = await client.post(cfg.threeds_method_url, json=payload)
 
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
 
+        logger.warning(
+            "[3DS METHOD RESPONSE] ◄ HTTP=%s | IsoCode=%s | ResponseCode=%s | ErrorDesc=%r | msg=%r | full=%s",
+            resp.status_code,
+            data.get("IsoCode", "?"),
+            data.get("ResponseCode", "?"),
+            data.get("ErrorDescription", ""),
+            data.get("ResponseMessage", ""),
+            str(data)[:800],
+        )
+
         if data.get("ResponseCode") == AzulResponseCode.ERROR:
             err = data.get("ErrorDescription", data.get("ResponseMessage", "Unknown error"))
+            logger.error("[3DS METHOD] ✗ IntegrationError: %s", err)
             raise AzulIntegrationError(f"ProcessThreeDSMethod failed: {err}")
 
         return data
@@ -863,7 +868,7 @@ class AzulPaymentGateway:
         if raw_pan and len(raw_pan) >= 4:
             payment.card_number_masked = "*" * (len(raw_pan) - 4) + raw_pan[-4:]
 
-        # Map iso_code → PaymentStatus
+        # Map iso_code -> PaymentStatus
         if iso_raw == IsoCode.APPROVED:
             payment.status = PaymentStatus.APPROVED
         elif iso_raw == IsoCode.THREE_DS_METHOD:
@@ -881,6 +886,18 @@ class AzulPaymentGateway:
                     payment.threeds_redirect_url = challenge_data.get("RedirectUrl", "")
         else:
             payment.status = PaymentStatus.DECLINED
+
+        logger.warning(
+            "[AZUL MAPPED] payment_id=%s status=%s iso=%s rc=%s method_form_len=%d "
+            "challenge_form_len=%d redirect_url=%r",
+            payment.id,
+            payment.status.value,
+            iso_raw,
+            rc_raw,
+            len(payment.threeds_method_form or ""),
+            len(payment.threeds_challenge_form or ""),
+            (payment.threeds_redirect_url or "")[:80],
+        )
 
         # Build masked audit transaction
         txn = Transaction(
