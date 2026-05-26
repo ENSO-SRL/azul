@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from typing import Dict
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
@@ -33,6 +34,10 @@ logger = logging.getLogger("checkout")
 router = APIRouter(prefix="/checkout", tags=["Checkout"])
 
 _APP_BASE = os.getenv("APP_BASE_URL", "http://localhost:8000")
+
+# In-memory cache for 3DS challenge forms (keyed by payment_id)
+# The challenge page is fetched within seconds of being stored; no TTL needed.
+_challenge_cache: Dict[str, str] = {}
 
 
 def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
@@ -471,12 +476,14 @@ h2{{font-size:1.2rem;font-weight:700;margin-bottom:.5rem;}}
       body: 'payment_id=' + encodeURIComponent(paymentId) +
             '&method_status=' + encodeURIComponent(status)
     }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
-      if (data.redirect_url) {{
+      if (data.status === 'PENDING_3DS_CHALLENGE') {{
+        document.getElementById('stepMsg').textContent = 'Autenticando con tu banco…';
+        // Full browser navigation — gives CardinalCommerce a proper Referer header
+        // and avoids Cloudflare WAF bot-detection triggered by document.write().
+        window.location.href = '/checkout/challenge/' + encodeURIComponent(data.payment_id || paymentId);
+      }} else if (data.redirect_url) {{
         document.getElementById('stepMsg').textContent = 'Redirigiendo a tu banco…';
         window.location.href = data.redirect_url;
-      }} else if (data.challenge_form) {{
-        document.getElementById('stepMsg').textContent = 'Autenticando con tu banco…';
-        document.open(); document.write(data.challenge_form); document.close();
       }} else {{
         window.location.href = data.result_url || '/checkout';
       }}
@@ -784,16 +791,22 @@ async def continue_3ds(
     )
 
     if payment.status == PaymentStatus.PENDING_3DS_CHALLENGE:
+        challenge_form = payment.threeds_challenge_form or ""
+        redirect_url   = payment.threeds_redirect_url or ""
         logger.warning(
             "[CHECKOUT] → 3DS CHALLENGE from 3ds-continue | payment_id=%s form_len=%d redirect=%r",
             payment.id,
-            len(payment.threeds_challenge_form or ""),
-            (payment.threeds_redirect_url or "")[:80],
+            len(challenge_form),
+            (redirect_url or "")[:80],
         )
+        if challenge_form:
+            # Store in cache and redirect the browser — avoids document.write() Cloudflare block
+            _challenge_cache[payment.id] = challenge_form
         return JSONResponse({
             "status": payment.status.value,
-            "challenge_form": payment.threeds_challenge_form or "",
-            "redirect_url": payment.threeds_redirect_url or "",
+            "payment_id": payment.id,
+            "challenge_form": "",          # not sent over JSON anymore
+            "redirect_url": redirect_url or "",
         })
 
     result_url = f"/checkout/result/{payment.id}"
@@ -804,6 +817,29 @@ async def continue_3ds(
         result_url,
     )
     return JSONResponse({"status": payment.status.value, "result_url": result_url})
+
+
+@router.get("/challenge/{payment_id}", response_class=HTMLResponse, include_in_schema=False)
+async def challenge_page(payment_id: str):
+    """Serve the 3DS challenge form as a full browser navigation.
+
+    The challenge form is pre-stored in _challenge_cache by /3ds-continue.
+    Serving it via a GET endpoint means the browser navigates here normally,
+    giving the subsequent POST to CardinalCommerce a proper Referer header
+    and making it look like a human-initiated action to Cloudflare's WAF.
+    """
+    form_html = _challenge_cache.pop(payment_id, None)
+    if not form_html:
+        logger.error("[CHECKOUT] ✗ challenge page | payment_id=%s not in cache", payment_id)
+        return HTMLResponse(_html_form("Error 3DS: sesión de autenticación expirada. Intenta de nuevo."), status_code=410)
+
+    logger.warning("[CHECKOUT] ▶ GET /challenge/%s | serving challenge form (%d bytes)", payment_id, len(form_html))
+    resp = HTMLResponse(form_html)
+    # Allow the challenge form to auto-submit to CardinalCommerce cross-origin.
+    # Do NOT set X-Frame-Options here — Cardinal Commerce needs to load this freely.
+    resp.headers["Referrer-Policy"] = "unsafe-url"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
 
 
 @router.get("/result/{payment_id}", response_class=HTMLResponse, include_in_schema=False)
