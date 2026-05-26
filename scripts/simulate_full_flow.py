@@ -192,11 +192,11 @@ def main(base_url: str) -> None:
 
                 async def force_due():
                     from sqlalchemy import update
-                    from app.infrastructure.database import async_session_factory
+                    from app.infrastructure.database import async_session
                     from app.infrastructure.models import RecurringPaymentModel
 
                     past = datetime.now(timezone.utc) - timedelta(minutes=5)
-                    async with async_session_factory() as session:
+                    async with async_session() as session:
                         await session.execute(
                             update(RecurringPaymentModel)
                             .where(RecurringPaymentModel.id == subscription_id)
