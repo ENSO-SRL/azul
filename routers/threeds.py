@@ -141,28 +141,24 @@ async def term_callback(
     """
     from fastapi.responses import HTMLResponse
 
-    # Parse raw form body — Cardinal Commerce field name casing is not guaranteed
-    cres = ""
+    # Parse raw form body — Cardinal Commerce field name casing is not guaranteed.
+    # form.get() returns UploadFile | str | None; we extract str values only.
+    cres: str = ""
     try:
         form = await request.form()
-        # Try all known casings / aliases
-        cres = (
-            form.get("cres") or
-            form.get("cRes") or
-            form.get("CRes") or
-            form.get("CRES") or
-            form.get("PaRes") or
-            form.get("pares") or
-            ""
-        )
+        for key in ("cres", "cRes", "CRes", "CRES", "PaRes", "pares"):
+            val = form.get(key)
+            if val and isinstance(val, str) and val.strip():
+                cres = val.strip()
+                break
     except Exception as exc:
         logger.warning("[3ds] term: could not parse form body: %s", exc)
 
     logger.info(
-        "[3ds] term callback | payment_id=%s cres_len=%d form_keys=%s",
+        "[3ds] term callback | payment_id=%s cres_len=%d",
         payment_id, len(cres),
-        list((await request.form()).keys()) if not cres else ["(parsed)"],
     )
+
 
     result_url = f"/checkout/result/{payment_id}"
 
