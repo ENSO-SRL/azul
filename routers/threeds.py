@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -128,24 +128,67 @@ async def method_notification(
     ),
 )
 async def term_callback(
+    request: Request,
     payment_id: str = Query(..., description="ID del pago"),
-    cres: str = Form(default="", alias="cRes"),
     svc: PaymentService = Depends(_get_service),
 ):
-    """ACS redirects here after the cardholder completes the challenge."""
-    logger.info("[3ds] term callback received for payment_id=%s has_cres=%s", payment_id, bool(cres))
+    """ACS redirects here after the cardholder completes the challenge.
+
+    Cardinal Commerce POSTs with either 'cres' or 'cRes' (casing varies by
+    ACS implementation) and sometimes 'PaRes' for 3DS 1.x fallback.
+    We parse the raw form body to handle all casings.
+    Returns HTML that redirects the browser to the result page.
+    """
+    from fastapi.responses import HTMLResponse
+
+    # Parse raw form body — Cardinal Commerce field name casing is not guaranteed
+    cres = ""
+    try:
+        form = await request.form()
+        # Try all known casings / aliases
+        cres = (
+            form.get("cres") or
+            form.get("cRes") or
+            form.get("CRes") or
+            form.get("CRES") or
+            form.get("PaRes") or
+            form.get("pares") or
+            ""
+        )
+    except Exception as exc:
+        logger.warning("[3ds] term: could not parse form body: %s", exc)
+
+    logger.info(
+        "[3ds] term callback | payment_id=%s cres_len=%d form_keys=%s",
+        payment_id, len(cres),
+        list((await request.form()).keys()) if not cres else ["(parsed)"],
+    )
+
+    result_url = f"/checkout/result/{payment_id}"
+
     try:
         payment = await svc.continue_three_ds_challenge(payment_id, cres=cres)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
+        logger.info("[3ds] term: challenge complete | payment_id=%s status=%s", payment_id, status)
+    except Exception as exc:
+        logger.error("[3ds] term: challenge error | payment_id=%s error=%s", payment_id, exc)
+        # Still redirect — the result page will show the error state from DB
+        return HTMLResponse(
+            f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta http-equiv="refresh" content="0;url={result_url}">
+</head><body><script>window.location.href={result_url!r};</script></body></html>""",
+            status_code=200,
+        )
 
-    return {
-        "payment_id": payment.id,
-        "status": payment.status.value,
-        "iso_code": payment.iso_code,
-        "response_message": payment.response_message,
-        "data_vault_token": payment.data_vault_token,
-    }
+    # Return HTML page that redirects the browser to the result
+    # (ACS does a browser redirect to TermUrl, so we must respond with HTML)
+    return HTMLResponse(
+        f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta http-equiv="refresh" content="0;url={result_url}">
+</head><body><script>window.location.href={result_url!r};</script></body></html>""",
+        status_code=200,
+    )
+
 
 
 # ---------------------------------------------------------------------------
