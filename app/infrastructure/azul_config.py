@@ -360,11 +360,51 @@ def _load_from_env() -> AzulConfig:
 # ---------------------------------------------------------------------------
 
 
+def _env_has_all_credentials() -> bool:
+    """Return True when all Azul credentials are already injected as env vars.
+
+    When ECS injects secrets directly into env vars (AZUL_MERCHANT_ID,
+    AZUL_AUTH1/2, AZUL_CERT_PEM + AZUL_KEY_PEM), there is no need to hit
+    AWS Secrets Manager.  Calling Secrets Manager without proper IAM permissions
+    produces the misleading ``Unable to locate credentials`` error even though
+    every credential the app needs is already in the process environment.
+    """
+    has_merchant = bool(os.environ.get("AZUL_MERCHANT_ID", "").strip())
+    has_auth     = bool(os.environ.get("AZUL_AUTH1", "").strip())
+
+    # Inline PEM (ECS / Docker)
+    has_pem = (
+        bool(os.environ.get("AZUL_CERT_PEM", "").strip()) and
+        bool(os.environ.get("AZUL_KEY_PEM",  "").strip())
+    )
+    # Physical cert files (local dev)
+    import pathlib
+    cert_path = os.environ.get("AZUL_CERT_PATH", "").strip()
+    key_path  = os.environ.get("AZUL_KEY_PATH",  "").strip()
+    has_files = (
+        bool(cert_path) and bool(key_path) and
+        pathlib.Path(cert_path).is_file() and pathlib.Path(key_path).is_file()
+    )
+
+    return has_merchant and has_auth and (has_pem or has_files)
+
+
 @lru_cache(maxsize=1)
 def _load_azul_config_cached() -> AzulConfig:
     """Internal cached loader — do not call directly. Use ``load_azul_config()``."""
     if _LOCAL_MODE:
         return _load_from_env()
+
+    # Fast-path: skip Secrets Manager when credentials are already in env vars.
+    # This is the normal production path when ECS injects secrets directly
+    # (as opposed to referencing AWS Secrets Manager ARNs in the task def).
+    if _env_has_all_credentials():
+        logger.info(
+            "[azul_config] All credentials found in env vars — "
+            "skipping AWS Secrets Manager (AZUL_LOCAL_MODE=0, direct injection)."
+        )
+        return _load_from_env()
+
     return _load_from_aws()
 
 
