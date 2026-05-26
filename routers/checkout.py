@@ -289,7 +289,8 @@ def _html_form(error: str = "") -> str:
                autocomplete="email" required/>
       </div>
 
-      <!-- DataVault deshabilitado en producción — se habilita cuando AZUL active el servicio -->
+      <!-- Suscripción: siempre guardar tarjeta en DataVault para cobros mensuales -->
+      <input type="hidden" name="save_card" value="1"/>
 
       <!-- Campos browser fingerprint para 3DS 2.0 (Azul producción los requiere) -->
       <input type="hidden" name="browser_accept_header" id="browserAccept"/>
@@ -303,7 +304,7 @@ def _html_form(error: str = "") -> str:
       <input type="hidden" name="browser_java" id="browserJava" value="false"/>
 
       <button type="submit" class="btn" id="submitBtn">
-        <span id="btnText">🔒 Pagar RD$2.36</span>
+        <span id="btnText">🔒 Registrar tarjeta y pagar RD$2.36</span>
         <div class="spinner" id="spinner"></div>
       </button>
     </form>
@@ -639,6 +640,7 @@ async def process_checkout(
         amount, itbis, card_masked,
     )
     try:
+        # Para suscripciones siempre tokenizamos: save_card=True + STANDING_ORDER indicator
         payment = await svc.process_sale(
             amount=amount,
             itbis=itbis,
@@ -647,7 +649,7 @@ async def process_checkout(
             cvc=cvc.strip(),
             order_id=f"CHK-{uuid.uuid4().hex[:8].upper()}",
             auth_mode="3dsecure",
-            save_card=False,
+            save_card=True,
             cardholder_name=cardholder_name.strip(),
             cardholder_email=cardholder_email.strip(),
             browser_info=browser_info,

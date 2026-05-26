@@ -93,14 +93,21 @@ class PaymentService:
             cardholder_email=cardholder_email,
         )
 
-        payment, txn = await self._gw.sale(
-            payment, card_number, expiration, cvc,
-            save_token=save_card,
-            browser_info=browser_info,
-            cardholder_info=cardholder_info,
-            requestor_challenge_indicator=requestor_challenge_indicator,
-            include_method_notification_url=include_method_notification_url,
-        )
+        if save_card:
+            # Suscripción: usa STANDING_ORDER indicator + SaveToDataVault=1
+            payment, txn = await self._gw.sale_recurring_cit(
+                payment, card_number, expiration, cvc,
+                browser_info=browser_info,
+            )
+        else:
+            payment, txn = await self._gw.sale(
+                payment, card_number, expiration, cvc,
+                save_token=False,
+                browser_info=browser_info,
+                cardholder_info=cardholder_info,
+                requestor_challenge_indicator=requestor_challenge_indicator,
+                include_method_notification_url=include_method_notification_url,
+            )
 
         if save_card and payment.data_vault_token and self._cards:
             from app.domain.entities import SavedCard
@@ -355,8 +362,21 @@ class PaymentService:
 
         if iso_raw == IsoCode.APPROVED:
             payment.status = PaymentStatus.APPROVED
-            payment.data_vault_token = data.get("DataVaultToken", payment.data_vault_token)
-            logger.warning("[SVC] → 3DS approved | payment_id=%s", payment.id)
+            token = data.get("DataVaultToken", "") or payment.data_vault_token or ""
+            payment.data_vault_token = token
+            logger.warning("[SVC] → 3DS method approved | payment_id=%s token=%s", payment.id, token[:8] + "…" if token else "(none)")
+            if token and self._cards:
+                from app.domain.entities import SavedCard
+                card = SavedCard(
+                    customer_id=payment.cardholder_email or payment.order_id or payment.id,
+                    token=token,
+                    card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                )
+                try:
+                    await self._cards.save(card)
+                    logger.warning("[SVC] ✓ token persisted (method step) | payment_id=%s", payment.id)
+                except Exception as exc:
+                    logger.error("[SVC] ✗ card save FAILED (method step) | payment_id=%s err=%s", payment.id, exc)
         elif iso_raw == IsoCode.THREE_DS_CHALLENGE:
             payment.status = PaymentStatus.PENDING_3DS_CHALLENGE
             challenge_data = data.get("ThreeDSChallenge", {})
@@ -460,7 +480,29 @@ class PaymentService:
 
         if iso_raw == IsoCode.APPROVED:
             payment.status = PaymentStatus.APPROVED
-            payment.data_vault_token = data.get("DataVaultToken", payment.data_vault_token)
+            token = data.get("DataVaultToken", "") or payment.data_vault_token or ""
+            payment.data_vault_token = token
+            # Persistir token en SavedCardRepository para cobros mensuales futuros
+            if token and self._cards:
+                from app.domain.entities import SavedCard
+                card = SavedCard(
+                    customer_id=payment.cardholder_email or payment.order_id or payment.id,
+                    token=token,
+                    card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                )
+                try:
+                    await self._cards.save(card)
+                    logger.warning(
+                        "[SVC] ✓ DataVaultToken persisted | payment_id=%s customer=%s token=%s",
+                        payment.id,
+                        card.customer_id,
+                        token[:8] + "…",
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[SVC] ✗ card save FAILED | payment_id=%s err=%s",
+                        payment.id, exc,
+                    )
         else:
             payment.status = PaymentStatus.DECLINED
 
