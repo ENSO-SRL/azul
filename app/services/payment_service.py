@@ -95,10 +95,29 @@ class PaymentService:
 
         if save_card:
             # Suscripción: usa STANDING_ORDER indicator + SaveToDataVault=1
-            payment, txn = await self._gw.sale_recurring_cit(
-                payment, card_number, expiration, cvc,
-                browser_info=browser_info,
-            )
+            # Fallback: si Azul no tiene DataVault habilitado aún, reintenta sin token
+            from app.infrastructure.azul_gateway import AzulIntegrationError
+            try:
+                payment, txn = await self._gw.sale_recurring_cit(
+                    payment, card_number, expiration, cvc,
+                    browser_info=browser_info,
+                )
+            except AzulIntegrationError as exc:
+                if "datavault not enabled" in str(exc).lower():
+                    logger.warning(
+                        "[SVC] ⚠ DataVault not enabled — falling back to sale() without token | payment_id=%s",
+                        payment.id,
+                    )
+                    payment, txn = await self._gw.sale(
+                        payment, card_number, expiration, cvc,
+                        save_token=False,
+                        browser_info=browser_info,
+                        cardholder_info=cardholder_info,
+                        requestor_challenge_indicator=requestor_challenge_indicator,
+                        include_method_notification_url=include_method_notification_url,
+                    )
+                else:
+                    raise
         else:
             payment, txn = await self._gw.sale(
                 payment, card_number, expiration, cvc,
