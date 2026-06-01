@@ -1,0 +1,207 @@
+﻿{
+    "taskDefinition": {
+        "taskDefinitionArn": "arn:aws:ecs:us-east-2:293926505005:task-definition/default-pago-azul-5325:15",
+        "containerDefinitions": [
+            {
+                "name": "Main",
+                "image": "293926505005.dkr.ecr.us-east-2.amazonaws.com/pago-azul:latest",
+                "cpu": 256,
+                "memory": 2048,
+                "memoryReservation": 2048,
+                "portMappings": [
+                    {
+                        "containerPort": 8000,
+                        "hostPort": 8000,
+                        "protocol": "tcp"
+                    }
+                ],
+                "essential": true,
+                "command": [],
+                "environment": [
+                    {
+                        "name": "AZUL_KEY_PEM",
+                        "value": "-----BEGIN PRIVATE KEY----- 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 Ydy23QHYvh/jgmgP1/j+sVw5j86jlDA= -----END PRIVATE KEY-----"
+                    },
+                    {
+                        "name": "AZUL_LOCAL_MODE",
+                        "value": "0"
+                    },
+                    {
+                        "name": "AZUL_SECRET_CREDS",
+                        "value": "iamatlas/azul/prod/api-credentials"
+                    },
+                    {
+                        "name": "AZUL_3DS_METHOD_URL_SANDBOX",
+                        "value": "https://pruebas.azul.com.do/webservices/JSON/default.aspx?processthreedsmethod"
+                    },
+                    {
+                        "name": "DATABASE_URL",
+                        "value": "postgresql+asyncpg://postgres:7W0ikNLmTVvcKTXGh4cV@atlas-user-zadkiel-ohio.cna8kso8qh1g.us-east-2.rds.amazonaws.com:5432/Atlas_User_Service"
+                    },
+                    {
+                        "name": "API_KEY",
+                        "value": "atlas-dev-key-2026-colina-del-sol"
+                    },
+                    {
+                        "name": "APP_BASE_URL",
+                        "value": "https://pa-ad2039d606764cfd953ed8909489a2ec.ecs.us-east-2.on.aws"
+                    },
+                    {
+                        "name": "AZUL_3DS_CHALLENGE_URL_PROD",
+                        "value": "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedschallenge"
+                    },
+                    {
+                        "name": "AZUL_ENV",
+                        "value": "production"
+                    },
+                    {
+                        "name": "AZUL_3DS_METHOD_URL_PROD",
+                        "value": "https://pagos.azul.com.do/WebServices/JSON/default.aspx?processthreedsmethod"
+                    },
+                    {
+                        "name": "AZUL_3DS_CHALLENGE_URL_SANDBOX",
+                        "value": "https://pruebas.azul.com.do/webservices/JSON/default.aspx?processthreedschallenge"
+                    },
+                    {
+                        "name": "NOTIFY_FROM_EMAIL",
+                        "value": ""
+                    },
+                    {
+                        "name": "AZUL_VERIFY_PAYMENT_URL_PROD",
+                        "value": "https://pagos.azul.com.do/WebServices/JSON/default.aspx?verifypayment"
+                    },
+                    {
+                        "name": "AZUL_AUTH2_3DS",
+                        "value": "#gPmt&$2RUjX"
+                    },
+                    {
+                        "name": "NOTIFY_AWS_REGION",
+                        "value": "us-east-1"
+                    },
+                    {
+                        "name": "AZUL_URL_PRODUCTION_SECONDARY",
+                        "value": "https://contpagos.azul.com.do/Webservices/JSON/default.aspx"
+                    },
+                    {
+                        "name": "AZUL_AUTH1",
+                        "value": "COLINADELSOL"
+                    },
+                    {
+                        "name": "AZUL_AUTH1_3DS",
+                        "value": "COLINADELSOL"
+                    },
+                    {
+                        "name": "AZUL_AUTH2",
+                        "value": "#gPmt&$2RUjX"
+                    },
+                    {
+                        "name": "DEFAULT_CURRENCY",
+                        "value": "DOP"
+                    },
+                    {
+                        "name": "AZUL_MERCHANT_ID",
+                        "value": "3964430000"
+                    },
+                    {
+                        "name": "AZUL_URL_PRODUCTION",
+                        "value": "https://pagos.azul.com.do/WebServices/JSON/default.aspx"
+                    },
+                    {
+                        "name": "AZUL_AUTH1_SPLITIT",
+                        "value": "COLINADELSOL"
+                    },
+                    {
+                        "name": "AZUL_SECRET_CERT",
+                        "value": "iamatlas/azul/prod/cert-pem"
+                    },
+                    {
+                        "name": "AZUL_SECRET_KEY",
+                        "value": "iamatlas/azul/prod/cert-key"
+                    },
+                    {
+                        "name": "AZUL_AUTH2_SPLITIT",
+                        "value": "#gPmt&$2RUjX"
+                    },
+                    {
+                        "name": "AZUL_URL_SANDBOX",
+                        "value": "https://pruebas.azul.com.do/webservices/JSON/default.aspx"
+                    },
+                    {
+                        "name": "AZUL_VERIFY_PAYMENT_URL_SANDBOX",
+                        "value": "https://pruebas.azul.com.do/webservices/JSON/default.aspx?verifypayment"
+                    },
+                    {
+                        "name": "AZUL_CERT_PEM",
+                        "value": "-----BEGIN CERTIFICATE----- MIIH7jCCBdagAwIBAgITWgAiLsIcsR7EQKDGewAAACIuwjANBgkqhkiG9w0BAQsF ADBCMRUwEwYKCZImiZPyLGQBGRYFbG9jYWwxFzAVBgoJkiaJk/IsZAEZFgdwb3B1 bGFyMRAwDgYDVQQDEwdCUEQtU0NBMB4XDTI2MDQyMzEzMjYxNVoXDTI5MDQxMDE5 NTkxMVowgZUxCzAJBgNVBAYTAkRPMRowGAYDVQQIExFEaXN0cml0byBOYWNpb25h bDEWMBQGA1UEBxMNU2FudG8gRG9taW5nbzEkMCIGA1UEChMbU2VydmljaW9zIERp Z2l0YWxlcyBQb3B1bGFyMRMwEQYDVQQLEwpEZXNhcnJvbGxvMRcwFQYDVQQDEw5p YW1hdGxhcy5sb2NhbDCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAKwO AnYi8QCg7ExpeyXWTlq+mCqC/eUJrlCVlued8s7h8FDe10EknmGG5dukZYYtmT2v cCYv54EBjH8cht7x4rwa0hiRyVyV4p10DhXFEOkp57owVeST3yKysadwgg3yre0Q WXn4nP5othFLt/SHKejj0Hs+Xq6/huJXuyxvUAFZdXckC6+Lct3lqO/lQQfDDrnK 9weqE0hOh1JudyjxENYAO89V8U5D2eeR4xlHzGeeuiAgpAxYPPfwGs8IF+TLQcXm 9YtXd08L112pcB/EV323kjZ5om8wCt2vuwnOALMpWMx63woDtDjpbUN7S95k0k5j IgJl6wTSvySt6KTiy3ustMcTwTmRmRpJ8lHkGqMRMBjrjXU8XNF9cpnn/VYMBMyY lbz8g65cgyXjxB6x0/69yzp/fqX1eis5CXtY1ZVPNTTFUwUkzV6kaS5+pj8P9R8X vhuBPDx27uIe+flMzDHGj1HR75rzEbUg6WS+EIoL+pfqwVUg36Dh4KsfB2Uwx1Xu bbgo/AcgZiEP8O/zh7z0BFhsWvgCl1dw5/FlHlpc888o8vRmXRcuMNXZfjF8/dsd pkbor4+loEJPGCQ6mUczIKNRh3D5XtjIFZ1eyreYbC6DgwbqKI5OFa2bkRPqapU5 SKqin43h576eVdo5O6VwYGUDl03JTahsLumfX7oHAgMBAAGjggKHMIICgzAdBgNV HQ4EFgQUF5LBsKlRY8wq3US367GH1oC5O2wwHwYDVR0jBBgwFoAUyw8s9GHPlzyJ is4NPz29lZYpR4kwcAYDVR0fBGkwZzBloGOgYYYuaHR0cDovL2FkY3MucG9wdWxh ci5sb2NhbC9DZXJ0RGF0YS9CUEQtU0NBLmNybIYvaHR0cDovL2NkcC5wb3B1bGFy LmxvY2FsL0NlcnRFbnJvbGwvQlBELVNDQS5jcmwwggE2BggrBgEFBQcBAQSCASgw ggEkMDoGCCsGAQUFBzAChi5odHRwOi8vYWRjcy5wb3B1bGFyLmxvY2FsL0NlcnRE YXRhL0JQRC1TQ0EuY3J0MDsGCCsGAQUFBzAChi9odHRwOi8vY2RwLnBvcHVsYXIu bG9jYWwvQ2VydEVucm9sbC9CUEQtU0NBLmNydDCBqAYIKwYBBQUHMAKGgZtsZGFw Oi8vL0NOPUJQRC1TQ0EsQ049QUlBLENOPVB1YmxpYyUyMEtleSUyMFNlcnZpY2Vz LENOPVNlcnZpY2VzLENOPUNvbmZpZ3VyYXRpb24sREM9cG9wdWxhcixEQz1sb2Nh bD9jQUNlcnRpZmljYXRlP2Jhc2U/b2JqZWN0Q2xhc3M9Y2VydGlmaWNhdGlvbkF1 dGhvcml0eTAOBgNVHQ8BAf8EBAMCBaAwPQYJKwYBBAGCNxUHBDAwLgYmKwYBBAGC NxUIh9eRQ4GFnWeFnZ0rgfXqBMOfD4EyhJ3QEoPL2G8CAWQCARQwHQYDVR0lBBYw FAYIKwYBBQUHAwIGCCsGAQUFBwMBMCcGCSsGAQQBgjcVCgQaMBgwCgYIKwYBBQUH AwIwCgYIKwYBBQUHAwEwDQYJKoZIhvcNAQELBQADggIBAGcV7BBKyv65tjX4vNOB lpPQe5vEMXZiUfFYrxoXgy5a7sRBC3f3euGW62r+X6eQrs6aAL7az9IJDJqEeBaN m2U6wsFdaxWOjD36ts4GvXNXOiBJwZTCy8WQ6MZWGlwJQ181yiI+TVdOIDMjRUCt MgiG61Fmb4tBANRywQlZ8L2JHAkkJeWL0WFAfqZQJ/Foz1frx03pW+wYYvlmTFwz BxVJ8xmlD7Pe0KMPmx/b5zwulfUwOhCp5KBeLIy+QtV4C2mfM0gSBFJ6n5Drv9aZ l93pGPzHc9yd82Pteuv1pRvyuqeNG5dj/PuqPJQ9+40gp3MMc5CLORhZWpz0E47O exfbcMHXhAfJPEYoHywBRKXN8hSkG89/UxBCbMkpFXpl8U4H31V80HYCKpHwYgE5 f86cf9tH/1ihv8RWrXBMCSYzDV6Wvx7ehP6VtQkZLK6oj8jF8s4ulLTNPF5vH9/b 837dXJaSucwOLb5WmekIp87mLTBoKwsVam+0X4Eo3QmVxnICVftQqZ3/K/JZnVDf YpzqdG02U3O7c5HBK5UZtDhCtjG8RSSw2CQqLG6iofOc81CZPO6dFidw49Xr5iT1 trf6V6kuUiuK29PqYG7BXuGtQDfBcUUsOg2ZUTMCMpJyC0ttmlo+7Z5W3eZ/5NMl a7r3LYuWbRgmHWewXz4VO2ax -----END CERTIFICATE-----"
+                    }
+                ],
+                "mountPoints": [],
+                "volumesFrom": [],
+                "secrets": [],
+                "logConfiguration": {
+                    "logDriver": "awslogs",
+                    "options": {
+                        "awslogs-group": "/aws/ecs/default/pago-azul-5325-e917",
+                        "awslogs-region": "us-east-2",
+                        "awslogs-stream-prefix": "ecs"
+                    }
+                },
+                "systemControls": []
+            }
+        ],
+        "family": "default-pago-azul-5325",
+        "taskRoleArn": "arn:aws:iam::293926505005:role/ecsTaskRole-pago-azul",
+        "executionRoleArn": "arn:aws:iam::293926505005:role/ecsTaskExecutionRole",
+        "networkMode": "awsvpc",
+        "revision": 15,
+        "volumes": [],
+        "status": "ACTIVE",
+        "requiresAttributes": [
+            {
+                "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+            },
+            {
+                "name": "ecs.capability.execution-role-awslogs"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.ecr-auth"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.docker-remote-api.1.21"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.task-iam-role"
+            },
+            {
+                "name": "ecs.capability.execution-role-ecr-pull"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+            },
+            {
+                "name": "ecs.capability.task-eni"
+            }
+        ],
+        "placementConstraints": [],
+        "compatibilities": [
+            "EC2",
+            "FARGATE",
+            "MANAGED_INSTANCES"
+        ],
+        "runtimePlatform": {
+            "cpuArchitecture": "X86_64",
+            "operatingSystemFamily": "LINUX"
+        },
+        "requiresCompatibilities": [
+            "FARGATE"
+        ],
+        "cpu": "256",
+        "memory": "2048",
+        "registeredAt": "2026-06-01T11:17:47.532000-04:00",
+        "registeredBy": "arn:aws:iam::293926505005:user/admin-zadkiel"
+    },
+    "tags": []
+}

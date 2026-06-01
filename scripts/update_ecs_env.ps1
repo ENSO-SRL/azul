@@ -4,9 +4,9 @@
 #           de produccion para Colina del Sol y actualizar el servicio ECS.
 # =====================================================================
 
-$CLUSTER   = "default"
-$SERVICE   = "pago-azul-5325"
-$TASK_FAM  = "default-pago-azul-5325"
+$CLUSTER = "default"
+$SERVICE = "pago-azul-5325"
+$TASK_FAM = "default-pago-azul-5325"
 
 Write-Host "==> Obteniendo task definition actual..." -ForegroundColor Cyan
 $rawJson = aws ecs describe-task-definition --task-definition "${TASK_FAM}:11" --output json
@@ -22,20 +22,20 @@ foreach ($e in $td.containerDefinitions[0].environment) {
 # Aplicar los 8 cambios existentes
 foreach ($item in $envList) {
     switch ($item.name) {
-        "AZUL_AUTH1"         { $item.value = "COLINADELSOL" }
-        "AZUL_AUTH1_3DS"     { $item.value = "COLINADELSOL" }
+        "AZUL_AUTH1" { $item.value = "COLINADELSOL" }
+        "AZUL_AUTH1_3DS" { $item.value = "COLINADELSOL" }
         "AZUL_AUTH1_SPLITIT" { $item.value = "COLINADELSOL" }
-        "AZUL_AUTH2"         { $item.value = '#gPmt&$2RUjX' }
-        "AZUL_AUTH2_3DS"     { $item.value = '#gPmt&$2RUjX' }
+        "AZUL_AUTH2" { $item.value = '#gPmt&$2RUjX' }
+        "AZUL_AUTH2_3DS" { $item.value = '#gPmt&$2RUjX' }
         "AZUL_AUTH2_SPLITIT" { $item.value = '#gPmt&$2RUjX' }
-        "AZUL_LOCAL_MODE"    { $item.value = "0" }
-        "AZUL_MERCHANT_ID"   { $item.value = "39644300001" }
+        "AZUL_LOCAL_MODE" { $item.value = "0" }
+        "AZUL_MERCHANT_ID" { $item.value = "39644300001" }
     }
 }
 
 # Agregar las 2 variables nuevas
 $envList.Add([PSCustomObject]@{ name = "AZUL_ENV"; value = "production" })
-$envList.Add([PSCustomObject]@{ name = "API_KEY";  value = "atlas-dev-key-2026-colina-del-sol" })
+$envList.Add([PSCustomObject]@{ name = "API_KEY"; value = "atlas-dev-key-2026-colina-del-sol" })
 
 Write-Host "==> Variables actualizadas ($($envList.Count) total). Generando JSON..." -ForegroundColor Cyan
 
@@ -55,13 +55,13 @@ $containerDef = [ordered]@{
             protocol      = "tcp"
         }
     )
-    essential    = $true
-    command      = @()
-    environment  = @($envList)
-    mountPoints  = @()
-    volumesFrom  = @()
-    secrets      = @()
-    logConfiguration = [ordered]@{
+    essential         = $true
+    command           = @()
+    environment       = @($envList)
+    mountPoints       = @()
+    volumesFrom       = @()
+    secrets           = @()
+    logConfiguration  = [ordered]@{
         logDriver = "awslogs"
         options   = [ordered]@{
             "awslogs-group"         = "/aws/ecs/default/pago-azul-5325-e917"
@@ -82,7 +82,7 @@ $newTd = [ordered]@{
     volumes                 = @()
     placementConstraints    = @()
     runtimePlatform         = [ordered]@{
-        cpuArchitecture      = "X86_64"
+        cpuArchitecture       = "X86_64"
         operatingSystemFamily = "LINUX"
     }
 }
