@@ -31,6 +31,7 @@ from routers.threeds import router as threeds_router
 from routers.tokens import router as tokens_router
 from app.routers.cert import router as cert_router
 from routers.checkout import router as checkout_router
+from routers.company_card import router as company_card_router
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,7 @@ app.include_router(clubs_router,          dependencies=_auth)
 app.include_router(tests_router,          dependencies=_auth)
 app.include_router(notifications_router,  dependencies=_auth)
 app.include_router(reconciliation_router, dependencies=_auth)
+app.include_router(company_card_router,   dependencies=_auth)
 
 
 # ---------------------------------------------------------------------------
