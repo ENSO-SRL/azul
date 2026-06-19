@@ -212,14 +212,25 @@ async def save_company_card(
     body: CompanyCardRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    print("\n" + "="*60)
+    print("📥 [COMPANY-CARD] PUT — Guardar tarjeta de empresa")
+    print(f"   Titular: {body.cardholder_name}")
+    print(f"   Tarjeta: ****{body.card_number[-4:]}")
+    print(f"   Expiración: {body.expiration}")
+    print(f"   Descripción: {body.description or '(sin descripción)'}")
+    print("="*60)
+
     _validate_card(body)
+    print("✅ Validación Luhn + expiración OK")
 
     card_last4 = body.card_number[-4:]
     card_brand = _detect_brand(body.card_number)
+    print(f"🏷️  Marca detectada: {card_brand}")
 
     # Encriptar datos sensibles
     card_number_enc = _encrypt(body.card_number)
     cvc_enc = _encrypt(body.cvc)
+    print(f"🔐 Datos encriptados (card_number_enc={card_number_enc[:20]}..., cvc_enc={cvc_enc[:20]}...)")
 
     # Buscar tarjeta existente (solo puede haber una)
     result = await db.execute(
@@ -229,6 +240,7 @@ async def save_company_card(
 
     if existing:
         # Actualizar la existente
+        print(f"🔄 Tarjeta existente encontrada (id={existing.id}, last4={existing.card_last4}) → ACTUALIZANDO")
         existing.card_number_enc = card_number_enc
         existing.expiration = body.expiration
         existing.cvc_enc = cvc_enc
@@ -240,9 +252,11 @@ async def save_company_card(
         await db.commit()
         await db.refresh(existing)
         model = existing
-        logger.info(f"[company-card] Tarjeta de empresa ACTUALIZADA (last4={card_last4}, brand={card_brand})")
+        print(f"✅ Tarjeta ACTUALIZADA en DB (id={model.id})")
+        logger.warning(f"[company-card] Tarjeta ACTUALIZADA (id={model.id}, last4={card_last4}, brand={card_brand})")
     else:
         # Crear nueva
+        print("🆕 No hay tarjeta existente → CREANDO nueva")
         model = TarjetaEmpresaModel(
             card_number_enc=card_number_enc,
             expiration=body.expiration,
@@ -255,9 +269,13 @@ async def save_company_card(
         db.add(model)
         await db.commit()
         await db.refresh(model)
-        logger.info(f"[company-card] Tarjeta de empresa CREADA (last4={card_last4}, brand={card_brand})")
+        print(f"✅ Tarjeta CREADA en DB (id={model.id})")
+        logger.warning(f"[company-card] Tarjeta CREADA (id={model.id}, last4={card_last4}, brand={card_brand})")
 
-    return _to_response(model)
+    response = _to_response(model)
+    print(f"📤 Respuesta: id={response['id']}, brand={response['card_brand']}, last4={response['card_last4']}")
+    print("="*60 + "\n")
+    return response
 
 
 @router.get(
@@ -273,19 +291,34 @@ async def save_company_card(
 async def get_company_card(
     db: AsyncSession = Depends(get_db),
 ):
+    print("\n" + "="*60)
+    print("📤 [COMPANY-CARD] GET — Recuperar tarjeta de empresa")
+    print("="*60)
+
     result = await db.execute(
         select(TarjetaEmpresaModel).where(TarjetaEmpresaModel.is_active == True)
     )
     model = result.scalar_one_or_none()
 
     if not model:
+        print("❌ No hay tarjeta registrada → 404")
+        print("="*60 + "\n")
         raise HTTPException(
             status_code=404,
             detail="No hay tarjeta de empresa registrada. Usa PUT /api/v1/company-card para crear una.",
         )
 
-    logger.info(f"[company-card] Tarjeta recuperada (last4={model.card_last4})")
-    return _to_response(model)
+    response = _to_response(model)
+    print(f"✅ Tarjeta encontrada:")
+    print(f"   ID: {response['id']}")
+    print(f"   Titular: {response['cardholder_name']}")
+    print(f"   Tarjeta: {response['card_brand']} ****{response['card_last4']}")
+    print(f"   Expiración: {response['expiration']}")
+    print(f"   Creada: {response['created_at']}")
+    print(f"   🔓 Datos desencriptados y devueltos en texto plano")
+    print("="*60 + "\n")
+    logger.warning(f"[company-card] GET exitoso (last4={model.card_last4}, brand={model.card_brand})")
+    return response
 
 
 @router.delete(
@@ -296,19 +329,29 @@ async def get_company_card(
 async def delete_company_card(
     db: AsyncSession = Depends(get_db),
 ):
+    print("\n" + "="*60)
+    print("🗑️  [COMPANY-CARD] DELETE — Eliminar tarjeta de empresa")
+    print("="*60)
+
     result = await db.execute(
         select(TarjetaEmpresaModel).where(TarjetaEmpresaModel.is_active == True)
     )
     model = result.scalar_one_or_none()
 
     if not model:
+        print("❌ No hay tarjeta registrada → 404")
+        print("="*60 + "\n")
         raise HTTPException(status_code=404, detail="No hay tarjeta de empresa registrada")
 
+    print(f"🗑️  Eliminando tarjeta id={model.id}, last4={model.card_last4}, brand={model.card_brand}")
     await db.execute(
         delete(TarjetaEmpresaModel).where(TarjetaEmpresaModel.id == model.id)
     )
     await db.commit()
-    logger.info(f"[company-card] Tarjeta ELIMINADA (last4={model.card_last4})")
+    print(f"✅ Tarjeta ELIMINADA de la DB")
+    print("="*60 + "\n")
+    logger.warning(f"[company-card] Tarjeta ELIMINADA (id={model.id}, last4={model.card_last4})")
+
 
 
 # ---------------------------------------------------------------------------
