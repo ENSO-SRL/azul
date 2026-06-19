@@ -46,7 +46,7 @@ def _load_dotenv_simple() -> None:
             key, value = key.strip(), value.strip().strip("\"'")
             if value.startswith("-----BEGIN"):  # skip multi-line PEM blocks
                 continue
-            os.environ.setdefault(key, value)
+            os.environ[key] = value
 
 _load_dotenv_simple()
 
