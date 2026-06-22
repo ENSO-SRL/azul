@@ -55,7 +55,7 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
 
 def _html_form(error: str = "") -> str:
     error_block = f'<div class="error-msg">⚠️ {error}</div>' if error else ""
-    return f"""<!DOCTYPE html>
+    return """<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8"/>
@@ -63,317 +63,468 @@ def _html_form(error: str = "") -> str:
   <title>Pago Seguro — Atlas</title>
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
   <style>
-    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    :root {{
-      --bg: #0f0f1a;
-      --card-bg: #1a1a2e;
-      --border: #2d2d4e;
-      --accent: #6c63ff;
-      --accent2: #a78bfa;
-      --text: #e2e8f0;
-      --text-muted: #94a3b8;
-      --success: #10b981;
-      --error: #f43f5e;
-      --input-bg: #0f0f1a;
-    }}
-    body {{
-      background: var(--bg);
-      color: var(--text);
+    /* Reset & Base */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #f8f9fa;
       font-family: 'Inter', sans-serif;
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 1.5rem;
-      background-image: radial-gradient(ellipse at 20% 50%, rgba(108,99,255,.15) 0%, transparent 60%),
-                        radial-gradient(ellipse at 80% 20%, rgba(167,139,250,.10) 0%, transparent 50%);
-    }}
-    .container {{
+    }
+
+    /* CSS from PaymentMethods.css */
+    .payment-container {
+      background: white;
+      border-radius: 16px;
+      padding: 32px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.07);
       width: 100%;
-      max-width: 460px;
-    }}
-    .logo {{ text-align:center; margin-bottom:2rem; }}
-    .logo-badge {{
-      display:inline-flex; align-items:center; gap:.5rem;
-      background:linear-gradient(135deg,var(--accent),var(--accent2));
-      padding:.5rem 1.2rem; border-radius:999px;
-      font-size:.85rem; font-weight:700; letter-spacing:.05em;
-      box-shadow: 0 0 30px rgba(108,99,255,.4);
-    }}
-    .logo-badge span {{ font-size:1.1rem; }}
-    .card {{
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius:1.5rem;
-      padding:2rem;
-      box-shadow: 0 25px 50px rgba(0,0,0,.5);
-    }}
-    .card-preview {{
-      background: linear-gradient(135deg,#1e1b4b,#312e81);
-      border-radius:1rem;
-      padding:1.5rem;
-      margin-bottom:1.5rem;
-      position:relative;
-      overflow:hidden;
-      min-height:100px;
-      border:1px solid rgba(255,255,255,.1);
-    }}
-    .card-preview::before {{
-      content:'';position:absolute;top:-30px;right:-30px;
-      width:130px;height:130px;border-radius:50%;
-      background:rgba(255,255,255,.05);
-    }}
-    .card-preview .pan {{
-      font-size:1.1rem;font-weight:600;letter-spacing:.15em;
-      color:#fff;margin-bottom:.5rem;font-family:monospace;
-    }}
-    .card-preview .details {{
-      display:flex;gap:2rem;color:rgba(255,255,255,.7);font-size:.78rem;
-    }}
-    .secure-badge {{
-      display:flex;align-items:center;gap:.4rem;
-      font-size:.75rem;color:var(--text-muted);
-      margin-bottom:1.5rem;padding:.5rem .75rem;
-      background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);
-      border-radius:.5rem;
-    }}
-    .secure-badge .dot {{ color:var(--success); }}
-    h2 {{ font-size:1.2rem;font-weight:700;margin-bottom:1.5rem;color:var(--text); }}
-    .form-group {{ margin-bottom:1.1rem; }}
-    label {{ display:block;font-size:.8rem;font-weight:500;color:var(--text-muted);margin-bottom:.4rem; }}
-    input, select {{
-      width:100%;padding:.7rem .9rem;
-      background:var(--input-bg);
-      border:1px solid var(--border);
-      border-radius:.6rem;
-      color:var(--text);font-size:.95rem;
-      transition: border-color .2s,box-shadow .2s;
-      outline:none;font-family:'Inter',sans-serif;
-    }}
-    input:focus, select:focus {{
-      border-color:var(--accent);
-      box-shadow:0 0 0 3px rgba(108,99,255,.2);
-    }}
-    input::placeholder {{ color: var(--text-muted); }}
-    .row-2 {{ display:grid;grid-template-columns:1fr 1fr;gap:.75rem; }}
-    .amount-display {{
-      text-align:center;margin-bottom:1.5rem;
-      font-size:2rem;font-weight:700;
-      background:linear-gradient(135deg,var(--accent),var(--accent2));
-      -webkit-background-clip:text;-webkit-text-fill-color:transparent;
-    }}
-    .amount-label {{ font-size:.75rem;color:var(--text-muted);text-align:center;margin-bottom:1.5rem; }}
-    .error-msg {{
-      background:rgba(244,63,94,.1);border:1px solid rgba(244,63,94,.3);
-      color:var(--error);padding:.75rem 1rem;border-radius:.6rem;
-      margin-bottom:1rem;font-size:.85rem;
-    }}
-    .btn {{
-      width:100%;padding:.875rem;
-      background:linear-gradient(135deg,var(--accent),var(--accent2));
-      border:none;border-radius:.75rem;
-      color:#fff;font-size:1rem;font-weight:700;
-      cursor:pointer;transition:opacity .2s,transform .1s;
-      margin-top:.5rem;letter-spacing:.02em;
-      box-shadow:0 8px 25px rgba(108,99,255,.4);
-    }}
-    .btn:hover {{ opacity:.9;transform:translateY(-1px); }}
-    .btn:active {{ transform:translateY(0); }}
-    .btn:disabled {{ opacity:.6;cursor:not-allowed;transform:none; }}
-    .card-icons {{ display:flex;gap:.4rem;margin-bottom:.4rem; }}
-    .card-icon {{
-      width:36px;height:24px;border-radius:4px;
-      background:rgba(255,255,255,.1);
-      display:flex;align-items:center;justify-content:center;
-      font-size:.55rem;color:var(--text-muted);font-weight:700;
-    }}
-    .card-icon.active {{ background:var(--accent);color:#fff; }}
-    .footer-note {{
-      text-align:center;font-size:.72rem;color:var(--text-muted);
-      margin-top:1rem;
-    }}
-    .spinner {{
-      display:none;width:18px;height:18px;border:2px solid #fff3;
-      border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;
-      margin:0 auto;
-    }}
-    @keyframes spin {{ to{{transform:rotate(360deg)}} }}
-    .itbis-row {{
-      display:flex;justify-content:space-between;
-      font-size:.8rem;color:var(--text-muted);margin-bottom:.3rem;
-    }}
-    .total-row {{
-      display:flex;justify-content:space-between;
-      font-size:.95rem;font-weight:600;color:var(--text);
-      padding-top:.5rem;border-top:1px solid var(--border);margin-bottom:1.2rem;
-    }}
-    select option {{ background:#1a1a2e; }}
+      max-width: 500px;
+      margin: 0 auto;
+      color: #1a1a1a;
+    }
+
+    .header-section {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .icon-wrapper {
+      background: #FFF0F8;
+      padding: 10px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .title {
+      font-size: 20px;
+      font-weight: 800;
+      color: #343C6A;
+      margin: 0 0 4px 0;
+    }
+
+    .subtitle {
+      font-size: 13px;
+      color: #666;
+      margin: 0;
+    }
+
+    /* Visual Card */
+    .visual-card {
+      background: linear-gradient(135deg, #DA007C 0%, #a0005a 100%);
+      border-radius: 20px;
+      padding: 24px;
+      color: white;
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 32px;
+      min-height: 200px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-shadow: 0 10px 20px rgba(218,0,124,0.2);
+    }
+
+    .card-bg-decoration {
+      position: absolute;
+      top: -50px;
+      right: -50px;
+      width: 200px;
+      height: 200px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 50%;
+      z-index: 1;
+    }
+
+    .card-icon {
+      position: relative;
+      z-index: 2;
+      width: 28px;
+      height: 28px;
+    }
+
+    .card-details {
+      position: relative;
+      z-index: 2;
+    }
+
+    .card-number {
+      font-family: monospace;
+      font-size: 22px;
+      letter-spacing: 2px;
+      margin-bottom: 24px;
+      font-weight: 600;
+      min-height: 26px;
+    }
+
+    .card-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+
+    .card-holder {
+      font-size: 12px;
+      letter-spacing: 1px;
+      opacity: 0.9;
+    }
+
+    .card-expiry {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    /* Form */
+    .payment-form {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .form-row {
+      display: flex;
+      gap: 16px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .form-group.half {
+      flex: 1;
+    }
+
+    .form-group label {
+      font-size: 13px;
+      color: #333;
+      font-weight: 500;
+    }
+
+    .input-with-icon {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .input-icon {
+      position: absolute;
+      left: 16px;
+      z-index: 2;
+      width: 16px;
+      height: 16px;
+      color: #aaa;
+    }
+
+    .signup-input {
+      width: 100%;
+      padding: 11px 16px;
+      border-radius: 100px;
+      border: 1px solid rgba(200,200,200,0.8);
+      font-size: 13px;
+      background: rgba(255,255,255,0.80);
+      color: #1a1a1a;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      box-sizing: border-box;
+      font-family: 'Inter', sans-serif;
+    }
+
+    .signup-input.with-icon {
+      padding-left: 44px;
+    }
+
+    .signup-input:focus {
+      border-color: #DA007C;
+      box-shadow: 0 0 0 3px rgba(218,0,124,0.1);
+    }
+
+    .signup-input::placeholder {
+      color: #aaa;
+    }
+
+    .signup-btn-filled {
+      padding: 14px;
+      border-radius: 100px;
+      border: none;
+      color: white;
+      background: #DA007C;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .signup-btn-filled:hover {
+      background: #c0006c;
+    }
+
+    .signup-btn-filled:active {
+      transform: scale(0.98);
+    }
+
+    .signup-btn-filled:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Checkbox */
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      font-size: 13px;
+      color: #555;
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+      padding-left: 28px;
+    }
+
+    .checkbox-label input {
+      position: absolute;
+      opacity: 0;
+      cursor: pointer;
+      height: 0;
+      width: 0;
+    }
+
+    .checkmark {
+      position: absolute;
+      top: 50%;
+      left: 0;
+      transform: translateY(-50%);
+      height: 18px;
+      width: 18px;
+      background-color: white;
+      border: 1px solid rgba(200,200,200,0.8);
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+
+    .checkbox-label:hover input ~ .checkmark {
+      border-color: #DA007C;
+    }
+
+    .checkbox-label input:checked ~ .checkmark {
+      background-color: #DA007C;
+      border-color: #DA007C;
+    }
+
+    .checkmark:after {
+      content: "";
+      position: absolute;
+      display: none;
+      left: 6px;
+      top: 2px;
+      width: 4px;
+      height: 9px;
+      border: solid white;
+      border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+    }
+
+    .checkbox-label input:checked ~ .checkmark:after {
+      display: block;
+    }
+
+    .error-msg {
+      background: rgba(244,63,94,.1); border: 1px solid rgba(244,63,94,.3);
+      color: #f43f5e; padding: .75rem 1rem; border-radius: .6rem;
+      margin-bottom: 1rem; font-size: .85rem;
+    }
+
+    .spinner {
+      display: none; width: 18px; height: 18px; border: 2px solid #fff3;
+      border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 480px) {
+      .payment-container { padding: 16px; border-radius: 12px; }
+      .form-row { flex-direction: column; gap: 20px; }
+      .card-number { font-size: 18px; letter-spacing: 1px; }
+      .visual-card { padding: 20px; min-height: 180px; }
+    }
   </style>
 </head>
 <body>
-<div class="container">
-  <div class="logo">
-    <div class="logo-badge"><span>⚡</span> Atlas Pagos</div>
+
+<div class="payment-container">
+  <div class="header-section">
+    <div class="icon-wrapper">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#DA007C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
+        <line x1="1" y1="10" x2="23" y2="10"></line>
+      </svg>
+    </div>
+    <div>
+      <h2 class="title">Pago Seguro</h2>
+      <p class="subtitle">Complete los datos de su tarjeta para pagar RD$2.36</p>
+    </div>
   </div>
 
-  <div class="card">
-    <!-- Card Preview -->
-    <div class="card-preview">
-      <div class="pan" id="previewPan">•••• •••• •••• ••••</div>
-      <div class="details">
-        <div><div style="font-size:.65rem;opacity:.6;margin-bottom:.1rem">TITULAR</div><div id="previewName">TU NOMBRE</div></div>
-        <div><div style="font-size:.65rem;opacity:.6;margin-bottom:.1rem">VENCE</div><div id="previewExp">MM/AA</div></div>
+  {error_block}
+
+  <!-- Visual Card Mockup -->
+  <div class="visual-card">
+    <svg class="card-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
+      <line x1="1" y1="10" x2="23" y2="10"></line>
+    </svg>
+    <div class="card-details">
+      <div class="card-number" id="previewPan">•••• •••• •••• ••••</div>
+      <div class="card-footer">
+        <div class="card-holder" id="previewName">NOMBRE DEL TITULAR</div>
+        <div class="card-expiry" id="previewExp">MM/AA</div>
       </div>
     </div>
+    <div class="card-bg-decoration"></div>
+  </div>
 
-    <div class="secure-badge">
-      <span class="dot">●</span>
-      Conexión segura — Datos cifrados con TLS 1.3 · PCI DSS Compliant
-    </div>
+  <form id="payForm" class="payment-form" method="POST" action="/checkout/process" autocomplete="off">
+    <!-- Anti-CSRF token -->
+    <input type="hidden" name="csrf_token" id="csrf_token"/>
 
-    <!-- Amount -->
-    <div class="amount-display" id="amountDisplay">RD$2.36</div>
-    <div class="itbis-row"><span>Subtotal</span><span>RD$2.00</span></div>
-    <div class="itbis-row"><span>ITBIS (18%)</span><span>RD$0.36</span></div>
-    <div class="total-row"><span>Total a cobrar</span><span>RD$2.36</span></div>
-
-    {error_block}
-
-    <h2>Datos de pago</h2>
-
-    <form id="payForm" method="POST" action="/checkout/process" autocomplete="off">
-      <!-- Anti-CSRF token -->
-      <input type="hidden" name="csrf_token" id="csrf_token"/>
-
-      <div class="form-group">
-        <label>Número de tarjeta</label>
-        <div class="card-icons">
-          <div class="card-icon" id="icon-visa">VISA</div>
-          <div class="card-icon" id="icon-mc">MC</div>
-          <div class="card-icon" id="icon-amex">AMEX</div>
-        </div>
+    <div class="form-group">
+      <label>Número de tarjeta</label>
+      <div class="input-with-icon">
+        <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
         <input type="text" id="cardNumber" name="card_number"
+               class="signup-input with-icon"
                placeholder="0000 0000 0000 0000"
                maxlength="19" inputmode="numeric"
                autocomplete="cc-number" required/>
       </div>
+    </div>
 
-      <div class="form-group">
-        <label>Nombre en la tarjeta</label>
+    <div class="form-group">
+      <label>Nombre del titular</label>
+      <div class="input-with-icon">
+        <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
         <input type="text" id="cardName" name="cardholder_name"
-               placeholder="Igual que aparece en la tarjeta"
+               class="signup-input with-icon"
+               placeholder="Como aparece en la tarjeta"
                maxlength="60" autocomplete="cc-name" required/>
       </div>
+    </div>
 
-      <div class="row-2">
-        <div class="form-group">
-          <label>Vencimiento</label>
+    <div class="form-row">
+      <div class="form-group half">
+        <label>Vencimiento</label>
+        <div class="input-with-icon">
+          <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
           <input type="text" id="cardExp" name="expiration"
+                 class="signup-input with-icon"
                  placeholder="MM/AA" maxlength="5"
                  inputmode="numeric" autocomplete="cc-exp" required/>
         </div>
-        <div class="form-group">
-          <label>CVC / CVV</label>
+      </div>
+      <div class="form-group half">
+        <label>CVV</label>
+        <div class="input-with-icon">
+          <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
           <input type="password" id="cardCvc" name="cvc"
-                 placeholder="•••" maxlength="4"
+                 class="signup-input with-icon"
+                 placeholder="123" maxlength="4"
                  inputmode="numeric" autocomplete="cc-csc" required/>
         </div>
       </div>
+    </div>
 
-      <div class="form-group">
-        <label>Correo electrónico</label>
+    <div class="form-group">
+      <label>Correo electrónico</label>
+      <div class="input-with-icon">
+        <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
         <input type="email" name="cardholder_email"
+               class="signup-input with-icon"
                placeholder="tu@correo.com"
                autocomplete="email" required/>
       </div>
-
-      <!-- Suscripción: siempre guardar tarjeta en DataVault para cobros mensuales -->
-      <input type="hidden" name="save_card" value="1"/>
-
-      <!-- Campos browser fingerprint para 3DS 2.0 (Azul producción los requiere) -->
-      <input type="hidden" name="browser_accept_header" id="browserAccept"/>
-      <input type="hidden" name="browser_ip" id="browserIp" value=""/>
-      <input type="hidden" name="browser_language" id="browserLang"/>
-      <input type="hidden" name="browser_color_depth" id="browserColor"/>
-      <input type="hidden" name="browser_screen_width" id="browserWidth"/>
-      <input type="hidden" name="browser_screen_height" id="browserHeight"/>
-      <input type="hidden" name="browser_time_zone" id="browserTz"/>
-      <input type="hidden" name="browser_user_agent" id="browserUA"/>
-      <input type="hidden" name="browser_java" id="browserJava" value="false"/>
-
-      <button type="submit" class="btn" id="submitBtn">
-        <span id="btnText">🔒 Registrar tarjeta y pagar RD$2.36</span>
-        <div class="spinner" id="spinner"></div>
-      </button>
-    </form>
-
-    <div class="footer-note">
-      Procesado por <strong>AZUL</strong> · Tus datos nunca se almacenan en texto claro
     </div>
-  </div>
+
+    <div class="checkbox-group">
+      <label class="checkbox-label">
+        <input type="checkbox" name="save_card" value="1" checked/>
+        <span class="checkmark"></span>
+        Guardar esta tarjeta para futuros pagos
+      </label>
+    </div>
+
+    <!-- Campos browser fingerprint para 3DS 2.0 -->
+    <input type="hidden" name="browser_accept_header" id="browserAccept"/>
+    <input type="hidden" name="browser_ip" id="browserIp" value=""/>
+    <input type="hidden" name="browser_language" id="browserLang"/>
+    <input type="hidden" name="browser_color_depth" id="browserColor"/>
+    <input type="hidden" name="browser_screen_width" id="browserWidth"/>
+    <input type="hidden" name="browser_screen_height" id="browserHeight"/>
+    <input type="hidden" name="browser_time_zone" id="browserTz"/>
+    <input type="hidden" name="browser_user_agent" id="browserUA"/>
+    <input type="hidden" name="browser_java" id="browserJava" value="false"/>
+
+    <button type="submit" class="signup-btn-filled" id="submitBtn">
+      <span id="btnText">Pagar RD$2.36</span>
+      <div class="spinner" id="spinner"></div>
+    </button>
+  </form>
 </div>
 
 <script>
-(function(){{
+(function(){
   'use strict';
 
-  // --- CSRF token simple (session-based en producción real) ---
   const csrf = Math.random().toString(36).slice(2) + Date.now().toString(36);
   document.getElementById('csrf_token').value = csrf;
-  sessionStorage.setItem('csrf', csrf);
 
-  // --- Formateo de número de tarjeta ---
   const cardInput = document.getElementById('cardNumber');
   const previewPan = document.getElementById('previewPan');
   const previewName = document.getElementById('previewName');
   const previewExp = document.getElementById('previewExp');
 
-  cardInput.addEventListener('input', function() {{
+  cardInput.addEventListener('input', function() {
     let v = this.value.replace(/\D/g,'').slice(0,16);
-    this.value = v.match(/.{{1,4}}/g)?.join(' ') || '';
+    this.value = v.match(/.{1,4}/g)?.join(' ') || '';
     const masked = (v + '················').slice(0,16);
-    previewPan.textContent = masked.match(/.{{1,4}}/g).join(' ');
-    detectNetwork(v);
-  }});
+    previewPan.textContent = masked.match(/.{1,4}/g).join(' ');
+  });
 
-  // --- Nombre en card preview ---
-  document.getElementById('cardName').addEventListener('input', function() {{
-    previewName.textContent = this.value.toUpperCase() || 'TU NOMBRE';
-  }});
+  document.getElementById('cardName').addEventListener('input', function() {
+    previewName.textContent = this.value.toUpperCase() || 'NOMBRE DEL TITULAR';
+  });
 
-  // --- Expiración ---
-  document.getElementById('cardExp').addEventListener('input', function() {{
+  document.getElementById('cardExp').addEventListener('input', function() {
     let v = this.value.replace(/\D/g,'');
     if(v.length >= 2) v = v.slice(0,2) + '/' + v.slice(2,4);
     this.value = v;
     previewExp.textContent = v || 'MM/AA';
-  }});
+  });
 
-  // --- Detectar red de tarjeta ---
-  function detectNetwork(num) {{
-    document.getElementById('icon-visa').classList.remove('active');
-    document.getElementById('icon-mc').classList.remove('active');
-    document.getElementById('icon-amex').classList.remove('active');
-    if(/^4/.test(num)) document.getElementById('icon-visa').classList.add('active');
-    else if(/^5[1-5]/.test(num) || /^2[2-7]/.test(num)) document.getElementById('icon-mc').classList.add('active');
-    else if(/^3[47]/.test(num)) document.getElementById('icon-amex').classList.add('active');
-  }}
-
-  // --- Algoritmo de Luhn ---
-  function luhn(num) {{
+  function luhn(num) {
     let sum=0, alt=false;
-    for(let i=num.length-1;i>=0;i--) {{
+    for(let i=num.length-1;i>=0;i--) {
       let n=parseInt(num[i],10);
-      if(alt){{ n*=2; if(n>9) n-=9; }}
+      if(alt){ n*=2; if(n>9) n-=9; }
       sum+=n; alt=!alt;
-    }}
+    }
     return sum%10===0;
-  }}
+  }
 
-  // --- Recopilar datos del navegador para 3DS 2.0 ---
-  function collectBrowserInfo() {{
+  function collectBrowserInfo() {
     document.getElementById('browserAccept').value = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
     document.getElementById('browserLang').value = navigator.language || 'es-DO';
     document.getElementById('browserColor').value = String(screen.colorDepth || 24);
@@ -382,46 +533,43 @@ def _html_form(error: str = "") -> str:
     document.getElementById('browserTz').value = String(new Date().getTimezoneOffset());
     document.getElementById('browserUA').value = navigator.userAgent || '';
     document.getElementById('browserJava').value = String(navigator.javaEnabled ? navigator.javaEnabled() : false);
-  }}
+  }
 
-  // --- Validación y submit ---
-  document.getElementById('payForm').addEventListener('submit', function(e) {{
+  document.getElementById('payForm').addEventListener('submit', function(e) {
     e.preventDefault();
     const raw = cardInput.value.replace(/\s/g,'');
-    if(raw.length < 15) {{ alert('Número de tarjeta inválido.'); return; }}
-    if(!luhn(raw)) {{ alert('Número de tarjeta inválido (verificación Luhn fallida).'); return; }}
+    if(raw.length < 15) { alert('Número de tarjeta inválido.'); return; }
+    if(!luhn(raw)) { alert('Número de tarjeta inválido (verificación Luhn fallida).'); return; }
 
     const exp = document.getElementById('cardExp').value;
     const [mm,yy] = exp.split('/');
-    if(!mm||!yy||mm<1||mm>12) {{ alert('Fecha de vencimiento inválida.'); return; }}
+    if(!mm||!yy||mm<1||mm>12) { alert('Fecha de vencimiento inválida.'); return; }
     const now = new Date();
     const expFull = new Date(2000+parseInt(yy), parseInt(mm)-1, 1);
-    if(expFull < new Date(now.getFullYear(), now.getMonth(), 1)) {{
+    if(expFull < new Date(now.getFullYear(), now.getMonth(), 1)) {
       alert('Tu tarjeta está vencida.'); return;
-    }}
+    }
 
     const cvc = document.getElementById('cardCvc').value;
-    if(cvc.length < 3) {{ alert('CVC inválido.'); return; }}
+    if(cvc.length < 3) { alert('CVC inválido.'); return; }
 
-    // Recopilar browser fingerprint antes de enviar
     collectBrowserInfo();
 
-    // Mostrar spinner
     document.getElementById('btnText').style.display = 'none';
     document.getElementById('spinner').style.display = 'block';
     document.getElementById('submitBtn').disabled = true;
 
     this.submit();
-  }});
-}})();
+  });
+})();
 </script>
 </body>
-</html>"""
+</html>""".replace("{error_block}", error_block)
 
 
 def _html_3ds_method(payment_id: str, method_form: str, amount: int) -> str:
     """Página intermedia — renderiza el iframe silencioso 3DS Method y continúa."""
-    return f"""<!DOCTYPE html>
+    return """<!DOCTYPE html>
 <html lang="es"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Verificando seguridad — Atlas</title>
@@ -514,7 +662,7 @@ def _html_result(status: str, message: str, payment_id: str, amount: int, iso: s
     color = "#10b981" if ok else "#f43f5e"
     icon = "✅" if ok else "❌"
     title = "Pago Aprobado" if ok else "Pago Rechazado"
-    return f"""<!DOCTYPE html>
+    return """<!DOCTYPE html>
 <html lang="es"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{title} — Atlas</title>
