@@ -1,0 +1,17 @@
+{
+  "Comment": "CREATE/UPDATE A Alias for pagos.iamatlas.do",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "pagos.iamatlas.do.",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "Z3AADJGX6KTTL2",
+          "DNSName": "ecs-express-gateway-alb-6093cc50-1384285183.us-east-2.elb.amazonaws.com.",
+          "EvaluateTargetHealth": true
+        }
+      }
+    }
+  ]
+}

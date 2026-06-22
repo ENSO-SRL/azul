@@ -1,0 +1,11 @@
+[
+  {
+      "Field": "host-header",
+      "HostHeaderConfig": {
+          "Values": [
+              "pa-ad2039d606764cfd953ed8909489a2ec.ecs.us-east-2.on.aws",
+              "pagos.iamatlas.do"
+          ]
+      }
+  }
+]

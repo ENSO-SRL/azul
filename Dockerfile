@@ -53,6 +53,7 @@ COPY --from=builder /opt/venv /opt/venv
 # Copiar código fuente
 COPY app/       ./app/
 COPY routers/   ./routers/
+COPY public/    ./public/
 COPY azul_client.py   .
 COPY azul_config.py   .
 
