@@ -27,6 +27,9 @@ from app.infrastructure.database import get_db
 from app.infrastructure.repo_impl import SQLPaymentRepository, SQLTransactionRepository
 from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
 from app.services.payment_service import PaymentService
+from app.services.token_service import TokenService
+from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
+from routers.tokens import _to_response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("checkout")
@@ -39,6 +42,13 @@ _APP_BASE = os.getenv("APP_BASE_URL", "http://localhost:8000")
 # The challenge page is fetched within seconds of being stored; no TTL needed.
 _challenge_cache: Dict[str, str] = {}
 
+
+
+def _get_token_svc(db: AsyncSession = Depends(get_db)) -> TokenService:
+    return TokenService(
+        card_repo=SQLSavedCardRepository(db),
+        gateway=AzulPaymentGateway(),
+    )
 
 def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
     return PaymentService(
@@ -53,7 +63,7 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
 # HTML
 # ---------------------------------------------------------------------------
 
-def _html_form(error: str = "") -> str:
+def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0) -> str:
     error_block = f'<div class="error-msg"> {error}</div>' if error else ""
     return """<!DOCTYPE html>
 <html lang="es">
@@ -68,37 +78,40 @@ def _html_form(error: str = "") -> str:
 </head>
 <body>
 
-<div class="payment-container">
-  <div class="header-section">
-    <div class="icon-wrapper">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#DA007C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<div class="checkout-layout">
+  <!-- Columna izquierda: formulario de pago -->
+  <div class="payment-container">
+    <div class="header-section">
+      <div class="icon-wrapper">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#DA007C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
+          <line x1="1" y1="10" x2="23" y2="10"></line>
+        </svg>
+      </div>
+      <div>
+        <h2 class="title">Métodos de pago</h2>
+        <p class="subtitle">Agrega y administra tus tarjetas</p>
+      </div>
+    </div>
+
+    {error_block}
+
+    <!-- Visual Card Mockup -->
+    <div class="visual-card">
+      <svg class="card-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
         <line x1="1" y1="10" x2="23" y2="10"></line>
       </svg>
-    </div>
-    <div>
-      <h2 class="title">Pago Seguro</h2>
-      <p class="subtitle">Complete los datos de su tarjeta para pagar RD$2.36</p>
-    </div>
-  </div>
-
-  {error_block}
-
-  <!-- Visual Card Mockup -->
-  <div class="visual-card">
-    <svg class="card-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
-      <line x1="1" y1="10" x2="23" y2="10"></line>
-    </svg>
-    <div class="card-details">
-      <div class="card-number" id="previewPan">•••• •••• •••• ••••</div>
-      <div class="card-footer">
-        <div class="card-holder" id="previewName">NOMBRE DEL TITULAR</div>
-        <div class="card-expiry" id="previewExp">MM/AA</div>
+      <div class="card-details">
+        <div class="card-number" id="previewPan">•••• •••• •••• ••••</div>
+        <div class="card-footer">
+          <div class="card-holder" id="previewName">NOMBRE DEL TITULAR</div>
+          <div class="card-expiry" id="previewExp">MM/AA</div>
+        </div>
       </div>
+      <div class="card-bg-decoration"></div>
+      <div class="card-bottom-strip"></div>
     </div>
-    <div class="card-bg-decoration"></div>
-  </div>
 
   <form id="payForm" class="payment-form" method="POST" action="/checkout/process" autocomplete="off">
     <!-- Anti-CSRF token -->
@@ -252,8 +265,19 @@ def _html_form(error: str = "") -> str:
       RNC: 133-11765-7 | soporte@atlas.do | +1 (809) 690-5851<br>
       c/José López, Esq. Amelia Francasci, Los Prados, Santo Domingo, RD.
     </div>
+    </div> <!-- Fin Columna izquierda -->
+
+  <!-- Columna derecha: tarjetas guardadas -->
+  <div class="saved-cards-section">
+    <div class="saved-cards-header">
+      <h3 class="title">Tarjetas guardadas</h3>
+      <span class="badge">{cards_count}</span>
+    </div>
+    <div class="saved-cards-list">
+      {saved_cards_html}
+    </div>
   </div>
-</div>
+</div> <!-- Fin checkout-layout -->
 
 <script>
 (function(){
@@ -335,7 +359,7 @@ def _html_form(error: str = "") -> str:
 })();
 </script>
 </body>
-</html>""".replace("{error_block}", error_block)
+</html>""".replace("{error_block}", error_block).replace("{saved_cards_html}", saved_cards_html).replace("{cards_count}", str(cards_count))
 
 
 def _html_3ds_method(payment_id: str, method_form: str, amount: int) -> str:
@@ -438,9 +462,49 @@ def _html_result(status: str, message: str, payment_id: str, amount: int, iso: s
 # ---------------------------------------------------------------------------
 
 @router.get("", response_class=HTMLResponse, include_in_schema=False)
-async def checkout_form():
-    """Sirve el formulario de pago."""
-    resp = HTMLResponse(_html_form())
+async def checkout_form(
+    customer_id: str | None = None,
+    token_svc: TokenService = Depends(_get_token_svc)
+):
+    """Sirve el formulario de pago y carga tarjetas si hay un customer_id."""
+    saved_cards_html = ""
+    cards_count = 0
+
+    if customer_id:
+        try:
+            cards = await token_svc.list_cards(customer_id)
+            cards_count = len(cards)
+            for c in cards:
+                # Determinar icono (Visa o Mastercard)
+                brand_letter = "V" if "visa" in c.card_brand.lower() else "M"
+                brand_name = "Visa" if "visa" in c.card_brand.lower() else "Mastercard"
+                badge = '<span class="default-badge">Predeterminada</span>' if c.is_default else ''
+                
+                exp_formatted = f"{c.expiration[4:]}/{c.expiration[2:4]}" if len(c.expiration) == 6 else c.expiration
+                
+                saved_cards_html += f'''
+                <div class="saved-card-item">
+                    <div class="saved-card-icon">{brand_letter}</div>
+                    <div class="saved-card-info">
+                        <div class="saved-card-title">{brand_name} •••• {c.card_last4}</div>
+                        <div class="saved-card-subtitle">{badge} Vence {exp_formatted}</div>
+                    </div>
+                    <div class="saved-card-actions">
+                        <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                        <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                    </div>
+                </div>
+                '''
+        except Exception as e:
+            logger.error(f"[CHECKOUT] Error listando tarjetas para {customer_id}: {e}")
+
+    if not saved_cards_html and customer_id:
+        saved_cards_html = '<div class="empty-cards">No hay tarjetas guardadas.</div>'
+    elif not saved_cards_html:
+        saved_cards_html = '<div class="empty-cards">Inicia sesión para ver tus tarjetas guardadas.</div>'
+
+    html_content = _html_form(error="", saved_cards_html=saved_cards_html, cards_count=cards_count)
+    resp = HTMLResponse(html_content)
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
