@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.infrastructure.database import engine, init_db
 from app.security import require_api_key
@@ -114,6 +115,9 @@ app = FastAPI(
     redoc_url=_redoc_url,
     openapi_url=_openapi_url,
 )
+
+# Archivos estáticos
+app.mount("/public", StaticFiles(directory="public"), name="public")
 
 
 # ---------------------------------------------------------------------------

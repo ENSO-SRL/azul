@@ -54,7 +54,7 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
 # ---------------------------------------------------------------------------
 
 def _html_form(error: str = "") -> str:
-    error_block = f'<div class="error-msg">⚠️ {error}</div>' if error else ""
+    error_block = f'<div class="error-msg"> {error}</div>' if error else ""
     return """<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -64,304 +64,7 @@ def _html_form(error: str = "") -> str:
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
-  <style>
-    /* Reset & Base */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: #f8f9fa;
-      font-family: 'Inter', sans-serif;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1.5rem;
-    }
-
-    /* CSS from PaymentMethods.css */
-    .payment-container {
-      background: white;
-      border-radius: 16px;
-      padding: 32px;
-      box-shadow: 0 2px 12px rgba(0,0,0,0.07);
-      width: 100%;
-      max-width: 500px;
-      margin: 0 auto;
-      color: #1a1a1a;
-    }
-
-    .header-section {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      margin-bottom: 32px;
-    }
-
-    .icon-wrapper {
-      background: #FFF0F8;
-      padding: 10px;
-      border-radius: 12px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .title {
-      font-size: 20px;
-      font-weight: 800;
-      color: #343C6A;
-      margin: 0 0 4px 0;
-    }
-
-    .subtitle {
-      font-size: 13px;
-      color: #666;
-      margin: 0;
-    }
-
-    /* Visual Card */
-    .visual-card {
-      background: linear-gradient(135deg, #DA007C 0%, #a0005a 100%);
-      border-radius: 20px;
-      padding: 24px;
-      color: white;
-      position: relative;
-      overflow: hidden;
-      margin-bottom: 32px;
-      min-height: 200px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      box-shadow: 0 10px 20px rgba(218,0,124,0.2);
-    }
-
-    .card-bg-decoration {
-      position: absolute;
-      top: -50px;
-      right: -50px;
-      width: 200px;
-      height: 200px;
-      background: rgba(255,255,255,0.05);
-      border-radius: 50%;
-      z-index: 1;
-    }
-
-    .card-icon {
-      position: relative;
-      z-index: 2;
-      width: 28px;
-      height: 28px;
-    }
-
-    .card-details {
-      position: relative;
-      z-index: 2;
-    }
-
-    .card-number {
-      font-family: monospace;
-      font-size: 22px;
-      letter-spacing: 2px;
-      margin-bottom: 24px;
-      font-weight: 600;
-      min-height: 26px;
-    }
-
-    .card-footer {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-    }
-
-    .card-holder {
-      font-size: 12px;
-      letter-spacing: 1px;
-      opacity: 0.9;
-    }
-
-    .card-expiry {
-      font-size: 13px;
-      font-weight: 600;
-    }
-
-    /* Form */
-    .payment-form {
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-    }
-
-    .form-row {
-      display: flex;
-      gap: 16px;
-    }
-
-    .form-group {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .form-group.half {
-      flex: 1;
-    }
-
-    .form-group label {
-      font-size: 13px;
-      color: #333;
-      font-weight: 500;
-    }
-
-    .input-with-icon {
-      position: relative;
-      display: flex;
-      align-items: center;
-    }
-
-    .input-icon {
-      position: absolute;
-      left: 16px;
-      z-index: 2;
-      width: 16px;
-      height: 16px;
-      color: #aaa;
-    }
-
-    .signup-input {
-      width: 100%;
-      padding: 11px 16px;
-      border-radius: 100px;
-      border: 1px solid rgba(200,200,200,0.8);
-      font-size: 13px;
-      background: rgba(255,255,255,0.80);
-      color: #1a1a1a;
-      outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
-      box-sizing: border-box;
-      font-family: 'Inter', sans-serif;
-    }
-
-    .signup-input.with-icon {
-      padding-left: 44px;
-    }
-
-    .signup-input:focus {
-      border-color: #DA007C;
-      box-shadow: 0 0 0 3px rgba(218,0,124,0.1);
-    }
-
-    .signup-input::placeholder {
-      color: #aaa;
-    }
-
-    .signup-btn-filled {
-      padding: 14px;
-      border-radius: 100px;
-      border: none;
-      color: white;
-      background: #DA007C;
-      font-weight: 600;
-      font-size: 14px;
-      cursor: pointer;
-      transition: background 0.2s, transform 0.1s;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      margin-top: 8px;
-    }
-
-    .signup-btn-filled:hover {
-      background: #c0006c;
-    }
-
-    .signup-btn-filled:active {
-      transform: scale(0.98);
-    }
-
-    .signup-btn-filled:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    /* Checkbox */
-    .checkbox-label {
-      display: flex;
-      align-items: center;
-      font-size: 13px;
-      color: #555;
-      cursor: pointer;
-      user-select: none;
-      position: relative;
-      padding-left: 28px;
-    }
-
-    .checkbox-label input {
-      position: absolute;
-      opacity: 0;
-      cursor: pointer;
-      height: 0;
-      width: 0;
-    }
-
-    .checkmark {
-      position: absolute;
-      top: 50%;
-      left: 0;
-      transform: translateY(-50%);
-      height: 18px;
-      width: 18px;
-      background-color: white;
-      border: 1px solid rgba(200,200,200,0.8);
-      border-radius: 4px;
-      transition: all 0.2s;
-    }
-
-    .checkbox-label:hover input ~ .checkmark {
-      border-color: #DA007C;
-    }
-
-    .checkbox-label input:checked ~ .checkmark {
-      background-color: #DA007C;
-      border-color: #DA007C;
-    }
-
-    .checkmark:after {
-      content: "";
-      position: absolute;
-      display: none;
-      left: 6px;
-      top: 2px;
-      width: 4px;
-      height: 9px;
-      border: solid white;
-      border-width: 0 2px 2px 0;
-      transform: rotate(45deg);
-    }
-
-    .checkbox-label input:checked ~ .checkmark:after {
-      display: block;
-    }
-
-    .error-msg {
-      background: rgba(244,63,94,.1); border: 1px solid rgba(244,63,94,.3);
-      color: #f43f5e; padding: .75rem 1rem; border-radius: .6rem;
-      margin-bottom: 1rem; font-size: .85rem;
-    }
-
-    .spinner {
-      display: none; width: 18px; height: 18px; border: 2px solid #fff3;
-      border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    @media (max-width: 480px) {
-      .payment-container { padding: 16px; border-radius: 12px; }
-      .form-row { flex-direction: column; gap: 20px; }
-      .card-number { font-size: 18px; letter-spacing: 1px; }
-      .visual-card { padding: 20px; min-height: 180px; }
-    }
-  </style>
+  <link rel="stylesheet" href="/public/css/checkout.css">
 </head>
 <body>
 
@@ -482,6 +185,74 @@ def _html_form(error: str = "") -> str:
       <div class="spinner" id="spinner"></div>
     </button>
   </form>
+
+  <div class="security-policies" style="background:transparent; border:none; padding:0; box-shadow:none;">
+    <div class="secure-logos">
+      <img src="/public/img1.jpeg" alt="Mastercard">
+      <img src="/public/img2.jpeg" alt="Mastercard ID Check">
+      <img src="/public/img3.jpeg" alt="Visa">
+      <img src="/public/img4.jpeg" alt="Visa Secure">
+    </div>
+
+    <h3 style="font-size: 14px; color: #666; margin-bottom: 16px; text-align: center; text-transform: uppercase; letter-spacing: 1px;">Políticas y Términos</h3>
+
+    <details class="policy-accordion">
+      <summary>Seguridad</summary>
+      <div class="accordion-content">
+        <p><strong>Infraestructura:</strong> No almacena, procesa ni retiene datos de tarjetas en sus servidores.</p>
+        <p><strong>Procesamiento de pagos:</strong> Lo gestiona directamente AZUL (Servicios Digitales Popular), certificado PCI-DSS.</p>
+        <p><strong>Sin acceso:</strong> Atlas no ve número de tarjeta, CVV ni credenciales bancarias.</p>
+        <p><strong>Cifrado:</strong> SSL/TLS extremo a extremo.</p>
+        <p><strong>Autenticación:</strong> Cumple 3D Secure + PCI-DSS vía AZUL.</p>
+      </div>
+    </details>
+
+    <details class="policy-accordion">
+      <summary>Devoluciones y Cancelaciones</summary>
+      <div class="accordion-content">
+        <h4>Cancelaciones</h4>
+        <ul>
+          <li><strong>Vía:</strong> solicitud a soporte@atlas.do</li>
+          <li><strong>Efectividad:</strong> al cierre del ciclo de facturación mensual vigente</li>
+          <li><strong>Acceso:</strong> irrestricto hasta vencer el periodo ya pagado</li>
+          <li>No se generan cargos nuevos tras confirmar</li>
+        </ul>
+        <h4>Devoluciones / Reembolsos</h4>
+        <ul>
+          <li><strong>Ventas finales:</strong> no hay devoluciones ni reembolsos sobre pagos procesados</li>
+          <li>Al pagar, el usuario acepta que iniciar el servicio extingue el derecho a devolución</li>
+          <li><strong>Errores/cargos duplicados:</strong> notificar dentro de 5 días hábiles</li>
+          <li><strong>Disputas:</strong> bajo normativas de AZUL y el banco emisor</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="policy-accordion">
+      <summary>Entregas y Activación</summary>
+      <div class="accordion-content">
+        <p><strong>Servicio 100% digital:</strong> no hay entrega física</p>
+        <p><strong>Activación:</strong> inmediata tras validar el pago (hasta 24h hábiles en casos especiales de mantenimiento/seguridad)</p>
+        <p>Email de confirmación con accesos, recibo y credenciales</p>
+        <p><strong>Si no llega el acceso:</strong> notificar a soporte@atlas.do con número de referencia</p>
+      </div>
+    </details>
+
+    <details class="policy-accordion">
+      <summary>Privacidad de Pagos</summary>
+      <div class="accordion-content">
+        <p>Mismo esquema de no-almacenamiento + AZUL/PCI-DSS</p>
+        <p>Datos recogidos solo para: gestión de cuenta, comunicaciones operativas (confirmaciones de pago), cumplimiento legal/tributario en RD</p>
+        <p>No venden ni ceden datos personales</p>
+        <p>Derechos ARCO disponibles vía soporte@atlas.do</p>
+      </div>
+    </details>
+
+    <div class="legal-footer">
+      <strong>COLINA DEL SOL, S.R.L. (IAMATLAS)</strong><br>
+      RNC: 133-11765-7 | soporte@atlas.do | +1 (809) 690-5851<br>
+      c/José López, Esq. Amelia Francasci, Los Prados, Santo Domingo, RD.
+    </div>
+  </div>
 </div>
 
 <script>
@@ -574,25 +345,7 @@ def _html_3ds_method(payment_id: str, method_form: str, amount: int) -> str:
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Verificando seguridad — Atlas</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
-<style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{background:#0f0f1a;color:#e2e8f0;font-family:'Inter',sans-serif;
-      min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem;}}
-.card{{background:#1a1a2e;border:1px solid #2d2d4e;border-radius:1.5rem;
-       padding:2.5rem;max-width:420px;width:100%;text-align:center;
-       box-shadow:0 25px 50px rgba(0,0,0,.5);}}
-.spinner-wrap{{margin:1.5rem auto;width:56px;height:56px;
-  background:linear-gradient(135deg,#6c63ff,#a78bfa);
-  border-radius:50%;display:flex;align-items:center;justify-content:center;}}
-.ring{{width:40px;height:40px;border:3px solid rgba(255,255,255,.3);
-  border-top-color:#fff;border-radius:50%;animation:spin .9s linear infinite;}}
-@keyframes spin{{to{{transform:rotate(360deg)}}}}
-h2{{font-size:1.2rem;font-weight:700;margin-bottom:.5rem;}}
-.sub{{color:#94a3b8;font-size:.88rem;margin-bottom:1.5rem;}}
-.step{{font-size:.78rem;color:#64748b;margin-top:1rem;}}
-/* Iframe 3DS Method — debe ser 0x0 (invisible) segun spec EMV 3DS */
-.method-iframe{{width:0;height:0;border:none;position:absolute;top:-9999px;}}
-</style></head>
+<link rel="stylesheet" href="/public/css/checkout.css"></head>
 <body><div class="card">
   <div class="spinner-wrap"><div class="ring"></div></div>
   <h2>Verificando tu tarjeta</h2>
@@ -667,25 +420,7 @@ def _html_result(status: str, message: str, payment_id: str, amount: int, iso: s
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{title} — Atlas</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
-<style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{background:#0f0f1a;color:#e2e8f0;font-family:'Inter',sans-serif;
-      min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem;}}
-.card{{background:#1a1a2e;border:1px solid #2d2d4e;border-radius:1.5rem;
-       padding:2.5rem;max-width:400px;width:100%;text-align:center;
-       box-shadow:0 25px 50px rgba(0,0,0,.5);}}
-.icon{{font-size:4rem;margin-bottom:1rem;}}
-h1{{font-size:1.5rem;font-weight:700;margin-bottom:.5rem;color:{color};}}
-.sub{{color:#94a3b8;font-size:.9rem;margin-bottom:1.5rem;}}
-.detail-row{{display:flex;justify-content:space-between;padding:.6rem 0;
-             border-bottom:1px solid #2d2d4e;font-size:.85rem;}}
-.detail-row:last-of-type{{border-bottom:none;}}
-.label{{color:#94a3b8;}}
-.value{{font-weight:600;}}
-.btn{{display:inline-block;margin-top:1.5rem;padding:.7rem 1.5rem;
-      background:linear-gradient(135deg,#6c63ff,#a78bfa);border-radius:.75rem;
-      color:#fff;font-weight:700;text-decoration:none;font-size:.9rem;}}
-</style></head>
+<link rel="stylesheet" href="/public/css/checkout.css"></head>
 <body><div class="card">
 <div class="icon">{icon}</div>
 <h1>{title}</h1>
