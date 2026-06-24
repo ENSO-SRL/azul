@@ -46,7 +46,7 @@ body {
   width: 100%;
   max-width: 960px;
   margin: 0 auto;
-  margin-top: 32px;
+  margin-top: 80px;
 }
 
 .policies-grid {
@@ -57,10 +57,14 @@ body {
 
 @media (max-width: 850px) {
   .checkout-layout {
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column-reverse;
   }
   .policies-grid {
     grid-template-columns: 1fr;
+  }
+  body {
+    padding: 1rem;
   }
 }
 
@@ -971,6 +975,12 @@ details.policy-accordion[open] summary::after {
   .legal-footer {
     border-top-color: #2d2d2d;
     color: #64748b;
+  }
+  .secure-logos {
+    border-bottom-color: #2d2d2d;
+  }
+  .empty-cards {
+    border-color: rgba(255,255,255,0.1);
   }
 
   /* Saved visual cards */
