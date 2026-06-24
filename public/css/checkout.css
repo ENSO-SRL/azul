@@ -5,23 +5,47 @@ body {
   font-family: 'Inter', sans-serif;
   min-height: 100vh;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 1.5rem;
+  padding: 2rem 1.5rem;
 }
 
-/* CSS from PaymentMethods.css */
+/* -------------------------------------------------------------------------
+   LAYOUT — Single column, saved cards full width on top
+--------------------------------------------------------------------------- */
+.checkout-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+/* Saved cards section appears first (full width) for side-by-side grid */
+.saved-cards-section {
+  width: 100%;
+  order: -1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Form stays centered with a comfortable max-width */
 .payment-container {
   background: white;
   border-radius: 16px;
   padding: 32px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.05);
   width: 100%;
-  max-width: 500px;
+  max-width: 520px;
   margin: 0 auto;
   color: #1a1a1a;
 }
 
+/* -------------------------------------------------------------------------
+   HEADER
+--------------------------------------------------------------------------- */
 .header-section {
   display: flex;
   align-items: center;
@@ -51,7 +75,9 @@ body {
   margin: 0;
 }
 
-/* Visual Card */
+/* -------------------------------------------------------------------------
+   VISUAL CARD (form preview)
+--------------------------------------------------------------------------- */
 .visual-card {
   background: linear-gradient(135deg, #DA007C 0%, #a0005a 100%);
   border-radius: 20px;
@@ -116,7 +142,18 @@ body {
   font-weight: 600;
 }
 
-/* Form */
+.card-bottom-strip {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 6px;
+  background: #84cc16;
+}
+
+/* -------------------------------------------------------------------------
+   FORM
+--------------------------------------------------------------------------- */
 .payment-form {
   display: flex;
   flex-direction: column;
@@ -217,7 +254,9 @@ body {
   transform: none;
 }
 
-/* Checkbox */
+/* -------------------------------------------------------------------------
+   CHECKBOX
+--------------------------------------------------------------------------- */
 .checkbox-label {
   display: flex;
   align-items: center;
@@ -276,6 +315,9 @@ body {
   display: block;
 }
 
+/* -------------------------------------------------------------------------
+   ERROR & SPINNER
+--------------------------------------------------------------------------- */
 .error-msg {
   background: rgba(244,63,94,.1); border: 1px solid rgba(244,63,94,.3);
   color: #f43f5e; padding: .75rem 1rem; border-radius: .6rem;
@@ -288,14 +330,9 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-@media (max-width: 480px) {
-  .payment-container { padding: 16px; border-radius: 12px; }
-  .form-row { flex-direction: column; gap: 20px; }
-  .card-number { font-size: 18px; letter-spacing: 1px; }
-  .visual-card { padding: 20px; min-height: 180px; }
-}
-
-/* Security Policies - Bien bonito */
+/* -------------------------------------------------------------------------
+   SECURITY POLICIES
+--------------------------------------------------------------------------- */
 .security-policies {
   margin-top: 32px;
   padding: 24px;
@@ -369,7 +406,6 @@ body {
   object-fit: contain;
   filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.05));
 }
-
 
 /* Accordion Policies */
 details.policy-accordion {
@@ -447,53 +483,17 @@ details.policy-accordion[open] summary::after {
   line-height: 1.5;
 }
 
-
 /* -------------------------------------------------------------------------
-   NEW LAYOUT & DARK MODE
+   SAVED CARDS — Header & Badge
 --------------------------------------------------------------------------- */
-
-/* Base Layout changes to support 2 columns */
-body {
-  align-items: flex-start;
-  padding-top: 4rem;
-}
-
-.checkout-layout {
-  display: grid;
-  grid-template-columns: 1fr 380px;
-  gap: 32px;
-  width: 100%;
-  max-width: 900px;
-  margin: 0 auto;
-}
-
-@media (max-width: 850px) {
-  .checkout-layout {
-    grid-template-columns: 1fr;
-  }
-}
-
-.payment-container {
-  max-width: 100%;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.05);
-}
-
-/* Saved Cards Section */
-.saved-cards-section {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
 .saved-cards-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
 }
 
 .saved-cards-header .title {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: #333;
   margin: 0;
@@ -508,86 +508,6 @@ body {
   border-radius: 12px;
 }
 
-.saved-cards-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.saved-card-item {
-  background: white;
-  border: 1px solid rgba(0,0,0,0.05);
-  border-radius: 16px;
-  padding: 16px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.02);
-  transition: transform 0.2s, box-shadow 0.2s;
-}
-
-.saved-card-item:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 15px rgba(0,0,0,0.06);
-}
-
-.saved-card-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: #f8f9fa;
-  color: #343C6A;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 16px;
-}
-
-.saved-card-info {
-  flex: 1;
-}
-
-.saved-card-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #1a1a1a;
-  margin-bottom: 4px;
-}
-
-.saved-card-subtitle {
-  font-size: 11px;
-  color: #888;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.default-badge {
-  color: #84cc16; /* Green Accent */
-  background: rgba(132,204,22,0.1);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-weight: 600;
-}
-
-.saved-card-actions {
-  display: flex;
-  gap: 8px;
-  color: #ccc;
-}
-
-.action-icon {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  transition: color 0.2s;
-}
-
-.action-icon:hover {
-  color: #DA007C;
-}
-
 .empty-cards {
   font-size: 13px;
   color: #888;
@@ -596,19 +516,6 @@ body {
   background: rgba(0,0,0,0.02);
   border-radius: 12px;
   border: 1px dashed rgba(0,0,0,0.1);
-}
-
-/* Green Strip on Visual Card */
-.visual-card {
-  position: relative;
-}
-.card-bottom-strip {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 100%;
-  height: 6px;
-  background: #84cc16;
 }
 
 /* -------------------------------------------------------------------------
@@ -953,31 +860,22 @@ body {
 }
 
 /* -------------------------------------------------------------------------
-   RESPONSIVE — Saved Cards
+   RESPONSIVE
 --------------------------------------------------------------------------- */
-@media (max-width: 850px) {
-  .saved-cards-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (max-width: 480px) {
+  .checkout-layout { gap: 24px; }
+  .payment-container { padding: 16px; border-radius: 12px; }
+  .form-row { flex-direction: column; gap: 20px; }
+  .card-number { font-size: 18px; letter-spacing: 1px; }
+  .visual-card { padding: 20px; min-height: 180px; }
   .saved-visual-card {
     padding: 20px 18px 16px;
     min-height: 160px;
     border-radius: 16px;
   }
-  .svc-number {
-    font-size: 17px;
-    letter-spacing: 2px;
-  }
-  .pay-saved-btn {
-    font-size: 13px;
-    padding: 12px;
-  }
-  .confirm-modal {
-    padding: 24px;
-  }
+  .svc-number { font-size: 17px; letter-spacing: 2px; }
+  .pay-saved-btn { font-size: 13px; padding: 12px; }
+  .confirm-modal { padding: 24px; }
 }
 
 /* -------------------------------------------------------------------------
@@ -988,16 +886,15 @@ body {
     background: #121212;
     color: #e2e8f0;
   }
-  .payment-container, .saved-card-item {
+  .payment-container {
     background: #1e1e1e;
     color: #e2e8f0;
     box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-    border-color: #2d2d2d;
   }
-  .title, .saved-card-title, .saved-cards-header .title {
+  .title, .saved-cards-header .title {
     color: #f1f5f9;
   }
-  .subtitle, .saved-card-subtitle, .empty-cards {
+  .subtitle {
     color: #94a3b8;
   }
   .icon-wrapper {
@@ -1014,24 +911,26 @@ body {
   .form-group label, .checkbox-label {
     color: #cbd5e1;
   }
-  .saved-card-icon {
-    background: #2d2d2d;
-    color: #e2e8f0;
-  }
   .badge {
     background: #2d2d2d;
     color: #cbd5e1;
   }
-  .empty-cards {
+  .empty-cards, .empty-cards-state {
     background: rgba(255,255,255,0.02);
-    border-color: rgba(255,255,255,0.1);
+    border-color: rgba(255,255,255,0.08);
+  }
+  .empty-cards-state .empty-title {
+    color: #f1f5f9;
+  }
+  .empty-cards-state .empty-desc {
+    color: #64748b;
   }
   .checkmark {
     background-color: transparent;
     border-color: rgba(255,255,255,0.3);
   }
-  
-  /* Accordions in dark mode */
+
+  /* Accordions */
   details.policy-accordion {
     background: #1e1e1e;
     border-color: #2d2d2d;
@@ -1052,7 +951,7 @@ body {
     color: #64748b;
   }
 
-  /* Saved visual cards — dark mode adjustments */
+  /* Saved visual cards */
   .saved-visual-card {
     background: linear-gradient(135deg, #0d1117 0%, #161b22 60%, #1a2332 100%);
     box-shadow: 0 8px 24px rgba(0,0,0,0.4);
@@ -1061,7 +960,7 @@ body {
     box-shadow: 0 12px 32px rgba(0,0,0,0.5);
   }
 
-  /* Confirm modal dark */
+  /* Confirm modal */
   .confirm-modal {
     background: #1e1e1e;
     box-shadow: 0 20px 60px rgba(0,0,0,0.6);
@@ -1079,17 +978,5 @@ body {
   }
   .confirm-cancel:hover {
     background: #3d3d3d;
-  }
-
-  /* Empty state dark */
-  .empty-cards-state {
-    background: rgba(255,255,255,0.02);
-    border-color: rgba(255,255,255,0.08);
-  }
-  .empty-cards-state .empty-title {
-    color: #f1f5f9;
-  }
-  .empty-cards-state .empty-desc {
-    color: #64748b;
   }
 }
