@@ -11,21 +11,19 @@ body {
 }
 
 /* -------------------------------------------------------------------------
-   LAYOUT — Single column, saved cards full width on top
+   LAYOUT — 2 Columns on Desktop, Full Width Footer
 --------------------------------------------------------------------------- */
 .checkout-layout {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 1fr 380px;
   gap: 32px;
   width: 100%;
   max-width: 960px;
   margin: 0 auto;
 }
 
-/* Saved cards section appears first (full width) for side-by-side grid */
+/* Saved cards section */
 .saved-cards-section {
-  width: 100%;
-  order: -1;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -38,10 +36,34 @@ body {
   padding: 32px;
   box-shadow: 0 4px 20px rgba(0,0,0,0.05);
   width: 100%;
-  max-width: 520px;
+  max-width: 100%;
   margin: 0 auto;
   color: #1a1a1a;
 }
+
+/* Footer Wrapper */
+.checkout-footer-wrapper {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  margin-top: 32px;
+}
+
+.policies-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 850px) {
+  .checkout-layout {
+    grid-template-columns: 1fr;
+  }
+  .policies-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 
 /* -------------------------------------------------------------------------
    HEADER
@@ -525,7 +547,7 @@ details.policy-accordion[open] summary::after {
 /* Grid layout for saved cards */
 .saved-cards-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: 1fr;
   gap: 16px;
 }
 

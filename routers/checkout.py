@@ -199,73 +199,8 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
     </button>
   </form>
 
-  <div class="security-policies" style="background:transparent; border:none; padding:0; box-shadow:none;">
-    <div class="secure-logos">
-      <img src="/public/img1.jpeg" alt="Mastercard">
-      <img src="/public/img2.jpeg" alt="Mastercard ID Check">
-      <img src="/public/img3.jpeg" alt="Visa">
-      <img src="/public/img4.jpeg" alt="Visa Secure">
-    </div>
-
-    <h3 style="font-size: 14px; color: #666; margin-bottom: 16px; text-align: center; text-transform: uppercase; letter-spacing: 1px;">Políticas y Términos</h3>
-
-    <details class="policy-accordion">
-      <summary>Seguridad</summary>
-      <div class="accordion-content">
-        <p><strong>Infraestructura:</strong> No almacena, procesa ni retiene datos de tarjetas en sus servidores.</p>
-        <p><strong>Procesamiento de pagos:</strong> Lo gestiona directamente AZUL (Servicios Digitales Popular), certificado PCI-DSS.</p>
-        <p><strong>Sin acceso:</strong> Atlas no ve número de tarjeta, CVV ni credenciales bancarias.</p>
-        <p><strong>Cifrado:</strong> SSL/TLS extremo a extremo.</p>
-        <p><strong>Autenticación:</strong> Cumple 3D Secure + PCI-DSS vía AZUL.</p>
-      </div>
-    </details>
-
-    <details class="policy-accordion">
-      <summary>Devoluciones y Cancelaciones</summary>
-      <div class="accordion-content">
-        <h4>Cancelaciones</h4>
-        <ul>
-          <li><strong>Vía:</strong> solicitud a soporte@atlas.do</li>
-          <li><strong>Efectividad:</strong> al cierre del ciclo de facturación mensual vigente</li>
-          <li><strong>Acceso:</strong> irrestricto hasta vencer el periodo ya pagado</li>
-          <li>No se generan cargos nuevos tras confirmar</li>
-        </ul>
-        <h4>Devoluciones / Reembolsos</h4>
-        <ul>
-          <li><strong>Ventas finales:</strong> no hay devoluciones ni reembolsos sobre pagos procesados</li>
-          <li>Al pagar, el usuario acepta que iniciar el servicio extingue el derecho a devolución</li>
-          <li><strong>Errores/cargos duplicados:</strong> notificar dentro de 5 días hábiles</li>
-          <li><strong>Disputas:</strong> bajo normativas de AZUL y el banco emisor</li>
-        </ul>
-      </div>
-    </details>
-
-    <details class="policy-accordion">
-      <summary>Entregas y Activación</summary>
-      <div class="accordion-content">
-        <p><strong>Servicio 100% digital:</strong> no hay entrega física</p>
-        <p><strong>Activación:</strong> inmediata tras validar el pago (hasta 24h hábiles en casos especiales de mantenimiento/seguridad)</p>
-        <p>Email de confirmación con accesos, recibo y credenciales</p>
-        <p><strong>Si no llega el acceso:</strong> notificar a soporte@atlas.do con número de referencia</p>
-      </div>
-    </details>
-
-    <details class="policy-accordion">
-      <summary>Privacidad de Pagos</summary>
-      <div class="accordion-content">
-        <p>Mismo esquema de no-almacenamiento + AZUL/PCI-DSS</p>
-        <p>Datos recogidos solo para: gestión de cuenta, comunicaciones operativas (confirmaciones de pago), cumplimiento legal/tributario en RD</p>
-        <p>No venden ni ceden datos personales</p>
-        <p>Derechos ARCO disponibles vía soporte@atlas.do</p>
-      </div>
-    </details>
-
-    <div class="legal-footer">
-      <strong>COLINA DEL SOL, S.R.L. (IAMATLAS)</strong><br>
-      RNC: 133-11765-7 | soporte@atlas.do | +1 (809) 690-5851<br>
-      c/José López, Esq. Amelia Francasci, Los Prados, Santo Domingo, RD.
-    </div>
-    </div> <!-- Fin Columna izquierda -->
+    <!-- Fin Columna izquierda -->
+  </div>
 
   <!-- Columna derecha: tarjetas guardadas -->
   <div class="saved-cards-section">
@@ -283,6 +218,78 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
   </div>
 </div> <!-- Fin checkout-layout -->
 
+<!-- Footer Container -->
+<div class="checkout-footer-wrapper">
+  <div class="security-policies" style="background:transparent; border:none; padding:0; box-shadow:none;">
+    <div class="secure-logos">
+      <img src="/public/img1.jpeg" alt="Mastercard">
+      <img src="/public/img2.jpeg" alt="Mastercard ID Check">
+      <img src="/public/img3.jpeg" alt="Visa">
+      <img src="/public/img4.jpeg" alt="Visa Secure">
+    </div>
+
+    <h3 style="font-size: 14px; color: #666; margin-bottom: 16px; text-align: center; text-transform: uppercase; letter-spacing: 1px;">Políticas y Términos</h3>
+
+    <div class="policies-grid">
+        <details class="policy-accordion">
+        <summary>Seguridad</summary>
+        <div class="accordion-content">
+            <p><strong>Infraestructura:</strong> No almacena, procesa ni retiene datos de tarjetas en sus servidores.</p>
+            <p><strong>Procesamiento de pagos:</strong> Lo gestiona directamente AZUL (Servicios Digitales Popular), certificado PCI-DSS.</p>
+            <p><strong>Sin acceso:</strong> Atlas no ve número de tarjeta, CVV ni credenciales bancarias.</p>
+            <p><strong>Cifrado:</strong> SSL/TLS extremo a extremo.</p>
+            <p><strong>Autenticación:</strong> Cumple 3D Secure + PCI-DSS vía AZUL.</p>
+        </div>
+        </details>
+
+        <details class="policy-accordion">
+        <summary>Devoluciones y Cancelaciones</summary>
+        <div class="accordion-content">
+            <h4>Cancelaciones</h4>
+            <ul>
+            <li><strong>Vía:</strong> solicitud a soporte@atlas.do</li>
+            <li><strong>Efectividad:</strong> al cierre del ciclo de facturación mensual vigente</li>
+            <li><strong>Acceso:</strong> irrestricto hasta vencer el periodo ya pagado</li>
+            <li>No se generan cargos nuevos tras confirmar</li>
+            </ul>
+            <h4>Devoluciones / Reembolsos</h4>
+            <ul>
+            <li><strong>Ventas finales:</strong> no hay devoluciones ni reembolsos sobre pagos procesados</li>
+            <li>Al pagar, el usuario acepta que iniciar el servicio extingue el derecho a devolución</li>
+            <li><strong>Errores/cargos duplicados:</strong> notificar dentro de 5 días hábiles</li>
+            <li><strong>Disputas:</strong> bajo normativas de AZUL y el banco emisor</li>
+            </ul>
+        </div>
+        </details>
+
+        <details class="policy-accordion">
+        <summary>Entregas y Activación</summary>
+        <div class="accordion-content">
+            <p><strong>Servicio 100% digital:</strong> no hay entrega física</p>
+            <p><strong>Activación:</strong> inmediata tras validar el pago (hasta 24h hábiles en casos especiales de mantenimiento/seguridad)</p>
+            <p>Email de confirmación con accesos, recibo y credenciales</p>
+            <p><strong>Si no llega el acceso:</strong> notificar a soporte@atlas.do con número de referencia</p>
+        </div>
+        </details>
+
+        <details class="policy-accordion">
+        <summary>Privacidad de Pagos</summary>
+        <div class="accordion-content">
+            <p>Mismo esquema de no-almacenamiento + AZUL/PCI-DSS</p>
+            <p>Datos recogidos solo para: gestión de cuenta, comunicaciones operativas (confirmaciones de pago), cumplimiento legal/tributario en RD</p>
+            <p>No venden ni ceden datos personales</p>
+            <p>Derechos ARCO disponibles vía soporte@atlas.do</p>
+        </div>
+        </details>
+    </div>
+
+    <div class="legal-footer">
+      <strong>COLINA DEL SOL, S.R.L. (IAMATLAS)</strong><br>
+      RNC: 133-11765-7 | soporte@atlas.do | +1 (809) 690-5851<br>
+      c/José López, Esq. Amelia Francasci, Los Prados, Santo Domingo, RD.
+    </div>
+  </div>
+</div>
 <!-- Modal de confirmación de eliminación -->
 <div class="confirm-overlay" id="confirmOverlay" style="display:none" onclick="closeConfirm()">
   <div class="confirm-modal" onclick="event.stopPropagation()">
