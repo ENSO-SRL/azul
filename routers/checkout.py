@@ -271,13 +271,31 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
   <div class="saved-cards-section">
     <div class="saved-cards-header">
       <h3 class="title">Tarjetas guardadas</h3>
-      <span class="badge">{cards_count}</span>
+      <span class="badge" id="cardsCountBadge">{cards_count}</span>
     </div>
-    <div class="saved-cards-list">
+    <div class="saved-cards-grid" id="cardsGrid">
       {saved_cards_html}
     </div>
+    <button class="pay-saved-btn" id="paySavedBtn" style="display:none" onclick="payWithSaved()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
+      Pagar RD$2.36 con tarjeta seleccionada
+    </button>
   </div>
 </div> <!-- Fin checkout-layout -->
+
+<!-- Modal de confirmación de eliminación -->
+<div class="confirm-overlay" id="confirmOverlay" style="display:none" onclick="closeConfirm()">
+  <div class="confirm-modal" onclick="event.stopPropagation()">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#f43f5e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:12px"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>
+    <h3>¿Eliminar tarjeta?</h3>
+    <p>Esta acción no se puede deshacer. La tarjeta se eliminará de tu cuenta.</p>
+    <div class="confirm-actions">
+      <button class="confirm-cancel" onclick="closeConfirm()">Cancelar</button>
+      <button class="confirm-delete" onclick="doDelete()">Eliminar</button>
+    </div>
+  </div>
+</div>
+<div class="feedback-toast" id="feedbackToast"></div>
 
 <script>
 (function(){
@@ -356,6 +374,98 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 
     this.submit();
   });
+
+  // --- Tarjetas guardadas: selección, eliminación, pago ---
+  var selectedCardId = null;
+  var cardToDeleteId = null;
+
+  window.selectCard = function(id) {
+    // Deseleccionar todas
+    document.querySelectorAll('.saved-visual-card').forEach(function(c) {
+      c.classList.remove('selected');
+    });
+    // Seleccionar la clickeada
+    var card = document.querySelector('[data-card-id="' + id + '"]');
+    if (card) {
+      card.classList.add('selected');
+      selectedCardId = id;
+      document.getElementById('paySavedBtn').style.display = 'flex';
+    }
+  };
+
+  window.confirmDeleteCard = function(id) {
+    cardToDeleteId = id;
+    document.getElementById('confirmOverlay').style.display = 'flex';
+  };
+
+  window.closeConfirm = function() {
+    cardToDeleteId = null;
+    document.getElementById('confirmOverlay').style.display = 'none';
+  };
+
+  window.doDelete = function() {
+    if (!cardToDeleteId) return;
+    var deletingId = cardToDeleteId;
+    var card = document.querySelector('[data-card-id="' + deletingId + '"]');
+    if (card) {
+      card.style.transition = 'opacity 0.3s, transform 0.3s';
+      card.style.opacity = '0';
+      card.style.transform = 'scale(0.92)';
+      setTimeout(function() { card.remove(); updateCardCount(); }, 300);
+    }
+    if (selectedCardId === deletingId) {
+      selectedCardId = null;
+      document.getElementById('paySavedBtn').style.display = 'none';
+    }
+    closeConfirm();
+    showFeedback('success', 'Tarjeta eliminada correctamente.');
+  };
+
+  function updateCardCount() {
+    var remaining = document.querySelectorAll('.saved-visual-card').length;
+    var badge = document.getElementById('cardsCountBadge');
+    if (badge) badge.textContent = remaining;
+    if (remaining === 0) {
+      var grid = document.getElementById('cardsGrid');
+      if (grid) {
+        grid.innerHTML = '<div class="empty-cards-state">'
+          + '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg></div>'
+          + '<div class="empty-title">No hay tarjetas guardadas</div>'
+          + '<div class="empty-desc">Agrega una tarjeta usando el formulario para comenzar a realizar pagos rápidos.</div>'
+          + '</div>';
+      }
+      document.getElementById('paySavedBtn').style.display = 'none';
+    }
+  }
+
+  window.showFeedback = function(type, msg) {
+    var toast = document.getElementById('feedbackToast');
+    if (!toast) return;
+    toast.textContent = msg;
+    toast.className = 'feedback-toast ' + type + ' show';
+    setTimeout(function() { toast.classList.remove('show'); }, 3000);
+  };
+
+  window.payWithSaved = function() {
+    if (!selectedCardId) return;
+    var card = document.querySelector('[data-card-id="' + selectedCardId + '"]');
+    var token = card ? card.getAttribute('data-token') : null;
+    if (token) {
+      showFeedback('success', 'Procesando pago con tarjeta guardada…');
+      // TODO: POST /checkout/pay-with-token endpoint
+      setTimeout(function() {
+        window.location.href = '/checkout/pay-with-token?token=' + encodeURIComponent(token);
+      }, 500);
+    } else {
+      showFeedback('error', 'No se encontró el token de la tarjeta.');
+    }
+  };
+
+  // Auto-select the default card on load
+  var defaultCard = document.querySelector('.saved-visual-card[data-default="true"]');
+  if (defaultCard) {
+    selectCard(defaultCard.getAttribute('data-card-id'));
+  }
 })();
 </script>
 </body>
@@ -475,33 +585,54 @@ async def checkout_form(
             cards = await token_svc.list_cards(customer_id)
             cards_count = len(cards)
             for c in cards:
-                # Determinar icono (Visa o Mastercard)
-                brand_letter = "V" if "visa" in c.card_brand.lower() else "M"
-                brand_name = "Visa" if "visa" in c.card_brand.lower() else "Mastercard"
-                badge = '<span class="default-badge">Predeterminada</span>' if c.is_default else ''
+                # Determinar icono y nombre de marca
+                is_visa = "visa" in c.card_brand.lower()
+                brand_name = "Visa" if is_visa else "Mastercard"
+                # SVG logo para cada marca
+                if is_visa:
+                    brand_svg = '<svg width="32" height="20" viewBox="0 0 48 16" fill="white"><text x="0" y="13" font-family="Arial,sans-serif" font-weight="700" font-size="14" letter-spacing="1">VISA</text></svg>'
+                else:
+                    brand_svg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="12" r="7" fill="#EB001B" opacity="0.8"/><circle cx="15" cy="12" r="7" fill="#F79E1B" opacity="0.8"/></svg>'
                 
                 exp_formatted = f"{c.expiration[4:]}/{c.expiration[2:4]}" if len(c.expiration) == 6 else c.expiration
                 
+                default_badge = '<div class="card-default-badge">Predeterminada</div>' if c.is_default else ''
+                default_attr = 'true' if c.is_default else 'false'
+                card_id = c.id if hasattr(c, 'id') else c.card_last4
+                token = c.data_vault_token if hasattr(c, 'data_vault_token') else ''
+                
                 saved_cards_html += f'''
-                <div class="saved-card-item">
-                    <div class="saved-card-icon">{brand_letter}</div>
-                    <div class="saved-card-info">
-                        <div class="saved-card-title">{brand_name} •••• {c.card_last4}</div>
-                        <div class="saved-card-subtitle">{badge} Vence {exp_formatted}</div>
+                <div class="saved-visual-card" data-card-id="{card_id}" data-token="{token}" data-default="{default_attr}" onclick="selectCard('{card_id}')">
+                    <div class="card-bg-decoration"></div>
+                    {default_badge}
+                    <div class="svc-brand">
+                        {brand_svg}
+                        <span class="svc-brand-name">{brand_name}</span>
                     </div>
-                    <div class="saved-card-actions">
-                        <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
-                        <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                    <div class="svc-number">•••• •••• •••• {c.card_last4}</div>
+                    <div class="svc-footer">
+                        <span class="svc-label">Vence {exp_formatted}</span>
                     </div>
+                    <button class="card-delete-btn" onclick="event.stopPropagation(); confirmDeleteCard('{card_id}')" title="Eliminar tarjeta">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                    </button>
                 </div>
                 '''
         except Exception as e:
             logger.error(f"[CHECKOUT] Error listando tarjetas para {customer_id}: {e}")
 
     if not saved_cards_html and customer_id:
-        saved_cards_html = '<div class="empty-cards">No hay tarjetas guardadas.</div>'
+        saved_cards_html = '''<div class="empty-cards-state">
+            <div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg></div>
+            <div class="empty-title">No hay tarjetas guardadas</div>
+            <div class="empty-desc">Agrega una tarjeta usando el formulario para comenzar a realizar pagos rápidos.</div>
+        </div>'''
     elif not saved_cards_html:
-        saved_cards_html = '<div class="empty-cards">Inicia sesión para ver tus tarjetas guardadas.</div>'
+        saved_cards_html = '''<div class="empty-cards-state">
+            <div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg></div>
+            <div class="empty-title">Inicia sesión</div>
+            <div class="empty-desc">Ingresa con tu cuenta para ver y administrar tus tarjetas guardadas.</div>
+        </div>'''
 
     html_content = _html_form(error="", saved_cards_html=saved_cards_html, cards_count=cards_count)
     resp = HTMLResponse(html_content)
