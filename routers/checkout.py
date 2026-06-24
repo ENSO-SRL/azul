@@ -218,6 +218,8 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
   </div>
 </div> <!-- Fin checkout-layout -->
 
+<div class="section-divider"></div>
+
 <!-- Footer Container -->
 <div class="checkout-footer-wrapper">
   <div class="security-policies" style="background:transparent; border:none; padding:0; box-shadow:none;">
