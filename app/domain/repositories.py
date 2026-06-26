@@ -82,6 +82,9 @@ class SavedCardRepository(ABC):
     async def get_by_token(self, token: str) -> SavedCard | None: ...
 
     @abstractmethod
+    async def get_by_id(self, card_id: str) -> SavedCard | None: ...
+
+    @abstractmethod
     async def list_by_customer(self, customer_id: str) -> list[SavedCard]: ...
 
     @abstractmethod

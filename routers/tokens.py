@@ -171,7 +171,7 @@ async def list_cards(
 @router.delete(
     "/{token}",
     status_code=204,
-    summary="Eliminar tarjeta de DataVault",
+    summary="Eliminar tarjeta de DataVault (por token)",
 )
 async def delete_card(
     token: str,
@@ -184,6 +184,33 @@ async def delete_card(
     """
     try:
         await svc.delete_card(customer_id=customer_id, token=token)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+@router.delete(
+    "/by-email/{email}/{card_id}",
+    status_code=204,
+    summary="Eliminar tarjeta por ID y correo electrónico",
+    description=(
+        "Elimina una tarjeta guardada usando su ID (UUID) y el correo del dueño. "
+        "No necesitas el token DataVault — usa el 'id' que devuelve GET /by-email/{email}."
+    ),
+)
+async def delete_card_by_id(
+    email: str,
+    card_id: str,
+    svc: TokenService = Depends(_get_service),
+):
+    """Elimina una tarjeta por su ID de base de datos.
+
+    El email verifica que la tarjeta pertenece al usuario.
+    El card_id es el 'id' que devuelve el endpoint GET /by-email/{email}.
+    """
+    try:
+        await svc.delete_card_by_id(card_id=card_id, customer_email=email)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except PermissionError as exc:

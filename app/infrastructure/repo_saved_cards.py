@@ -63,6 +63,13 @@ class SQLSavedCardRepository(SavedCardRepository):
         row = result.scalar_one_or_none()
         return _model_to_card(row) if row else None
 
+    async def get_by_id(self, card_id: str) -> SavedCard | None:
+        result = await self._session.execute(
+            select(SavedCardModel).where(SavedCardModel.id == card_id)
+        )
+        row = result.scalar_one_or_none()
+        return _model_to_card(row) if row else None
+
     async def list_by_customer(self, customer_id: str) -> list[SavedCard]:
         result = await self._session.execute(
             select(SavedCardModel)

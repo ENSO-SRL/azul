@@ -67,3 +67,19 @@ class TokenService:
     async def list_cards(self, customer_id: str) -> list[SavedCard]:
         """Return all saved cards for a customer."""
         return await self._cards.list_by_customer(customer_id)
+
+    async def delete_card_by_id(self, card_id: str, customer_email: str) -> None:
+        """Remove a card by its DB id. Verifies ownership by email.
+
+        Raises ValueError if card not found, PermissionError if email doesn't match.
+        """
+        card = await self._cards.get_by_id(card_id)
+        if not card:
+            raise ValueError(f"Tarjeta con id {card_id!r} no encontrada.")
+        if card.customer_id != customer_email:
+            raise PermissionError(
+                f"La tarjeta no pertenece al correo {customer_email!r}."
+            )
+
+        await self._gw.delete_token(card.token)
+        await self._cards.delete(card.token)
