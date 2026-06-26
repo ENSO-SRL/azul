@@ -925,7 +925,10 @@ async def continue_3ds(
 
 
 @router.get("/challenge/{payment_id}", response_class=HTMLResponse, include_in_schema=False)
-async def challenge_page(payment_id: str):
+async def challenge_page(
+    payment_id: str,
+    svc: PaymentService = Depends(_get_service)
+):
     """Serve the 3DS challenge form as a full browser navigation.
 
     The challenge form is pre-stored in _challenge_cache by /3ds-continue.
@@ -935,8 +938,13 @@ async def challenge_page(payment_id: str):
     """
     form_html = _challenge_cache.pop(payment_id, None)
     if not form_html:
-        logger.error("[CHECKOUT] ✗ challenge page | payment_id=%s not in cache", payment_id)
-        return HTMLResponse(_html_form("Error 3DS: sesión de autenticación expirada. Intenta de nuevo."), status_code=410)
+        logger.warning("[CHECKOUT] challenge page | payment_id=%s not in cache, checking DB", payment_id)
+        payment = await svc.get_payment(payment_id)
+        if payment and payment.threeds_challenge_form:
+            form_html = payment.threeds_challenge_form
+        else:
+            logger.error("[CHECKOUT] ✗ challenge page | payment_id=%s not in cache nor DB", payment_id)
+            return HTMLResponse(_html_form("Error 3DS: sesión de autenticación expirada. Intenta de nuevo."), status_code=410)
 
     logger.warning("[CHECKOUT] ▶ GET /challenge/%s | serving challenge form (%d bytes)", payment_id, len(form_html))
     resp = HTMLResponse(form_html)

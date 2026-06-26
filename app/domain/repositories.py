@@ -1,7 +1,7 @@
 """
 Domain repository interfaces (ports).
 
-These are abstract base classes that define *what* persistence operations
+These  are abstract base classes that define *what* persistence operations
 are available.  Concrete implementations live in infrastructure/.
 """
 
