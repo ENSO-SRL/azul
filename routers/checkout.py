@@ -492,7 +492,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 
 def _html_3ds_method(payment_id: str, method_form: str, amount: int) -> str:
     """Página intermedia — renderiza el iframe silencioso 3DS Method y continúa."""
-    return """<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="es"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Verificando seguridad — Atlas</title>
@@ -568,13 +568,13 @@ def _html_result(status: str, message: str, payment_id: str, amount: int, iso: s
     icon = "✅" if ok else "❌"
     title = "Pago Aprobado" if ok else "Pago Rechazado"
     theme_class = "theme-dark" if theme == "dark" else "theme-light"
-    return """<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="es"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{title} — Atlas</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="/public/css/checkout.css"></head>
-<body class=""" + theme_class + """"><div class="card">
+<body class="{theme_class}"><div class="card">
 <div class="icon">{icon}</div>
 <h1>{title}</h1>
 <div class="sub">{message}</div>
