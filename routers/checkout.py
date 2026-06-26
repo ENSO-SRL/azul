@@ -63,8 +63,9 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
 # HTML
 # ---------------------------------------------------------------------------
 
-def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0) -> str:
+def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0, theme: str = "dark") -> str:
     error_block = f'<div class="error-msg"> {error}</div>' if error else ""
+    theme_class = "theme-dark" if theme == "dark" else "theme-light"
     return """<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -76,7 +77,15 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="/public/css/checkout.css">
 </head>
-<body>
+<body class="""  + theme_class + """">
+
+<a href="https://www.iamatlas.do/profile" class="back-btn" id="backToProfile" title="Volver al perfil">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="19" y1="12" x2="5" y2="12"></line>
+    <polyline points="12,19 5,12 12,5"></polyline>
+  </svg>
+  <span>Volver al perfil</span>
+</a>
 
 <div class="checkout-layout">
   <!-- Columna izquierda: formulario de pago -->
@@ -553,18 +562,19 @@ def _html_3ds_method(payment_id: str, method_form: str, amount: int) -> str:
 </body></html>"""
 
 
-def _html_result(status: str, message: str, payment_id: str, amount: int, iso: str) -> str:
+def _html_result(status: str, message: str, payment_id: str, amount: int, iso: str, theme: str = "dark") -> str:
     ok = status == "APPROVED"
     color = "#10b981" if ok else "#f43f5e"
     icon = "✅" if ok else "❌"
     title = "Pago Aprobado" if ok else "Pago Rechazado"
+    theme_class = "theme-dark" if theme == "dark" else "theme-light"
     return """<!DOCTYPE html>
 <html lang="es"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{title} — Atlas</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="/public/css/checkout.css"></head>
-<body><div class="card">
+<body class=""" + theme_class + """"><div class="card">
 <div class="icon">{icon}</div>
 <h1>{title}</h1>
 <div class="sub">{message}</div>
@@ -572,7 +582,7 @@ def _html_result(status: str, message: str, payment_id: str, amount: int, iso: s
 <div class="detail-row"><span class="label">Monto</span><span class="value">RD${amount/100:.2f}</span></div>
 <div class="detail-row"><span class="label">IsoCode</span><span class="value">{iso}</span></div>
 <div class="detail-row"><span class="label">Estado</span><span class="value" style="color:{color}">{status}</span></div>
-<a href="/checkout" class="btn">← Nueva prueba</a>
+<a href="/checkout" class="btn">← Volver al perfil</a>
 </div></body></html>"""
 
 
@@ -583,6 +593,7 @@ def _html_result(status: str, message: str, payment_id: str, amount: int, iso: s
 @router.get("", response_class=HTMLResponse, include_in_schema=False)
 async def checkout_form(
     customer_id: str | None = None,
+    theme: str = "dark",
     token_svc: TokenService = Depends(_get_token_svc)
 ):
     """Sirve el formulario de pago y carga tarjetas si hay un customer_id."""
@@ -643,7 +654,12 @@ async def checkout_form(
             <div class="empty-desc">Ingresa con tu cuenta para ver y administrar tus tarjetas guardadas.</div>
         </div>'''
 
-    html_content = _html_form(error="", saved_cards_html=saved_cards_html, cards_count=cards_count)
+    # Normalize theme value
+    theme = theme.lower().strip() if theme else "dark"
+    if theme not in ("dark", "light"):
+        theme = "dark"
+
+    html_content = _html_form(error="", saved_cards_html=saved_cards_html, cards_count=cards_count, theme=theme)
     resp = HTMLResponse(html_content)
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["X-Content-Type-Options"] = "nosniff"

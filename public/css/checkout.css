@@ -913,113 +913,178 @@ details.policy-accordion[open] summary::after {
 }
 
 /* -------------------------------------------------------------------------
-   DARK MODE
+   BACK TO PROFILE BUTTON
 --------------------------------------------------------------------------- */
-@media (prefers-color-scheme: dark) {
-  body {
-    background: #121212;
-    color: #e2e8f0;
-  }
-  .payment-container {
-    background: #1e1e1e;
-    color: #e2e8f0;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-  }
-  .section-divider {
-    background: rgba(255,255,255,0.08);
-  }
-  .title, .saved-cards-header .title {
-    color: #f1f5f9;
-  }
-  .subtitle {
-    color: #94a3b8;
-  }
-  .icon-wrapper {
-    background: rgba(218,0,124,0.15);
-  }
-  .signup-input {
-    background: rgba(255,255,255,0.05);
-    color: #f1f5f9;
-    border-color: rgba(255,255,255,0.1);
-  }
-  .signup-input:focus {
-    background: rgba(255,255,255,0.08);
-  }
-  .form-group label, .checkbox-label {
-    color: #cbd5e1;
-  }
-  .badge {
-    background: #2d2d2d;
-    color: #cbd5e1;
-  }
-  .empty-cards, .empty-cards-state {
-    background: rgba(255,255,255,0.02);
-    border-color: rgba(255,255,255,0.08);
-  }
-  .empty-cards-state .empty-title {
-    color: #f1f5f9;
-  }
-  .empty-cards-state .empty-desc {
-    color: #64748b;
-  }
-  .checkmark {
-    background-color: transparent;
-    border-color: rgba(255,255,255,0.3);
-  }
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 100px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: 'Inter', sans-serif;
+  text-decoration: none;
+  color: #555;
+  background: white;
+  border: 1px solid rgba(200,200,200,0.6);
+  margin-bottom: 20px;
+  transition: all 0.25s ease;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  cursor: pointer;
+}
 
-  /* Accordions */
-  details.policy-accordion {
-    background: #1e1e1e;
-    border-color: #2d2d2d;
-  }
-  details.policy-accordion summary {
-    background: #1e1e1e;
-    color: #e2e8f0;
-  }
-  .accordion-content {
-    color: #94a3b8;
-    border-top-color: #2d2d2d;
-  }
-  .security-policies h3 {
-    color: #f1f5f9 !important;
-  }
-  .legal-footer {
-    border-top-color: #2d2d2d;
-    color: #64748b;
-  }
-  .secure-logos {
-    border-bottom-color: #2d2d2d;
-  }
-  .empty-cards {
-    border-color: rgba(255,255,255,0.1);
-  }
+.back-btn:hover {
+  color: #DA007C;
+  border-color: rgba(218,0,124,0.3);
+  background: #FFF5FA;
+  box-shadow: 0 4px 12px rgba(218,0,124,0.1);
+  transform: translateX(-3px);
+}
 
-  /* Saved visual cards */
-  .saved-visual-card {
-    background: linear-gradient(135deg, #0d1117 0%, #161b22 60%, #1a2332 100%);
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  }
-  .saved-visual-card:hover {
-    box-shadow: 0 12px 32px rgba(0,0,0,0.5);
-  }
+.back-btn:active {
+  transform: translateX(-1px) scale(0.98);
+}
 
-  /* Confirm modal */
-  .confirm-modal {
-    background: #1e1e1e;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
-  }
-  .confirm-modal h3 {
-    color: #f1f5f9;
-  }
-  .confirm-modal p {
-    color: #94a3b8;
-  }
-  .confirm-cancel {
-    background: #2d2d2d;
-    border-color: #3d3d3d;
-    color: #cbd5e1;
-  }
-  .confirm-cancel:hover {
-    background: #3d3d3d;
-  }
+.back-btn svg {
+  transition: transform 0.2s ease;
+}
+
+.back-btn:hover svg {
+  transform: translateX(-3px);
+}
+
+/* -------------------------------------------------------------------------
+   DARK MODE — Applied via .theme-dark class on <body>
+--------------------------------------------------------------------------- */
+body.theme-dark {
+  background: #121212;
+  color: #e2e8f0;
+}
+body.theme-dark .payment-container {
+  background: #1e1e1e;
+  color: #e2e8f0;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+}
+body.theme-dark .section-divider {
+  background: rgba(255,255,255,0.08);
+}
+body.theme-dark .title,
+body.theme-dark .saved-cards-header .title {
+  color: #f1f5f9;
+}
+body.theme-dark .subtitle {
+  color: #94a3b8;
+}
+body.theme-dark .icon-wrapper {
+  background: rgba(218,0,124,0.15);
+}
+body.theme-dark .signup-input {
+  background: rgba(255,255,255,0.05);
+  color: #f1f5f9;
+  border-color: rgba(255,255,255,0.1);
+}
+body.theme-dark .signup-input:focus {
+  background: rgba(255,255,255,0.08);
+}
+body.theme-dark .form-group label,
+body.theme-dark .checkbox-label {
+  color: #cbd5e1;
+}
+body.theme-dark .badge {
+  background: #2d2d2d;
+  color: #cbd5e1;
+}
+body.theme-dark .empty-cards,
+body.theme-dark .empty-cards-state {
+  background: rgba(255,255,255,0.02);
+  border-color: rgba(255,255,255,0.08);
+}
+body.theme-dark .empty-cards-state .empty-title {
+  color: #f1f5f9;
+}
+body.theme-dark .empty-cards-state .empty-desc {
+  color: #64748b;
+}
+body.theme-dark .checkmark {
+  background-color: transparent;
+  border-color: rgba(255,255,255,0.3);
+}
+
+/* Accordions */
+body.theme-dark details.policy-accordion {
+  background: #1e1e1e;
+  border-color: #2d2d2d;
+}
+body.theme-dark details.policy-accordion summary {
+  background: #1e1e1e;
+  color: #e2e8f0;
+}
+body.theme-dark .accordion-content {
+  color: #94a3b8;
+  border-top-color: #2d2d2d;
+}
+body.theme-dark .security-policies h3 {
+  color: #f1f5f9 !important;
+}
+body.theme-dark .legal-footer {
+  border-top-color: #2d2d2d;
+  color: #64748b;
+}
+body.theme-dark .secure-logos {
+  border-bottom-color: #2d2d2d;
+}
+body.theme-dark .empty-cards {
+  border-color: rgba(255,255,255,0.1);
+}
+
+/* Saved visual cards */
+body.theme-dark .saved-visual-card {
+  background: linear-gradient(135deg, #0d1117 0%, #161b22 60%, #1a2332 100%);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+body.theme-dark .saved-visual-card:hover {
+  box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+}
+
+/* Confirm modal */
+body.theme-dark .confirm-modal {
+  background: #1e1e1e;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+body.theme-dark .confirm-modal h3 {
+  color: #f1f5f9;
+}
+body.theme-dark .confirm-modal p {
+  color: #94a3b8;
+}
+body.theme-dark .confirm-cancel {
+  background: #2d2d2d;
+  border-color: #3d3d3d;
+  color: #cbd5e1;
+}
+body.theme-dark .confirm-cancel:hover {
+  background: #3d3d3d;
+}
+
+/* Back button in dark mode */
+body.theme-dark .back-btn {
+  background: #1e1e1e;
+  color: #94a3b8;
+  border-color: rgba(255,255,255,0.1);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+body.theme-dark .back-btn:hover {
+  color: #DA007C;
+  border-color: rgba(218,0,124,0.3);
+  background: rgba(218,0,124,0.08);
+  box-shadow: 0 4px 12px rgba(218,0,124,0.15);
+}
+
+/* -------------------------------------------------------------------------
+   LIGHT MODE (explicit) — body.theme-light inherits the default styles
+--------------------------------------------------------------------------- */
+body.theme-light {
+  background: #f8f9fa;
+  color: #1a1a1a;
 }
