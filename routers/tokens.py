@@ -1,9 +1,10 @@
 """
 Token endpoints — DataVault card management.
 
-POST   /api/v1/tokens                 → Register a card (TrxType CREATE, no charge)
-GET    /api/v1/tokens/{customer_id}   → List saved cards for a customer
-DELETE /api/v1/tokens/{token}         → Remove a card from DataVault + local DB
+POST   /api/v1/tokens                      → Register a card (TrxType CREATE, no charge)
+GET    /api/v1/tokens/by-email/{email}      → Safe card lookup by email (for frontend visual)
+GET    /api/v1/tokens/{customer_id}         → List saved cards for a customer (full data)
+DELETE /api/v1/tokens/{token}               → Remove a card from DataVault + local DB
 """
 
 from __future__ import annotations
@@ -55,6 +56,21 @@ class SavedCardResponse(BaseModel):
     created_at: str
 
 
+class SavedCardSafeResponse(BaseModel):
+    """Datos seguros de tarjeta para renderizar en el visual del frontend.
+
+    NO expone el token DataVault completo — solo un fragmento enmascarado.
+    """
+    id: str
+    card_brand: str
+    card_last4: str
+    expiration: str
+    expiration_display: str  # MM/AA format for visual
+    is_default: bool
+    token_masked: str        # ej. "129B****802C"
+    created_at: str
+
+
 # ---------------------------------------------------------------------------
 # Dependency
 # ---------------------------------------------------------------------------
@@ -68,6 +84,8 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> TokenService:
 
 # ---------------------------------------------------------------------------
 # Routes
+# NOTA: /by-email/{email} debe ir ANTES de /{customer_id} para que FastAPI
+# no interprete "by-email" como un customer_id.
 # ---------------------------------------------------------------------------
 
 @router.post(
@@ -107,6 +125,34 @@ async def register_card(
             )
         raise HTTPException(status_code=422, detail=err)
     return _to_response(card)
+
+
+@router.get(
+    "/by-email/{email}",
+    response_model=list[SavedCardSafeResponse],
+    summary="Consultar tarjetas guardadas por correo electrónico",
+    description=(
+        "Devuelve las tarjetas guardadas de un usuario dado su correo electrónico. "
+        "Solo retorna datos seguros para renderizar en el frontend: últimos 4 dígitos, "
+        "marca, expiración y un token enmascarado. NUNCA expone el token DataVault completo."
+    ),
+)
+async def get_cards_by_email(
+    email: str,
+    svc: TokenService = Depends(_get_service),
+):
+    """Busca tarjetas guardadas por email del usuario.
+
+    El email es el customer_id con el que se tokenizaron las tarjetas
+    durante el flujo de pago o registro.
+    """
+    cards = await svc.list_cards(customer_id=email)
+    if not cards:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No se encontraron tarjetas guardadas para el correo '{email}'.",
+        )
+    return [_to_safe_response(c) for c in cards]
 
 
 @router.get(
@@ -157,5 +203,33 @@ def _to_response(c) -> dict:
         "card_last4": c.card_last4,
         "expiration": c.expiration,
         "is_default": c.is_default,
+        "created_at": c.created_at.isoformat(),
+    }
+
+
+def _mask_token(token: str) -> str:
+    """Enmascara el token DataVault: muestra primeros 4 y últimos 4 caracteres."""
+    if len(token) <= 8:
+        return "****"
+    return f"{token[:4]}****{token[-4:]}"
+
+
+def _format_expiration_display(expiration: str) -> str:
+    """Convierte YYYYMM → MM/AA para mostrar en el visual."""
+    if len(expiration) == 6:
+        return f"{expiration[4:]}/{expiration[2:4]}"
+    return expiration
+
+
+def _to_safe_response(c) -> dict:
+    """Construye respuesta segura sin token completo — para renderizar en el visual."""
+    return {
+        "id": c.id,
+        "card_brand": c.card_brand,
+        "card_last4": c.card_last4,
+        "expiration": c.expiration,
+        "expiration_display": _format_expiration_display(c.expiration),
+        "is_default": c.is_default,
+        "token_masked": _mask_token(c.token),
         "created_at": c.created_at.isoformat(),
     }
