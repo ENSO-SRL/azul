@@ -60,6 +60,7 @@ class PaymentService:
         idempotency_key: str = "",
         cardholder_name: str = "",
         cardholder_email: str = "",
+        customer_id: str = "",
         browser_info: dict[str, str] | None = None,
         cardholder_info: dict[str, str] | None = None,
         requestor_challenge_indicator: str = "01",
@@ -131,7 +132,7 @@ class PaymentService:
         if save_card and payment.data_vault_token and self._cards:
             from app.domain.entities import SavedCard
             card = SavedCard(
-                customer_id=order_id or payment.id,
+                customer_id=customer_id or order_id or payment.id,
                 token=payment.data_vault_token,
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
             )

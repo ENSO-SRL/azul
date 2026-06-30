@@ -166,6 +166,13 @@ async def term_callback(
         payment = await svc.continue_three_ds_challenge(payment_id, cres=cres)
         status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
         logger.info("[3ds] term: challenge complete | payment_id=%s status=%s", payment_id, status)
+
+        # ── Post-payment actions (email + card check) ─────────────────────
+        if status == "APPROVED":
+            import asyncio
+            from app.services.post_payment import handle_post_payment_actions
+            asyncio.create_task(handle_post_payment_actions(payment))
+
     except Exception as exc:
         logger.error("[3ds] term: challenge error | payment_id=%s error=%s", payment_id, exc)
         # Still redirect — the result page will show the error state from DB
@@ -184,6 +191,8 @@ async def term_callback(
 </head><body><script>window.location.href={result_url!r};</script></body></html>""",
         status_code=200,
     )
+
+
 
 
 

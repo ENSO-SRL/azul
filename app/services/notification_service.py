@@ -49,6 +49,7 @@ NotificationEvent = Literal[
     "subscription_cancelled",
     "card_expired",
     "upcoming_charge",
+    "checkout_payment_approved",
 ]
 
 
@@ -150,6 +151,31 @@ def _render(event: NotificationEvent, ctx: dict) -> tuple[str, str]:
                  con tu tarjeta terminada en <strong>{card_last4}</strong>.</p>
               <p>Si deseas cancelar antes de esa fecha, puedes hacerlo desde
                  tu cuenta.</p>
+            """ + _footer,
+        ),
+        "checkout_payment_approved": (
+            f"✅ Pago aprobado — {amount_dop}",
+            _header + f"""
+              <h2 style="color:#16a34a;">¡Tu pago fue aprobado!</h2>
+              <p>Hemos procesado exitosamente tu pago de <strong>{amount_dop}</strong>
+                 con tu tarjeta terminada en <strong>{card_last4}</strong>.</p>
+              <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+                <tr style="border-bottom:1px solid #eee;">
+                  <td style="padding:8px 0;color:#888;font-size:13px;">Referencia</td>
+                  <td style="padding:8px 0;text-align:right;font-size:13px;">{ctx.get('payment_id', '')[:18]}</td>
+                </tr>
+                <tr style="border-bottom:1px solid #eee;">
+                  <td style="padding:8px 0;color:#888;font-size:13px;">Monto</td>
+                  <td style="padding:8px 0;text-align:right;font-size:13px;font-weight:600;">{amount_dop}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;color:#888;font-size:13px;">Tarjeta</td>
+                  <td style="padding:8px 0;text-align:right;font-size:13px;">**** {card_last4}</td>
+                </tr>
+              </table>
+              <p>{'Tu tarjeta ha sido guardada para futuros pagos.' if ctx.get('card_saved') else ''}</p>
+              <p>Si no reconoces este cobro, contáctanos de inmediato a
+                 <a href="mailto:soporte@atlas.do" style="color:{atlas_blue};">soporte@atlas.do</a>.</p>
             """ + _footer,
         ),
     }

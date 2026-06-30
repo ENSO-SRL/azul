@@ -63,7 +63,7 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
 # HTML
 # ---------------------------------------------------------------------------
 
-def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0, theme: str = "dark") -> str:
+def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0, theme: str = "dark", customer_id: str = "", prefill_email: str = "", prefill_name: str = "") -> str:
     error_block = f'<div class="error-msg"> {error}</div>' if error else ""
     theme_class = "theme-dark" if theme == "dark" else "theme-light"
     return """<!DOCTYPE html>
@@ -125,6 +125,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
   <form id="payForm" class="payment-form" method="POST" action="/checkout/process" autocomplete="off">
     <!-- Anti-CSRF token -->
     <input type="hidden" name="csrf_token" id="csrf_token"/>
+    <input type="hidden" name="customer_id" value="{customer_id}"/>
 
     <div class="form-group">
       <label>Número de tarjeta</label>
@@ -145,6 +146,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
         <input type="text" id="cardName" name="cardholder_name"
                class="signup-input with-icon"
                placeholder="Como aparece en la tarjeta"
+               value="{prefill_name}"
                maxlength="60" autocomplete="cc-name" required/>
       </div>
     </div>
@@ -179,6 +181,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
         <input type="email" name="cardholder_email"
                class="signup-input with-icon"
                placeholder="tu@correo.com"
+               value="{prefill_email}"
                autocomplete="email" required/>
       </div>
     </div>
@@ -487,7 +490,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 })();
 </script>
 </body>
-</html>""".replace("{error_block}", error_block).replace("{saved_cards_html}", saved_cards_html).replace("{cards_count}", str(cards_count))
+</html>    """.replace("{error_block}", error_block).replace("{saved_cards_html}", saved_cards_html).replace("{cards_count}", str(cards_count)).replace("{prefill_email}", prefill_email).replace("{prefill_name}", prefill_name).replace("{customer_id}", customer_id)
 
 
 def _html_3ds_method(payment_id: str, method_form: str, amount: int) -> str:
@@ -562,28 +565,405 @@ def _html_3ds_method(payment_id: str, method_form: str, amount: int) -> str:
 </body></html>"""
 
 
-def _html_result(status: str, message: str, payment_id: str, amount: int, iso: str, theme: str = "dark") -> str:
+def _html_result(
+    status: str, message: str, payment_id: str, amount: int, iso: str,
+    theme: str = "dark", card_last4: str = "", cardholder_name: str = "",
+    cardholder_email: str = "", card_saved: bool = False,
+) -> str:
     ok = status == "APPROVED"
-    color = "#10b981" if ok else "#f43f5e"
-    icon = "✅" if ok else "❌"
-    title = "Pago Aprobado" if ok else "Pago Rechazado"
-    theme_class = "theme-dark" if theme == "dark" else "theme-light"
+
+    # Human-readable decline reasons
+    decline_messages = {
+        "INSUF FONDOS": "Tu tarjeta no tiene fondos suficientes para esta transacción.",
+        "DECLINE": "La transacción fue rechazada por tu banco emisor.",
+        "TARJETA INVALIDA": "El número de tarjeta ingresado no es válido.",
+        "EXPIRED CARD": "Tu tarjeta ha expirado. Por favor usa otra tarjeta.",
+        "FRAUDE": "La transacción fue bloqueada por seguridad.",
+        "DO NOT HONOR": "Tu banco rechazó la transacción. Contacta a tu banco para más detalles.",
+        "EXCEEDS LIMIT": "El monto excede el límite permitido por tu tarjeta.",
+        "INVALID CVV2": "El código de seguridad (CVV) es incorrecto.",
+        "RESTRICTED": "Tu tarjeta tiene restricciones para este tipo de transacción.",
+    }
+
+    if ok:
+        status_title = "¡Pago exitoso!"
+        status_subtitle = "Tu pago ha sido procesado correctamente."
+        accent = "#10b981"
+        accent_light = "rgba(16, 185, 129, 0.08)"
+        accent_border = "rgba(16, 185, 129, 0.2)"
+        icon_svg = '''<svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+            <circle cx="28" cy="28" r="26" stroke="#10b981" stroke-width="2.5" fill="rgba(16,185,129,0.06)"/>
+            <path d="M18 29 L24 35 L38 21" stroke="#10b981" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="check-anim"/>
+        </svg>'''
+    else:
+        raw_msg = message.strip().upper()
+        status_title = "Pago no procesado"
+        status_subtitle = decline_messages.get(raw_msg, "La transacción no pudo ser completada. Intenta nuevamente o usa otra tarjeta.")
+        accent = "#e11d48"
+        accent_light = "rgba(225, 29, 72, 0.06)"
+        accent_border = "rgba(225, 29, 72, 0.15)"
+        icon_svg = '''<svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+            <circle cx="28" cy="28" r="26" stroke="#e11d48" stroke-width="2.5" fill="rgba(225,29,72,0.04)"/>
+            <path d="M21 21 L35 35 M35 21 L21 35" stroke="#e11d48" stroke-width="3" stroke-linecap="round" class="x-anim"/>
+        </svg>'''
+
+    amount_display = f"RD${amount / 100:,.2f}"
+    card_display = f"•••• {card_last4}" if card_last4 else ""
+    ref_short = payment_id[:8].upper()
+
+    card_saved_badge = ""
+    if ok and card_saved:
+        card_saved_badge = '''
+        <div class="saved-badge">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 6L9 17l-5-5"/>
+            </svg>
+            <span>Tarjeta guardada para futuros pagos</span>
+        </div>'''
+
+    email_line = ""
+    if ok and cardholder_email:
+        email_line = f'''
+        <div class="email-notice">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                <polyline points="22,6 12,13 2,6"/>
+            </svg>
+            <span>Recibo enviado a <strong>{cardholder_email}</strong></span>
+        </div>'''
+
     return f"""<!DOCTYPE html>
-<html lang="es"><head>
-<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>{title} — Atlas</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="/public/css/checkout.css"></head>
-<body class="{theme_class}"><div class="card">
-<div class="icon">{icon}</div>
-<h1>{title}</h1>
-<div class="sub">{message}</div>
-<div class="detail-row"><span class="label">Payment ID</span><span class="value" style="font-size:.75rem">{payment_id[:18]}…</span></div>
-<div class="detail-row"><span class="label">Monto</span><span class="value">RD${amount/100:.2f}</span></div>
-<div class="detail-row"><span class="label">IsoCode</span><span class="value">{iso}</span></div>
-<div class="detail-row"><span class="label">Estado</span><span class="value" style="color:{color}">{status}</span></div>
-<a href="/checkout" class="btn">← Volver al perfil</a>
-</div></body></html>"""
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>{"Pago Exitoso" if ok else "Pago Rechazado"} — Atlas</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<style>
+  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+
+  body {{
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: #f8f9fb;
+    color: #1e293b;
+    position: relative;
+    overflow: hidden;
+  }}
+
+  /* ── Atlas wave decoration ── */
+  body::before, body::after {{
+    content: '';
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.35;
+    z-index: 0;
+    pointer-events: none;
+  }}
+  body::before {{
+    width: 600px; height: 600px;
+    background: radial-gradient(circle, #b5f5a0 0%, transparent 70%);
+    top: -200px; left: -150px;
+  }}
+  body::after {{
+    width: 500px; height: 500px;
+    background: radial-gradient(circle, #f9a8d4 0%, transparent 70%);
+    bottom: -180px; right: -120px;
+  }}
+
+  .result-container {{
+    width: 100%;
+    max-width: 420px;
+    position: relative;
+    z-index: 1;
+    animation: fadeUp 0.5s ease-out;
+  }}
+  @keyframes fadeUp {{
+    from {{ opacity: 0; transform: translateY(20px); }}
+    to   {{ opacity: 1; transform: translateY(0); }}
+  }}
+
+  /* ── Atlas logo ── */
+  .atlas-logo {{
+    text-align: center;
+    margin-bottom: 28px;
+  }}
+  .atlas-logo svg {{
+    width: 40px;
+    height: 44px;
+  }}
+
+  /* ── Main card ── */
+  .result-card {{
+    background: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    border-radius: 20px;
+    padding: 40px 32px 32px;
+    text-align: center;
+    backdrop-filter: blur(24px);
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.04);
+  }}
+
+  /* ── Status icon ── */
+  .status-icon-wrap {{
+    width: 80px; height: 80px;
+    border-radius: 50%;
+    background: {accent_light};
+    border: 1.5px solid {accent_border};
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 24px;
+  }}
+  .check-anim {{
+    stroke-dasharray: 32;
+    stroke-dashoffset: 32;
+    animation: draw 0.5s 0.3s ease-out forwards;
+  }}
+  .x-anim {{
+    stroke-dasharray: 28;
+    stroke-dashoffset: 28;
+    animation: draw 0.4s 0.3s ease-out forwards;
+  }}
+  @keyframes draw {{ to {{ stroke-dashoffset: 0; }} }}
+
+  .status-title {{
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: {accent};
+    margin-bottom: 8px;
+    letter-spacing: -0.02em;
+  }}
+  .status-subtitle {{
+    font-size: 0.85rem;
+    color: #64748b;
+    line-height: 1.6;
+    margin-bottom: 28px;
+    max-width: 320px;
+    margin-left: auto;
+    margin-right: auto;
+  }}
+
+  /* ── Receipt rows ── */
+  .receipt-divider {{
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(0,0,0,0.06), transparent);
+    margin: 0 -32px 16px;
+  }}
+  .receipt-row {{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 9px 0;
+  }}
+  .receipt-row + .receipt-row {{
+    border-top: 1px solid rgba(0,0,0,0.04);
+  }}
+  .receipt-label {{
+    font-size: 0.8rem;
+    color: #94a3b8;
+    font-weight: 500;
+  }}
+  .receipt-value {{
+    font-size: 0.85rem;
+    color: #334155;
+    font-weight: 600;
+  }}
+  .receipt-value.amount {{
+    font-size: 1rem;
+    color: #0f172a;
+    font-weight: 700;
+  }}
+  .receipt-value.status-ok {{ color: #10b981; }}
+  .receipt-value.status-fail {{ color: #e11d48; }}
+
+  /* ── Badges ── */
+  .saved-badge {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 18px;
+    padding: 10px 16px;
+    background: rgba(16, 185, 129, 0.06);
+    border: 1px solid rgba(16, 185, 129, 0.15);
+    border-radius: 10px;
+    font-size: 0.78rem;
+    color: #059669;
+    font-weight: 500;
+  }}
+  .email-notice {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 10px;
+    font-size: 0.75rem;
+    color: #94a3b8;
+  }}
+  .email-notice strong {{ color: #64748b; }}
+
+  /* ── Buttons (Atlas style) ── */
+  .actions {{ margin-top: 28px; display: flex; flex-direction: column; gap: 10px; }}
+
+  .btn-solid {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 14px 20px;
+    border: none;
+    border-radius: 28px;
+    font-family: inherit;
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.2s ease;
+    background: #DA007C;
+    color: white;
+  }}
+  .btn-solid:hover {{
+    background: #c2006d;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(218, 0, 124, 0.2);
+  }}
+
+  .btn-outline {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 13px 20px;
+    border: 1.5px solid #DA007C;
+    border-radius: 28px;
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.2s ease;
+    background: transparent;
+    color: #DA007C;
+  }}
+  .btn-outline:hover {{
+    background: rgba(218, 0, 124, 0.04);
+    transform: translateY(-1px);
+  }}
+
+  .footer-ref {{
+    margin-top: 20px;
+    font-size: 0.7rem;
+    color: #cbd5e1;
+    text-align: center;
+    letter-spacing: 0.02em;
+  }}
+
+  /* ── Dark Mode ── */
+  @media (prefers-color-scheme: dark) {{
+    body {{
+      background: #0c0c18;
+      color: #e2e8f0;
+    }}
+    body::before {{
+      opacity: 0.18;
+    }}
+    body::after {{
+      opacity: 0.15;
+    }}
+    .result-card {{
+      background: rgba(22, 22, 38, 0.9);
+      border-color: rgba(255, 255, 255, 0.06);
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
+    }}
+    .receipt-label {{ color: #64748b; }}
+    .receipt-value {{ color: #cbd5e1; }}
+    .receipt-value.amount {{ color: #f1f5f9; }}
+    .receipt-divider {{
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent);
+    }}
+    .receipt-row + .receipt-row {{
+      border-top-color: rgba(255, 255, 255, 0.04);
+    }}
+    .status-subtitle {{ color: #94a3b8; }}
+    .saved-badge {{
+      color: #86efac;
+      background: rgba(16, 185, 129, 0.08);
+      border-color: rgba(16, 185, 129, 0.2);
+    }}
+    .email-notice {{ color: #64748b; }}
+    .email-notice strong {{ color: #94a3b8; }}
+    .btn-solid {{
+      box-shadow: 0 4px 16px rgba(218, 0, 124, 0.25);
+    }}
+    .btn-outline {{
+      border-color: rgba(218, 0, 124, 0.6);
+    }}
+    .btn-outline:hover {{
+      background: rgba(218, 0, 124, 0.08);
+    }}
+    .footer-ref {{ color: #475569; }}
+    .atlas-logo-path {{ fill: #e2e8f0; }}
+  }}
+</style>
+</head>
+<body>
+<div class="result-container">
+
+  <!-- Atlas Logo -->
+  <div class="atlas-logo">
+    <svg viewBox="0 0 40 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M20 0L3 38h8l9-22 9 22h8L20 0z" fill="#1e293b" class="atlas-logo-path"/>
+      <circle cx="20" cy="42" r="2" fill="#1e293b" class="atlas-logo-path"/>
+      <circle cx="14" cy="42" r="2" fill="#1e293b" class="atlas-logo-path"/>
+      <circle cx="26" cy="42" r="2" fill="#1e293b" class="atlas-logo-path"/>
+    </svg>
+  </div>
+
+  <div class="result-card">
+    <div class="status-icon-wrap">
+      {icon_svg}
+    </div>
+
+    <div class="status-title">{status_title}</div>
+    <div class="status-subtitle">{status_subtitle}</div>
+
+    <div class="receipt-divider"></div>
+
+    <div class="receipt-row">
+      <span class="receipt-label">Monto</span>
+      <span class="receipt-value amount">{amount_display}</span>
+    </div>
+    {"<div class='receipt-row'><span class='receipt-label'>Tarjeta</span><span class='receipt-value'>" + card_display + "</span></div>" if card_display else ""}
+    {"<div class='receipt-row'><span class='receipt-label'>Titular</span><span class='receipt-value'>" + cardholder_name + "</span></div>" if cardholder_name else ""}
+    <div class="receipt-row">
+      <span class="receipt-label">Estado</span>
+      <span class="receipt-value {"status-ok" if ok else "status-fail"}">{"Aprobado" if ok else "Rechazado"}</span>
+    </div>
+
+    {card_saved_badge}
+    {email_line}
+
+    <div class="actions">
+      <a href="https://www.iamatlas.do/profile" class="btn-solid">
+        {"Ir a mi perfil" if ok else "Intentar de nuevo"}
+      </a>
+      {"" if ok else '<a href="/checkout" class="btn-outline">Usar otra tarjeta</a>'}
+    </div>
+
+    <div class="footer-ref">Ref: {ref_short} · Atlas Payments</div>
+  </div>
+</div>
+</body>
+</html>"""
+
 
 
 # ---------------------------------------------------------------------------
@@ -592,13 +972,40 @@ def _html_result(status: str, message: str, payment_id: str, amount: int, iso: s
 
 @router.get("", response_class=HTMLResponse, include_in_schema=False)
 async def checkout_form(
+    request: Request,
     customer_id: str | None = None,
     theme: str = "dark",
     token_svc: TokenService = Depends(_get_token_svc)
 ):
-    """Sirve el formulario de pago y carga tarjetas si hay un customer_id."""
+    """Sirve el formulario de pago y carga tarjetas si hay un customer_id.
+
+    Si el usuario tiene la cookie `user_info` (JWT del auth service),
+    se extrae automáticamente su email, nombre e ID para:
+      - Pre-llenar los campos del formulario
+      - Cargar tarjetas guardadas sin necesidad de query param
+    """
     saved_cards_html = ""
     cards_count = 0
+    prefill_email = ""
+    prefill_name = ""
+
+    # ── Read user_info cookie (JWT from auth service) ─────────────────
+    from app.utils.token_utils import decode_user_info_token
+    user_info_token = request.cookies.get("user_info")
+    user_data = decode_user_info_token(user_info_token)
+
+    if user_data:
+        prefill_email = user_data.get("email", "")
+        name = user_data.get("name", "")
+        last_name = user_data.get("last_name", "")
+        prefill_name = f"{name} {last_name}".strip()
+        # Use user ID from JWT as customer_id if not provided via query param
+        if not customer_id:
+            customer_id = user_data.get("email") or user_data.get("sub") or ""
+        logger.warning(
+            "[CHECKOUT] user_info cookie decoded | sub=%s email=%s name=%s customer_id=%s",
+            user_data.get("sub"), prefill_email, prefill_name, customer_id,
+        )
 
     if customer_id:
         try:
@@ -659,7 +1066,15 @@ async def checkout_form(
     if theme not in ("dark", "light"):
         theme = "dark"
 
-    html_content = _html_form(error="", saved_cards_html=saved_cards_html, cards_count=cards_count, theme=theme)
+    html_content = _html_form(
+        error="",
+        saved_cards_html=saved_cards_html,
+        cards_count=cards_count,
+        theme=theme,
+        customer_id=customer_id or "",
+        prefill_email=prefill_email,
+        prefill_name=prefill_name,
+    )
     resp = HTMLResponse(html_content)
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -686,6 +1101,7 @@ async def process_checkout(
     browser_time_zone: str = Form("240"),
     browser_user_agent: str = Form(""),
     browser_java: str = Form("false"),
+    customer_id: str = Form(""),
     svc: PaymentService = Depends(_get_service),
 ):
     """Procesa el pago — recibe el form POST, llama a AZUL, redirige al resultado."""
@@ -755,6 +1171,7 @@ async def process_checkout(
             save_card=True,
             cardholder_name=cardholder_name.strip(),
             cardholder_email=cardholder_email.strip(),
+            customer_id=customer_id,
             browser_info=browser_info,
         )
     except Exception as exc:
@@ -846,12 +1263,21 @@ async def process_checkout(
         payment.data_vault_token[:12] + "…" if payment.data_vault_token else "(none)",
     )
 
+    if status == "APPROVED":
+        from app.services.post_payment import handle_post_payment_actions
+        import asyncio
+        asyncio.create_task(handle_post_payment_actions(payment))
+
     html = _html_result(
         status=status,
-        message=msg + token_info,
+        message=msg,
         payment_id=payment.id,
         amount=payment.amount + payment.itbis,
         iso=payment.iso_code,
+        card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+        cardholder_name=payment.cardholder_name or "",
+        cardholder_email=payment.cardholder_email or "",
+        card_saved=bool(payment.data_vault_token),
     )
     resp = HTMLResponse(html)
     resp.headers["X-Frame-Options"] = "DENY"
@@ -921,6 +1347,12 @@ async def continue_3ds(
         payment.status.value if hasattr(payment.status, "value") else payment.status,
         result_url,
     )
+    
+    if payment.status == PaymentStatus.APPROVED:
+        from app.services.post_payment import handle_post_payment_actions
+        import asyncio
+        asyncio.create_task(handle_post_payment_actions(payment))
+
     return JSONResponse({"status": payment.status.value, "result_url": result_url})
 
 
@@ -979,10 +1411,14 @@ async def checkout_result(
 
     html = _html_result(
         status=status,
-        message=msg + token_info,
+        message=msg,
         payment_id=payment.id,
         amount=payment.amount + payment.itbis,
         iso=payment.iso_code,
+        card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+        cardholder_name=payment.cardholder_name or "",
+        cardholder_email=payment.cardholder_email or "",
+        card_saved=bool(payment.data_vault_token),
     )
     resp = HTMLResponse(html)
     resp.headers["X-Frame-Options"] = "DENY"
