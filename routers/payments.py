@@ -115,6 +115,17 @@ class ServicePaymentRequest(BaseModel):
     cardholder_email: str = Field(..., description="Correo electrónico del tarjetahabiente")
 
 
+class ServicePaymentTokenRequest(BaseModel):
+    amount: int       = Field(..., description="Monto en centavos")
+    itbis: int        = Field(0,   description="ITBIS en centavos")
+    customer_id: str  = Field(..., description="ID del cliente al que se cobrará (para usar su tarjeta guardada)")
+    service_type: str = Field(..., description="Tipo de servicio (ej. electricidad, agua)")
+    bill_reference: str = Field(..., description="Referencia de factura")
+    order_id: str = ""
+    cardholder_name: str  = Field("", description="Nombre del tarjetahabiente")
+    cardholder_email: str = Field("", description="Correo electrónico del tarjetahabiente")
+
+
 class HoldRequest(BaseModel):
     amount: int
     itbis: int = 0
@@ -246,6 +257,37 @@ async def create_service_payment(
         cardholder_name=body.cardholder_name,
         cardholder_email=body.cardholder_email,
     )
+    return _to_response(payment)
+
+
+@router.post(
+    "/service/token",
+    response_model=PaymentResponse,
+    summary="Pago de servicio usando tarjeta guardada (token)",
+    description=(
+        "Cobra un servicio directamente utilizando el token de DataVault "
+        "de una tarjeta que el usuario guardó previamente."
+    ),
+)
+async def create_service_payment_with_saved_card(
+    body: ServicePaymentTokenRequest,
+    idempotency_key: str  = Header("", alias="Idempotency-Key"),
+    svc: PaymentService   = Depends(_get_service),
+):
+    try:
+        payment = await svc.process_service_payment_with_saved_card(
+            customer_id=body.customer_id,
+            amount=body.amount,
+            itbis=body.itbis,
+            service_type=body.service_type,
+            bill_reference=body.bill_reference,
+            order_id=body.order_id,
+            idempotency_key=idempotency_key,
+            cardholder_name=body.cardholder_name,
+            cardholder_email=body.cardholder_email,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return _to_response(payment)
 
 @router.post(

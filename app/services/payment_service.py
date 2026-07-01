@@ -208,6 +208,54 @@ class PaymentService:
         await self._txns.save(txn)
         return payment
 
+    async def process_service_payment_with_saved_card(
+        self,
+        customer_id: str,
+        amount: int,
+        itbis: int,
+        service_type: str,
+        bill_reference: str,
+        order_id: str = "",
+        idempotency_key: str = "",
+        cardholder_name: str = "",
+        cardholder_email: str = "",
+    ) -> Payment:
+        """Pay a utility / service bill using a saved DataVault token."""
+        if not self._cards:
+            raise ValueError("SavedCardRepository is not configured")
+            
+        cards = await self._cards.list_by_customer(customer_id)
+        if not cards:
+            raise ValueError(f"No saved cards found for customer {customer_id}")
+            
+        target_card = next((c for c in cards if c.is_default), cards[0])
+        token = target_card.token
+
+        if idempotency_key:
+            existing = await self._payments.find_by_idempotency_key(idempotency_key)
+            if existing:
+                return existing
+
+        payment = Payment(
+            amount=amount,
+            itbis=itbis,
+            payment_type=PaymentType.SERVICE,
+            order_id=order_id,
+            auth_mode="splitit",
+            initiated_by="cardholder",
+            idempotency_key=idempotency_key,
+            service_type=service_type,
+            bill_reference=bill_reference,
+            cardholder_name=cardholder_name,
+            cardholder_email=cardholder_email,
+        )
+
+        payment, txn = await self._gw.sale_cit(payment, token)
+
+        await self._payments.save(payment)
+        await self._txns.save(txn)
+        return payment
+
     async def process_hold(
         self,
         amount: int,
