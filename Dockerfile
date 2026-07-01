@@ -42,7 +42,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH" \
     # La app lee DATABASE_URL, AZUL_LOCAL_MODE, etc. del entorno del contenedor.
     # En producción estas vienen de ECS Task Definition o Parameter Store.
-    DATABASE_URL="sqlite+aiosqlite:////data/azul_pagos.db" \
     PORT=8000
 
 WORKDIR /app
@@ -76,11 +75,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
 # Entrypoint con uvicorn
-# Workers: 1 para SQLite (no soporta concurrencia multi-proceso sin PostgreSQL)
-# En producción con PostgreSQL: aumentar --workers a $(nproc) o usar gunicorn
+# En producción con PostgreSQL se recomiendan múltiples workers (ej. 2 a 4)
 CMD ["uvicorn", "app.main:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \
-     "--workers", "1", \
+     "--workers", "2", \
      "--log-level", "info", \
      "--access-log"]
