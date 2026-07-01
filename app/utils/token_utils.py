@@ -71,7 +71,9 @@ def decode_user_info_token(token: str | None) -> dict[str, Any] | None:
     return payload
 
 
-async def require_user_info(request) -> dict[str, Any]:
+from fastapi import Request
+
+async def require_user_info(request: Request) -> dict[str, Any]:
     """FastAPI dependency — require a valid ``user_info`` cookie.
 
     If the cookie is missing, expired, or invalid, redirects the user
