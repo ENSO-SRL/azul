@@ -69,3 +69,53 @@ def decode_user_info_token(token: str | None) -> dict[str, Any] | None:
         return None
 
     return payload
+
+
+async def require_user_info(request) -> dict[str, Any]:
+    """FastAPI dependency — require a valid ``user_info`` cookie.
+
+    If the cookie is missing, expired, or invalid, redirects the user
+    to the Atlas login page instead of returning a JSON 401.
+
+    Usage::
+
+        from app.utils.token_utils import require_user_info
+
+        @router.get("/checkout")
+        async def checkout(user=Depends(require_user_info)):
+            # user is the decoded JWT payload dict
+            email = user["email"]
+    """
+    from fastapi.responses import RedirectResponse
+
+    token = request.cookies.get("user_info")
+    user_data = decode_user_info_token(token)
+
+    if user_data is None:
+        logger.warning(
+            "[token_utils] ✗ user_info cookie missing/invalid — redirecting to login"
+        )
+        raise _LoginRedirectException()
+
+    return user_data
+
+
+class _LoginRedirectException(Exception):
+    """Raised when user_info cookie is missing — caught by exception handler."""
+    pass
+
+
+def register_login_redirect_handler(app) -> None:
+    """Register the exception handler on the FastAPI app.
+
+    Call this once in main.py::
+
+        from app.utils.token_utils import register_login_redirect_handler
+        register_login_redirect_handler(app)
+    """
+    from fastapi.responses import RedirectResponse
+
+    @app.exception_handler(_LoginRedirectException)
+    async def _handle_login_redirect(request, exc):
+        login_url = "https://www.iamatlas.do/login"
+        return RedirectResponse(url=login_url, status_code=302)

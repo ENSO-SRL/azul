@@ -4,8 +4,9 @@ Checkout — Payment Form UI.
 GET  /checkout          → Formulario HTML de pago
 POST /checkout/process  → Procesa el pago y redirige al resultado
 
-Este endpoint es PÚBLICO (no requiere API Key) para que el navegador
-del usuario pueda acceder. La seguridad se implementa con:
+PROTEGIDO: requiere cookie ``user_info`` (JWT del auth service).
+Si el usuario no está logueado en iamatlas.do, se redirige al login.
+La seguridad adicional se implementa con:
   - CSP headers estrictos
   - Validación Luhn client-side (no se envía tarjeta inválida)
   - Datos de tarjeta NUNCA se loguean ni persisten en texto claro

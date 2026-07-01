@@ -149,11 +149,15 @@ async def audit_log_middleware(request: Request, call_next) -> Response:
 # Routers — health y 3DS callbacks son públicos; el resto requiere API Key
 # ---------------------------------------------------------------------------
 
-# Públicos: health checks, callbacks ACS, dashboard y formulario de pago
+# Públicos: health checks, callbacks ACS, dashboard
 app.include_router(health_router)
 app.include_router(threeds_router)          # /method-notification y /term son callbacks del ACS
 app.include_router(cert_router)             # /cert  — dashboard interactivo de certificación
-app.include_router(checkout_router)         # /checkout — formulario de pago para pruebas
+
+# Checkout — requiere cookie user_info (usuario logueado en iamatlas.do)
+from app.utils.token_utils import require_user_info, register_login_redirect_handler
+register_login_redirect_handler(app)
+app.include_router(checkout_router, dependencies=[Depends(require_user_info)])
 
 # Protegidos con X-API-Key
 _auth = [Depends(require_api_key)]
