@@ -33,6 +33,9 @@ class PaymentModel(Base):
     # CIT vs MIT
     initiated_by: Mapped[str] = mapped_column(String(20), default="cardholder")
 
+    # Relación con el usuario (Atlas users)
+    customer_id: Mapped[str] = mapped_column(String(100), default="", index=True)
+
     # Idempotencia — UNIQUE permite buscar por clave y evitar cobros dobles
     # NULL = sin clave (PostgreSQL UNIQUE acepta múltiples NULL; empty string no)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)

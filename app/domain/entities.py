@@ -108,6 +108,9 @@ class Payment:
     # CIT vs MIT — requerido por Visa/Mastercard para stored credentials
     initiated_by: Literal["cardholder", "merchant"] = "cardholder"
 
+    # ID del usuario en Atlas (relación con base de datos principal)
+    customer_id: str = ""
+
     # Idempotencia — si se provee, un segundo intento con la misma clave
     # retorna el payment original sin reejecutar la transacción
     idempotency_key: str = ""

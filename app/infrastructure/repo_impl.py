@@ -53,6 +53,7 @@ def _payment_to_model(p: Payment) -> PaymentModel:
         # PostgreSQL UNIQUE allows many NULLs but rejects duplicate empty strings.
         # Convert "" -> None so multiple payments without an idempotency key can coexist.
         idempotency_key=p.idempotency_key or None,
+        customer_id=getattr(p, "customer_id", ""),
         azul_order_id=p.azul_order_id,
         iso_code=p.iso_code,
         response_code=p.response_code,
@@ -86,6 +87,7 @@ def _model_to_payment(m: PaymentModel) -> Payment:
         auth_mode=m.auth_mode,
         initiated_by=m.initiated_by,  # type: ignore[arg-type]
         idempotency_key=m.idempotency_key or "",
+        customer_id=getattr(m, "customer_id", ""),
         azul_order_id=m.azul_order_id,
         iso_code=m.iso_code,
         response_code=m.response_code,

@@ -90,6 +90,9 @@ class SavedCardRepository(ABC):
     @abstractmethod
     async def delete(self, token: str) -> None: ...
 
+    @abstractmethod
+    async def set_default(self, customer_id: str, card_id: str) -> None: ...
+
 
 class ConsentRepository(ABC):
     """Persistence port for customer consent records."""

@@ -216,6 +216,25 @@ async def delete_card_by_id(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
 
+@router.put(
+    "/{customer_id}/default/{card_id}",
+    status_code=200,
+    summary="Marcar una tarjeta como predeterminada",
+)
+async def set_default_card(
+    customer_id: str,
+    card_id: str,
+    svc: TokenService = Depends(_get_service),
+):
+    """Marca una tarjeta específica como la predeterminada de cobro para el cliente."""
+    try:
+        await svc.set_default_card(customer_id=customer_id, card_id=card_id)
+        return {"message": "Tarjeta predeterminada actualizada exitosamente."}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
 
 # ---------------------------------------------------------------------------
 # Helpers

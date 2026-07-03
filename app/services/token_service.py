@@ -44,7 +44,24 @@ class TokenService:
             cardholder_name=cardholder_name,
             cardholder_email=cardholder_email,
         )
+        
+        # If this is the first card, make it the default
+        existing_cards = await self._cards.list_by_customer(customer_id)
+        if not existing_cards:
+            card.is_default = True
+            
         return await self._cards.save(card)
+
+    async def set_default_card(self, customer_id: str, card_id: str) -> None:
+        """Set a specific card as the default for a customer."""
+        card = await self._cards.get_by_id(card_id)
+        if not card:
+            raise ValueError(f"Card {card_id!r} not found.")
+        if card.customer_id != customer_id:
+            raise PermissionError(
+                f"Card {card_id!r} does not belong to customer {customer_id!r}."
+            )
+        await self._cards.set_default(customer_id, card_id)
 
     async def delete_card(self, customer_id: str, token: str) -> None:
         """Remove a card from DataVault and from local DB.

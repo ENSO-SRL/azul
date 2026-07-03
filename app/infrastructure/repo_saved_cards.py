@@ -83,3 +83,19 @@ class SQLSavedCardRepository(SavedCardRepository):
             delete(SavedCardModel).where(SavedCardModel.token == token)
         )
         await self._session.commit()
+
+    async def set_default(self, customer_id: str, card_id: str) -> None:
+        from sqlalchemy import update
+        # Clear default flag for all cards of this customer
+        await self._session.execute(
+            update(SavedCardModel)
+            .where(SavedCardModel.customer_id == customer_id)
+            .values(is_default=False)
+        )
+        # Set default flag for the specific card
+        await self._session.execute(
+            update(SavedCardModel)
+            .where(SavedCardModel.customer_id == customer_id, SavedCardModel.id == card_id)
+            .values(is_default=True)
+        )
+        await self._session.commit()

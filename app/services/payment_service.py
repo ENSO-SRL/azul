@@ -92,6 +92,7 @@ class PaymentService:
             idempotency_key=idempotency_key,
             cardholder_name=cardholder_name,
             cardholder_email=cardholder_email,
+            customer_id=customer_id,
         )
 
         if save_card:
@@ -181,6 +182,7 @@ class PaymentService:
         idempotency_key: str = "",
         cardholder_name: str = "",
         cardholder_email: str = "",
+        customer_id: str = "",
     ) -> Payment:
         """Pay a utility / service bill."""
         if idempotency_key:
@@ -200,6 +202,7 @@ class PaymentService:
             bill_reference=bill_reference,
             cardholder_name=cardholder_name,
             cardholder_email=cardholder_email,
+            customer_id=customer_id,
         )
 
         payment, txn = await self._gw.sale(payment, card_number, expiration, cvc)
@@ -248,6 +251,7 @@ class PaymentService:
             bill_reference=bill_reference,
             cardholder_name=cardholder_name,
             cardholder_email=cardholder_email,
+            customer_id=customer_id,
         )
 
         payment, txn = await self._gw.sale_cit(payment, token)
@@ -267,6 +271,7 @@ class PaymentService:
         cardholder_name: str = "",
         cardholder_email: str = "",
         idempotency_key: str = "",
+        customer_id: str = "",
     ) -> Payment:
         if idempotency_key:
             existing = await self._payments.find_by_idempotency_key(idempotency_key)
@@ -283,6 +288,7 @@ class PaymentService:
             idempotency_key=idempotency_key,
             cardholder_name=cardholder_name,
             cardholder_email=cardholder_email,
+            customer_id=customer_id,
         )
         payment, txn = await self._gw.hold(payment, card_number, expiration, cvc)
         await self._payments.save(payment)
@@ -301,6 +307,7 @@ class PaymentService:
         cardholder_name: str = "",
         cardholder_email: str = "",
         idempotency_key: str = "",
+        customer_id: str = "",
     ) -> Payment:
         if idempotency_key:
             existing = await self._payments.find_by_idempotency_key(idempotency_key)
@@ -317,6 +324,7 @@ class PaymentService:
             idempotency_key=idempotency_key,
             cardholder_name=cardholder_name,
             cardholder_email=cardholder_email,
+            customer_id=customer_id,
         )
         payment, txn = await self._gw.post_capture(
             payment,
@@ -360,6 +368,7 @@ class PaymentService:
             auth_mode="splitit",
             initiated_by="cardholder",
             idempotency_key=idempotency_key,
+            customer_id=customer_id,
         )
 
         payment, txn = await self._gw.sale_cit(payment, token)
