@@ -43,6 +43,17 @@ _APP_BASE = os.getenv("APP_BASE_URL", "http://localhost:8000")
 _challenge_cache: Dict[str, str] = {}
 
 
+def _resolve_theme(request: Request) -> str:
+    """Read and validate the cross-domain 'theme' cookie from iamatlas.do.
+
+    The frontend (ThemeContext.tsx / root.tsx) sets this cookie on .iamatlas.do
+    with max-age=31536000 (1 year). It is shared across subdomains so the
+    backend can render server-side templates with the correct styling.
+    """
+    raw = request.cookies.get("theme", "light").lower().strip()
+    return raw if raw in ("dark", "light") else "light"
+
+
 
 def _get_token_svc(db: AsyncSession = Depends(get_db)) -> TokenService:
     return TokenService(
@@ -1063,10 +1074,7 @@ async def checkout_form(
         </div>'''
 
     # Normalize theme value
-    resolved = theme or request.cookies.get("theme") or "light"
-    resolved = resolved.lower().strip()
-    if resolved not in ("dark", "light"):
-        resolved = "light"
+    resolved = theme.lower().strip() if theme and theme.lower().strip() in ("dark", "light") else _resolve_theme(request)
 
     html_content = _html_form(
         error="",
@@ -1107,7 +1115,7 @@ async def process_checkout(
     svc: PaymentService = Depends(_get_service),
 ):
     """Procesa el pago — recibe el form POST, llama a AZUL, redirige al resultado."""
-    theme = request.cookies.get("theme", "light")
+    theme = _resolve_theme(request)
     card_clean = card_number.replace(" ", "").strip()
     card_masked = f"{'*' * (len(card_clean) - 4)}{card_clean[-4:]}" if len(card_clean) >= 4 else "****"
 
@@ -1382,7 +1390,7 @@ async def challenge_page(
             form_html = payment.threeds_challenge_form
         else:
             logger.error("[CHECKOUT] ✗ challenge page | payment_id=%s not in cache nor DB", payment_id)
-            theme = request.cookies.get("theme", "light")
+            theme = _resolve_theme(request)
             return HTMLResponse(_html_form("Error 3DS: sesión de autenticación expirada. Intenta de nuevo.", theme=theme), status_code=410)
 
     logger.warning("[CHECKOUT] ▶ GET /challenge/%s | serving challenge form (%d bytes)", payment_id, len(form_html))
@@ -1401,7 +1409,7 @@ async def checkout_result(
     svc: PaymentService = Depends(_get_service),
 ):
     """Página de resultado final — usada tras el flujo 3DS."""
-    theme = request.cookies.get("theme", "light")
+    theme = _resolve_theme(request)
     logger.warning("[CHECKOUT] ▶ GET /result/%s", payment_id)
     payment = await svc.get_payment(payment_id)
     if not payment:
