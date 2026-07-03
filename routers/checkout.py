@@ -86,14 +86,10 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="/public/css/checkout.css?v=2">
+  <link rel="stylesheet" href="/public/css/checkout.css?v=3">
 </head>
-<body class="""  + theme_class + """">
+<body class="THEME_CLASS">
 
-<!-- DEBUG BANNER (Temporal) -->
-<div style="background: red; color: white; padding: 10px; text-align: center; position: fixed; top: 0; left: 0; width: 100%; z-index: 9999;">
-  DEBUG THEME => resolved: """ + theme_class + """
-</div>
 <a href="https://www.iamatlas.do/profile" class="back-btn" id="backToProfile" title="Volver al perfil">
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
     <line x1="19" y1="12" x2="5" y2="12"></line>
@@ -505,7 +501,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 })();
 </script>
 </body>
-</html>    """.replace("{error_block}", error_block).replace("{saved_cards_html}", saved_cards_html).replace("{cards_count}", str(cards_count)).replace("{prefill_email}", prefill_email).replace("{prefill_name}", prefill_name).replace("{customer_id}", customer_id)
+</html>    """.replace("THEME_CLASS", theme_class).replace("{error_block}", error_block).replace("{saved_cards_html}", saved_cards_html).replace("{cards_count}", str(cards_count)).replace("{prefill_email}", prefill_email).replace("{prefill_name}", prefill_name).replace("{customer_id}", customer_id)
 
 
 def _html_3ds_method(payment_id: str, method_form: str, amount: int, theme: str = "light") -> str:
