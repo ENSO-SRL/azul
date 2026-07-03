@@ -987,12 +987,13 @@ async def checkout_form(
     request: Request,
     customer_id: str | None = None,
     theme: str | None = None,
-    token_svc: TokenService = Depends(_get_token_svc)
+    token_svc: TokenService = Depends(_get_token_svc),
+    db: AsyncSession = Depends(get_db)
 ):
     """Sirve el formulario de pago y carga tarjetas si hay un customer_id.
 
-    Si el usuario tiene la cookie `user_info` (JWT del auth service),
-    se extrae automáticamente su email, nombre e ID para:
+    Si el usuario tiene la cookie `access_token` (JWT del auth service),
+    se extrae su ID y se busca su información en public.users para:
       - Pre-llenar los campos del formulario
       - Cargar tarjetas guardadas sin necesidad de query param
     """
@@ -1003,20 +1004,39 @@ async def checkout_form(
 
     # ── Read access_token cookie (JWT from auth service) ─────────────────
     from app.utils.token_utils import decode_user_info_token
+    from sqlalchemy import text
+    
     user_info_token = request.cookies.get("access_token")
     user_data = decode_user_info_token(user_info_token)
 
     if user_data:
+        sub = user_data.get("sub", "")
         prefill_email = user_data.get("email", "")
         name = user_data.get("name", "")
         last_name = user_data.get("last_name", "")
+        
+        # Buscar en la base de datos si nos falta el correo o el nombre
+        if sub and (not prefill_email or not name):
+            try:
+                result = await db.execute(
+                    text("SELECT email, name, last_name FROM public.users WHERE uuid = :sub OR email = :sub LIMIT 1"),
+                    {"sub": sub}
+                )
+                row = result.fetchone()
+                if row:
+                    prefill_email = row[0] or prefill_email
+                    name = row[1] or name
+                    last_name = row[2] or last_name
+            except Exception as e:
+                logger.error("[CHECKOUT] Error querying public.users: %s", e)
+
         prefill_name = f"{name} {last_name}".strip()
-        # Use user ID from JWT as customer_id if not provided via query param
+        # Use user email or sub as customer_id
         if not customer_id:
-            customer_id = user_data.get("email") or user_data.get("sub") or ""
+            customer_id = prefill_email or sub
         logger.warning(
             "[CHECKOUT] access_token cookie decoded | sub=%s email=%s name=%s customer_id=%s",
-            user_data.get("sub"), prefill_email, prefill_name, customer_id,
+            sub, prefill_email, prefill_name, customer_id,
         )
 
     if customer_id:
