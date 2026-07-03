@@ -90,6 +90,10 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 </head>
 <body class="""  + theme_class + """">
 
+<!-- DEBUG BANNER (Temporal) -->
+<div style="background: red; color: white; padding: 10px; text-align: center; position: fixed; top: 0; left: 0; width: 100%; z-index: 9999;">
+  DEBUG THEME => resolved: """ + theme_class + """
+</div>
 <a href="https://www.iamatlas.do/profile" class="back-btn" id="backToProfile" title="Volver al perfil">
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
     <line x1="19" y1="12" x2="5" y2="12"></line>
