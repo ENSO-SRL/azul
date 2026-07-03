@@ -493,15 +493,16 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 </html>    """.replace("{error_block}", error_block).replace("{saved_cards_html}", saved_cards_html).replace("{cards_count}", str(cards_count)).replace("{prefill_email}", prefill_email).replace("{prefill_name}", prefill_name).replace("{customer_id}", customer_id)
 
 
-def _html_3ds_method(payment_id: str, method_form: str, amount: int) -> str:
+def _html_3ds_method(payment_id: str, method_form: str, amount: int, theme: str = "light") -> str:
     """Página intermedia — renderiza el iframe silencioso 3DS Method y continúa."""
+    theme_class = "theme-dark" if theme == "dark" else "theme-light"
     return f"""<!DOCTYPE html>
 <html lang="es"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Verificando seguridad — Atlas</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="/public/css/checkout.css"></head>
-<body><div class="card">
+<body class="{theme_class}"><div class="card">
   <div class="spinner-wrap"><div class="ring"></div></div>
   <h2>Verificando tu tarjeta</h2>
   <div class="sub">Tu banco está confirmando tu identidad.<br>Esto toma solo unos segundos…</div>
@@ -974,7 +975,7 @@ def _html_result(
 async def checkout_form(
     request: Request,
     customer_id: str | None = None,
-    theme: str = "dark",
+    theme: str | None = None,
     token_svc: TokenService = Depends(_get_token_svc)
 ):
     """Sirve el formulario de pago y carga tarjetas si hay un customer_id.
@@ -1062,15 +1063,16 @@ async def checkout_form(
         </div>'''
 
     # Normalize theme value
-    theme = theme.lower().strip() if theme else "dark"
-    if theme not in ("dark", "light"):
-        theme = "dark"
+    resolved = theme or request.cookies.get("theme") or "light"
+    resolved = resolved.lower().strip()
+    if resolved not in ("dark", "light"):
+        resolved = "light"
 
     html_content = _html_form(
         error="",
         saved_cards_html=saved_cards_html,
         cards_count=cards_count,
-        theme=theme,
+        theme=resolved,
         customer_id=customer_id or "",
         prefill_email=prefill_email,
         prefill_name=prefill_name,
@@ -1105,6 +1107,7 @@ async def process_checkout(
     svc: PaymentService = Depends(_get_service),
 ):
     """Procesa el pago — recibe el form POST, llama a AZUL, redirige al resultado."""
+    theme = request.cookies.get("theme", "light")
     card_clean = card_number.replace(" ", "").strip()
     card_masked = f"{'*' * (len(card_clean) - 4)}{card_clean[-4:]}" if len(card_clean) >= 4 else "****"
 
@@ -1121,7 +1124,7 @@ async def process_checkout(
         exp_azul = f"20{yy.strip()}{mm.strip().zfill(2)}"
     except Exception:
         logger.error("[CHECKOUT] ✗ Expiration parse failed: %r", expiration)
-        return HTMLResponse(_html_form("Fecha de vencimiento inválida. Usa MM/AA."), status_code=422)
+        return HTMLResponse(_html_form("Fecha de vencimiento inválida. Usa MM/AA.", theme=theme), status_code=422)
 
     # Monto fijo de prueba: RD$2.00 + ITBIS RD$0.36 = RD$2.36
     amount = 200
@@ -1179,7 +1182,7 @@ async def process_checkout(
             "[CHECKOUT] ✗ process_sale EXCEPTION | type=%s msg=%s",
             type(exc).__name__, str(exc)[:400],
         )
-        return HTMLResponse(_html_form(f"Error al procesar: {exc}"), status_code=422)
+        return HTMLResponse(_html_form(f"Error al procesar: {exc}", theme=theme), status_code=422)
 
     logger.warning(
         "[CHECKOUT] ← Azul response | payment_id=%s status=%s iso=%s rc=%s msg=%r "
@@ -1206,6 +1209,7 @@ async def process_checkout(
                 payment_id=payment.id,
                 method_form=payment.threeds_method_form,
                 amount=payment.amount + payment.itbis,
+                theme=theme,
             )
             resp = HTMLResponse(html)
             resp.headers["X-Frame-Options"] = "SAMEORIGIN"
@@ -1230,7 +1234,7 @@ async def process_checkout(
                     "[CHECKOUT] ✗ 3DS METHOD auto-continue EXCEPTION | payment_id=%s type=%s msg=%s",
                     payment.id, type(exc).__name__, str(exc)[:400],
                 )
-                return HTMLResponse(_html_form(f"Error 3DS (método): {exc}"), status_code=502)
+                return HTMLResponse(_html_form(f"Error 3DS (método): {exc}", theme=theme), status_code=502)
             # Fall through to challenge / result handling below
 
     # ── 3DS Challenge ─────────────────────────────────────────────────────
@@ -1249,7 +1253,7 @@ async def process_checkout(
             from fastapi.responses import RedirectResponse
             return RedirectResponse(url=redirect_url)
         logger.error("[CHECKOUT] ✗ 3DS CHALLENGE | payment_id=%s no challenge_form and no redirect_url", payment.id)
-        return HTMLResponse(_html_form("Error 3DS: sin URL de challenge."), status_code=502)
+        return HTMLResponse(_html_form("Error 3DS: sin URL de challenge.", theme=theme), status_code=502)
 
     # ── Resultado final ───────────────────────────────────────────────────
     status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
@@ -1274,6 +1278,7 @@ async def process_checkout(
         payment_id=payment.id,
         amount=payment.amount + payment.itbis,
         iso=payment.iso_code,
+        theme=theme,
         card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
         cardholder_name=payment.cardholder_name or "",
         cardholder_email=payment.cardholder_email or "",
@@ -1358,6 +1363,7 @@ async def continue_3ds(
 
 @router.get("/challenge/{payment_id}", response_class=HTMLResponse, include_in_schema=False)
 async def challenge_page(
+    request: Request,
     payment_id: str,
     svc: PaymentService = Depends(_get_service)
 ):
@@ -1376,7 +1382,8 @@ async def challenge_page(
             form_html = payment.threeds_challenge_form
         else:
             logger.error("[CHECKOUT] ✗ challenge page | payment_id=%s not in cache nor DB", payment_id)
-            return HTMLResponse(_html_form("Error 3DS: sesión de autenticación expirada. Intenta de nuevo."), status_code=410)
+            theme = request.cookies.get("theme", "light")
+            return HTMLResponse(_html_form("Error 3DS: sesión de autenticación expirada. Intenta de nuevo.", theme=theme), status_code=410)
 
     logger.warning("[CHECKOUT] ▶ GET /challenge/%s | serving challenge form (%d bytes)", payment_id, len(form_html))
     resp = HTMLResponse(form_html)
@@ -1389,15 +1396,17 @@ async def challenge_page(
 
 @router.get("/result/{payment_id}", response_class=HTMLResponse, include_in_schema=False)
 async def checkout_result(
+    request: Request,
     payment_id: str,
     svc: PaymentService = Depends(_get_service),
 ):
     """Página de resultado final — usada tras el flujo 3DS."""
+    theme = request.cookies.get("theme", "light")
     logger.warning("[CHECKOUT] ▶ GET /result/%s", payment_id)
     payment = await svc.get_payment(payment_id)
     if not payment:
         logger.error("[CHECKOUT] ✗ payment not found | payment_id=%s", payment_id)
-        return HTMLResponse(_html_form("Pago no encontrado."), status_code=404)
+        return HTMLResponse(_html_form("Pago no encontrado.", theme=theme), status_code=404)
 
     from app.domain.entities import PaymentStatus
     status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
@@ -1415,6 +1424,7 @@ async def checkout_result(
         payment_id=payment.id,
         amount=payment.amount + payment.itbis,
         iso=payment.iso_code,
+        theme=theme,
         card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
         cardholder_name=payment.cardholder_name or "",
         cardholder_email=payment.cardholder_email or "",
