@@ -57,15 +57,10 @@ def decode_user_info_token(token: str | None) -> dict[str, Any] | None:
             algorithms=[_ALGORITHM],
         )
     except jwt.ExpiredSignatureError:
-        logger.debug("[token_utils] user_info token expired")
+        logger.debug("[token_utils] access_token expired")
         return None
     except jwt.InvalidTokenError as exc:
-        logger.debug("[token_utils] user_info token invalid: %s", exc)
-        return None
-
-    # Verify scope — only accept user_info tokens
-    if payload.get("scope") != "user_info":
-        logger.debug("[token_utils] user_info token has wrong scope: %s", payload.get("scope"))
+        logger.debug("[token_utils] access_token invalid: %s", exc)
         return None
 
     return payload
@@ -90,12 +85,12 @@ async def require_user_info(request: Request) -> dict[str, Any]:
     """
     from fastapi.responses import RedirectResponse
 
-    token = request.cookies.get("user_info")
+    token = request.cookies.get("access_token")
     user_data = decode_user_info_token(token)
 
     if user_data is None:
         logger.warning(
-            "[token_utils] ✗ user_info cookie missing/invalid — redirecting to login"
+            "[token_utils] ✗ access_token cookie missing/invalid — redirecting to login"
         )
         raise _LoginRedirectException()
 

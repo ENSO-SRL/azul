@@ -4,7 +4,7 @@ Checkout — Payment Form UI.
 GET  /checkout          → Formulario HTML de pago
 POST /checkout/process  → Procesa el pago y redirige al resultado
 
-OPCIONAL: Usa cookie ``user_info`` (JWT del auth service) para pre-llenar datos
+OPCIONAL: Usa cookie ``access_token`` (JWT del auth service) para pre-llenar datos
 y mostrar tarjetas guardadas. Si no está presente, muestra checkout como invitado.
   - CSP headers estrictos
   - Validación Luhn client-side (no se envía tarjeta inválida)
@@ -1001,9 +1001,9 @@ async def checkout_form(
     prefill_email = ""
     prefill_name = ""
 
-    # ── Read user_info cookie (JWT from auth service) ─────────────────
+    # ── Read access_token cookie (JWT from auth service) ─────────────────
     from app.utils.token_utils import decode_user_info_token
-    user_info_token = request.cookies.get("user_info")
+    user_info_token = request.cookies.get("access_token")
     user_data = decode_user_info_token(user_info_token)
 
     if user_data:
@@ -1015,7 +1015,7 @@ async def checkout_form(
         if not customer_id:
             customer_id = user_data.get("email") or user_data.get("sub") or ""
         logger.warning(
-            "[CHECKOUT] user_info cookie decoded | sub=%s email=%s name=%s customer_id=%s",
+            "[CHECKOUT] access_token cookie decoded | sub=%s email=%s name=%s customer_id=%s",
             user_data.get("sub"), prefill_email, prefill_name, customer_id,
         )
 
