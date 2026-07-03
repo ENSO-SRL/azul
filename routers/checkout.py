@@ -50,7 +50,7 @@ def _resolve_theme(request: Request) -> str:
     with max-age=31536000 (1 year). It is shared across subdomains so the
     backend can render server-side templates with the correct styling.
     """
-    raw = request.cookies.get("theme", "light").lower().strip()
+    raw = request.cookies.get("theme", "light").lower().strip().strip('"').strip("'")
     return raw if raw in ("dark", "light") else "light"
 
 
@@ -86,7 +86,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="/public/css/checkout.css">
+  <link rel="stylesheet" href="/public/css/checkout.css?v=2">
 </head>
 <body class="""  + theme_class + """">
 
