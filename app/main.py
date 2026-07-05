@@ -157,7 +157,7 @@ app.include_router(cert_router)             # /cert  — dashboard interactivo d
 # Checkout — requiere cookie user_info (usuario logueado en iamatlas.do)
 from app.utils.token_utils import require_user_info, register_login_redirect_handler
 register_login_redirect_handler(app)
-app.include_router(checkout_router)
+app.include_router(checkout_router, dependencies=[Depends(require_user_info)])
 
 # Protegidos con X-API-Key
 _auth = [Depends(require_api_key)]

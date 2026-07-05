@@ -622,11 +622,12 @@ def _html_result(
     amount_display = f"RD${amount / 100:,.2f}"
     card_display = f"•••• {card_last4}" if card_last4 else ""
     ref_short = payment_id[:8].upper()
+    theme_class = "theme-dark" if theme == "dark" else "theme-light"
 
     card_saved_badge = ""
     if ok and card_saved:
         card_saved_badge = '''
-        <div class="saved-badge">
+        <div class="result-saved-badge">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M20 6L9 17l-5-5"/>
             </svg>
@@ -636,8 +637,8 @@ def _html_result(
     email_line = ""
     if ok and cardholder_email:
         email_line = f'''
-        <div class="email-notice">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <div class="result-email-notice">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
                 <polyline points="22,6 12,13 2,6"/>
             </svg>
@@ -650,79 +651,41 @@ def _html_result(
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{"Pago Exitoso" if ok else "Pago Rechazado"} — Atlas</title>
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="/public/css/checkout.css?v=3">
 <style>
-  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-
+  /* ── Result page specific styles ─────────────────────────────────────── */
   body {{
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
     justify-content: center;
-    padding: 24px;
-    background: #f8f9fb;
-    color: #1e293b;
-    position: relative;
-    overflow: hidden;
+    align-items: center;
+    min-height: 100vh;
   }}
 
-  /* ── Atlas wave decoration ── */
-  body::before, body::after {{
-    content: '';
-    position: fixed;
-    border-radius: 50%;
-    filter: blur(80px);
-    opacity: 0.35;
-    z-index: 0;
-    pointer-events: none;
-  }}
-  body::before {{
-    width: 600px; height: 600px;
-    background: radial-gradient(circle, #b5f5a0 0%, transparent 70%);
-    top: -200px; left: -150px;
-  }}
-  body::after {{
-    width: 500px; height: 500px;
-    background: radial-gradient(circle, #f9a8d4 0%, transparent 70%);
-    bottom: -180px; right: -120px;
-  }}
-
-  .result-container {{
+  .result-wrapper {{
     width: 100%;
-    max-width: 420px;
-    position: relative;
-    z-index: 1;
-    animation: fadeUp 0.5s ease-out;
+    max-width: 460px;
+    margin: 0 auto;
+    animation: resultFadeUp 0.5s ease-out;
   }}
-  @keyframes fadeUp {{
+
+  @keyframes resultFadeUp {{
     from {{ opacity: 0; transform: translateY(20px); }}
     to   {{ opacity: 1; transform: translateY(0); }}
   }}
 
-  /* ── Atlas logo ── */
-  .atlas-logo {{
-    text-align: center;
-    margin-bottom: 28px;
-  }}
-  .atlas-logo svg {{
-    width: 40px;
-    height: 44px;
-  }}
-
-  /* ── Main card ── */
   .result-card {{
-    background: rgba(255, 255, 255, 0.85);
-    border: 1px solid rgba(0, 0, 0, 0.06);
-    border-radius: 20px;
+    background: white;
+    border-radius: 16px;
     padding: 40px 32px 32px;
     text-align: center;
-    backdrop-filter: blur(24px);
-    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.04);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+    color: #1a1a1a;
   }}
 
   /* ── Status icon ── */
-  .status-icon-wrap {{
+  .result-icon-wrap {{
     width: 80px; height: 80px;
     border-radius: 50%;
     background: {accent_light};
@@ -744,16 +707,16 @@ def _html_result(
   }}
   @keyframes draw {{ to {{ stroke-dashoffset: 0; }} }}
 
-  .status-title {{
+  .result-status-title {{
     font-size: 1.4rem;
     font-weight: 700;
     color: {accent};
     margin-bottom: 8px;
     letter-spacing: -0.02em;
   }}
-  .status-subtitle {{
+  .result-status-subtitle {{
     font-size: 0.85rem;
-    color: #64748b;
+    color: #666;
     line-height: 1.6;
     margin-bottom: 28px;
     max-width: 320px;
@@ -762,40 +725,40 @@ def _html_result(
   }}
 
   /* ── Receipt rows ── */
-  .receipt-divider {{
+  .result-divider {{
     height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(0,0,0,0.06), transparent);
+    background: rgba(0,0,0,0.08);
     margin: 0 -32px 16px;
   }}
-  .receipt-row {{
+  .result-row {{
     display: flex;
     justify-content: space-between;
     align-items: center;
     padding: 9px 0;
   }}
-  .receipt-row + .receipt-row {{
+  .result-row + .result-row {{
     border-top: 1px solid rgba(0,0,0,0.04);
   }}
-  .receipt-label {{
+  .result-label {{
     font-size: 0.8rem;
     color: #94a3b8;
     font-weight: 500;
   }}
-  .receipt-value {{
+  .result-value {{
     font-size: 0.85rem;
     color: #334155;
     font-weight: 600;
   }}
-  .receipt-value.amount {{
+  .result-value.amount {{
     font-size: 1rem;
-    color: #0f172a;
+    color: #1a1a1a;
     font-weight: 700;
   }}
-  .receipt-value.status-ok {{ color: #10b981; }}
-  .receipt-value.status-fail {{ color: #e11d48; }}
+  .result-value.status-ok {{ color: #10b981; }}
+  .result-value.status-fail {{ color: #e11d48; }}
 
   /* ── Badges ── */
-  .saved-badge {{
+  .result-saved-badge {{
     display: flex;
     align-items: center;
     justify-content: center;
@@ -809,7 +772,7 @@ def _html_result(
     color: #059669;
     font-weight: 500;
   }}
-  .email-notice {{
+  .result-email-notice {{
     display: flex;
     align-items: center;
     justify-content: center;
@@ -818,12 +781,12 @@ def _html_result(
     font-size: 0.75rem;
     color: #94a3b8;
   }}
-  .email-notice strong {{ color: #64748b; }}
+  .result-email-notice strong {{ color: #64748b; }}
 
   /* ── Buttons (Atlas style) ── */
-  .actions {{ margin-top: 28px; display: flex; flex-direction: column; gap: 10px; }}
+  .result-actions {{ margin-top: 28px; display: flex; flex-direction: column; gap: 10px; }}
 
-  .btn-solid {{
+  .result-btn-solid {{
     display: flex;
     align-items: center;
     justify-content: center;
@@ -831,7 +794,7 @@ def _html_result(
     width: 100%;
     padding: 14px 20px;
     border: none;
-    border-radius: 28px;
+    border-radius: 100px;
     font-family: inherit;
     font-size: 0.88rem;
     font-weight: 600;
@@ -841,13 +804,13 @@ def _html_result(
     background: #DA007C;
     color: white;
   }}
-  .btn-solid:hover {{
-    background: #c2006d;
+  .result-btn-solid:hover {{
+    background: #c0006c;
     transform: translateY(-1px);
     box-shadow: 0 4px 16px rgba(218, 0, 124, 0.2);
   }}
 
-  .btn-outline {{
+  .result-btn-outline {{
     display: flex;
     align-items: center;
     justify-content: center;
@@ -855,7 +818,7 @@ def _html_result(
     width: 100%;
     padding: 13px 20px;
     border: 1.5px solid #DA007C;
-    border-radius: 28px;
+    border-radius: 100px;
     font-family: inherit;
     font-size: 0.85rem;
     font-weight: 600;
@@ -865,12 +828,12 @@ def _html_result(
     background: transparent;
     color: #DA007C;
   }}
-  .btn-outline:hover {{
+  .result-btn-outline:hover {{
     background: rgba(218, 0, 124, 0.04);
     transform: translateY(-1px);
   }}
 
-  .footer-ref {{
+  .result-footer-ref {{
     margin-top: 20px;
     font-size: 0.7rem;
     color: #cbd5e1;
@@ -878,105 +841,96 @@ def _html_result(
     letter-spacing: 0.02em;
   }}
 
-  /* ── Dark Mode ── */
-  @media (prefers-color-scheme: dark) {{
-    body {{
-      background: #0c0c18;
-      color: #e2e8f0;
-    }}
-    body::before {{
-      opacity: 0.18;
-    }}
-    body::after {{
-      opacity: 0.15;
-    }}
-    .result-card {{
-      background: rgba(22, 22, 38, 0.9);
-      border-color: rgba(255, 255, 255, 0.06);
-      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
-    }}
-    .receipt-label {{ color: #64748b; }}
-    .receipt-value {{ color: #cbd5e1; }}
-    .receipt-value.amount {{ color: #f1f5f9; }}
-    .receipt-divider {{
-      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent);
-    }}
-    .receipt-row + .receipt-row {{
-      border-top-color: rgba(255, 255, 255, 0.04);
-    }}
-    .status-subtitle {{ color: #94a3b8; }}
-    .saved-badge {{
-      color: #86efac;
-      background: rgba(16, 185, 129, 0.08);
-      border-color: rgba(16, 185, 129, 0.2);
-    }}
-    .email-notice {{ color: #64748b; }}
-    .email-notice strong {{ color: #94a3b8; }}
-    .btn-solid {{
-      box-shadow: 0 4px 16px rgba(218, 0, 124, 0.25);
-    }}
-    .btn-outline {{
-      border-color: rgba(218, 0, 124, 0.6);
-    }}
-    .btn-outline:hover {{
-      background: rgba(218, 0, 124, 0.08);
-    }}
-    .footer-ref {{ color: #475569; }}
-    .atlas-logo-path {{ fill: #e2e8f0; }}
+  /* ── Dark Mode overrides ── */
+  body.theme-dark .result-card {{
+    background: #1e1e1e;
+    color: #e2e8f0;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  }}
+  body.theme-dark .result-status-subtitle {{
+    color: #94a3b8;
+  }}
+  body.theme-dark .result-divider {{
+    background: rgba(255,255,255,0.08);
+  }}
+  body.theme-dark .result-row + .result-row {{
+    border-top-color: rgba(255, 255, 255, 0.06);
+  }}
+  body.theme-dark .result-label {{ color: #64748b; }}
+  body.theme-dark .result-value {{ color: #cbd5e1; }}
+  body.theme-dark .result-value.amount {{ color: #f1f5f9; }}
+  body.theme-dark .result-saved-badge {{
+    color: #86efac;
+    background: rgba(16, 185, 129, 0.08);
+    border-color: rgba(16, 185, 129, 0.2);
+  }}
+  body.theme-dark .result-email-notice {{ color: #64748b; }}
+  body.theme-dark .result-email-notice strong {{ color: #94a3b8; }}
+  body.theme-dark .result-btn-solid {{
+    box-shadow: 0 4px 16px rgba(218, 0, 124, 0.25);
+  }}
+  body.theme-dark .result-btn-outline {{
+    border-color: rgba(218, 0, 124, 0.6);
+    color: #ff69b4;
+  }}
+  body.theme-dark .result-btn-outline:hover {{
+    background: rgba(218, 0, 124, 0.08);
+  }}
+  body.theme-dark .result-footer-ref {{ color: #475569; }}
+
+  @media (max-width: 480px) {{
+    .result-card {{ padding: 32px 20px 24px; border-radius: 12px; }}
+    .result-wrapper {{ padding: 0 4px; }}
   }}
 </style>
 </head>
-<body>
-<div class="result-container">
+<body class="{theme_class}">
 
-  <!-- Atlas Logo -->
-  <div class="atlas-logo">
-    <svg viewBox="0 0 40 44" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M20 0L3 38h8l9-22 9 22h8L20 0z" fill="#1e293b" class="atlas-logo-path"/>
-      <circle cx="20" cy="42" r="2" fill="#1e293b" class="atlas-logo-path"/>
-      <circle cx="14" cy="42" r="2" fill="#1e293b" class="atlas-logo-path"/>
-      <circle cx="26" cy="42" r="2" fill="#1e293b" class="atlas-logo-path"/>
-    </svg>
-  </div>
+<a href="https://www.iamatlas.do/profile" class="back-btn" id="backToProfile" title="Volver al perfil">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="19" y1="12" x2="5" y2="12"></line>
+    <polyline points="12,19 5,12 12,5"></polyline>
+  </svg>
+  <span>Volver al perfil</span>
+</a>
 
+<div class="result-wrapper">
   <div class="result-card">
-    <div class="status-icon-wrap">
+    <div class="result-icon-wrap">
       {icon_svg}
     </div>
 
-    <div class="status-title">{status_title}</div>
-    <div class="status-subtitle">{status_subtitle}</div>
+    <div class="result-status-title">{status_title}</div>
+    <div class="result-status-subtitle">{status_subtitle}</div>
 
-    <div class="receipt-divider"></div>
+    <div class="result-divider"></div>
 
-    <div class="receipt-row">
-      <span class="receipt-label">Monto</span>
-      <span class="receipt-value amount">{amount_display}</span>
+    <div class="result-row">
+      <span class="result-label">Monto</span>
+      <span class="result-value amount">{amount_display}</span>
     </div>
-    {"<div class='receipt-row'><span class='receipt-label'>Tarjeta</span><span class='receipt-value'>" + card_display + "</span></div>" if card_display else ""}
-    {"<div class='receipt-row'><span class='receipt-label'>Titular</span><span class='receipt-value'>" + cardholder_name + "</span></div>" if cardholder_name else ""}
-    <div class="receipt-row">
-      <span class="receipt-label">Estado</span>
-      <span class="receipt-value {"status-ok" if ok else "status-fail"}">{"Aprobado" if ok else "Rechazado"}</span>
+    {"<div class='result-row'><span class='result-label'>Tarjeta</span><span class='result-value'>" + card_display + "</span></div>" if card_display else ""}
+    {"<div class='result-row'><span class='result-label'>Titular</span><span class='result-value'>" + cardholder_name + "</span></div>" if cardholder_name else ""}
+    <div class="result-row">
+      <span class="result-label">Estado</span>
+      <span class="result-value {"status-ok" if ok else "status-fail"}">{"Aprobado" if ok else "Rechazado"}</span>
     </div>
 
     {card_saved_badge}
     {email_line}
 
-    <div class="actions">
-      <a href="https://www.iamatlas.do/profile" class="btn-solid">
+    <div class="result-actions">
+      <a href="https://www.iamatlas.do/profile" class="result-btn-solid">
         {"Ir a mi perfil" if ok else "Intentar de nuevo"}
       </a>
-      {"" if ok else '<a href="/checkout" class="btn-outline">Usar otra tarjeta</a>'}
+      {"" if ok else '<a href="/checkout" class="result-btn-outline">Usar otra tarjeta</a>'}
     </div>
 
-    <div class="footer-ref">Ref: {ref_short} · Atlas Payments</div>
+    <div class="result-footer-ref">Ref: {ref_short} · Atlas Payments</div>
   </div>
 </div>
 </body>
 </html>"""
-
-
 
 # ---------------------------------------------------------------------------
 # Routes
