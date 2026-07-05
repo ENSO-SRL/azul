@@ -985,9 +985,9 @@ async def checkout_form(
                 logger.error("[CHECKOUT] Error querying public.users: %s", e)
 
         prefill_name = f"{name} {last_name}".strip()
-        # Use user email or sub as customer_id
+        # Use user UUID (sub) as canonical customer_id for consistency across all pagos tables
         if not customer_id:
-            customer_id = prefill_email or sub
+            customer_id = sub or prefill_email
         logger.warning(
             "[CHECKOUT] access_token cookie decoded | sub=%s email=%s name=%s customer_id=%s",
             sub, prefill_email, prefill_name, customer_id,

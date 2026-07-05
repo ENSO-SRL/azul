@@ -185,6 +185,9 @@ class RecurringPayment:
     card_last4: str = ""
     card_expiration: str = ""    # YYYYMM — necesario para verificar vencimiento antes de MIT
 
+    # Email del tarjetahabiente — necesario para notificaciones de cobro recurrente
+    cardholder_email: str = ""
+
     # Scheduling
     next_charge_at: datetime | None = None
     last_charged_at: datetime | None = None

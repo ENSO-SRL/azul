@@ -152,7 +152,7 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
                     # Notify customer of successful charge
                     await send_notification(
                         "charge_approved",
-                        to_email=getattr(sub, "cardholder_email", ""),
+                        to_email=sub.cardholder_email,
                         context=ctx_charge(
                             amount=sub.amount,
                             currency=getattr(sub, "currency_code", "DOP"),
@@ -168,7 +168,7 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
                     # Notify customer of failed charge
                     await send_notification(
                         "charge_failed",
-                        to_email=getattr(sub, "cardholder_email", ""),
+                        to_email=sub.cardholder_email,
                         context=ctx_charge(
                             amount=sub.amount,
                             currency=getattr(sub, "currency_code", "DOP"),
@@ -181,7 +181,7 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
                     if sub.status == SubscriptionStatus.PAUSED:
                         await send_notification(
                             "subscription_paused",
-                            to_email=getattr(sub, "cardholder_email", ""),
+                            to_email=sub.cardholder_email,
                             context=ctx_charge(
                                 amount=sub.amount,
                                 currency=getattr(sub, "currency_code", "DOP"),
@@ -286,7 +286,7 @@ async def _send_upcoming_charge_reminders(session_factory: async_sessionmaker) -
         for sub in subs:
             await send_notification(
                 "upcoming_charge",
-                to_email=getattr(sub, "cardholder_email", ""),
+                to_email=sub.cardholder_email or "",
                 context=ctx_charge(
                     amount=sub.amount,
                     currency=getattr(sub, "currency_code", "DOP"),
@@ -330,7 +330,7 @@ async def _purge_old_transactions(session_factory: async_sessionmaker) -> None:
             delete(TransactionModel).where(
                 TransactionModel.payment_id.in_(
                     text(
-                        "SELECT id FROM payments "
+                        "SELECT id FROM pagos.payments "
                         "WHERE status = 'DECLINED' "
                         f"AND created_at < '{cutoff.isoformat()}'"
                     )

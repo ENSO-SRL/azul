@@ -105,6 +105,9 @@ class RecurringPaymentModel(Base):
     card_last4: Mapped[str] = mapped_column(String(4), default="")
     card_expiration: Mapped[str] = mapped_column(String(6), default="")  # YYYYMM
 
+    # Email del tarjetahabiente — para notificaciones de cobro recurrente
+    cardholder_email: Mapped[str] = mapped_column(String(255), default="")
+
     # Scheduling
     next_charge_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_charged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -155,6 +155,7 @@ class RecurringService:
             card_brand=payment.card_number_masked[:4] if payment.card_number_masked else "",
             card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
             card_expiration=expiration,
+            cardholder_email=cardholder_email,
             last_charged_at=now,
             next_charge_at=now + timedelta(days=frequency_days),
         )
@@ -267,7 +268,7 @@ class RecurringService:
         # Notify customer of cancellation
         await send_notification(
             "subscription_cancelled",
-            to_email=getattr(sub, "cardholder_email", ""),
+            to_email=sub.cardholder_email,
             context=ctx_charge(
                 amount=sub.amount,
                 currency=getattr(sub, "currency_code", "DOP"),

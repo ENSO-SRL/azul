@@ -84,9 +84,205 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> TokenService:
 
 # ---------------------------------------------------------------------------
 # Routes
-# NOTA: /by-email/{email} debe ir ANTES de /{customer_id} para que FastAPI
-# no interprete "by-email" como un customer_id.
+# NOTA: /status/{customer_id} y /by-email/{email} deben ir ANTES de
+# /{customer_id} para que FastAPI no interprete esos prefijos como customer_id.
 # ---------------------------------------------------------------------------
+
+@router.get(
+    "/status/{customer_id}",
+    summary="Estado de pago del usuario",
+    description=(
+        "Devuelve un resumen completo del estado de pago de un usuario: "
+        "tarjetas guardadas, suscripciones activas/pausadas, últimos pagos, "
+        "y un indicador de si el usuario está al día o tiene problemas de pago."
+    ),
+)
+async def get_user_payment_status(
+    customer_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Estado integral de pago del usuario.
+
+    Cruza datos de:
+    - pagos.saved_cards → tarjetas guardadas
+    - pagos.recurring_payments → suscripciones
+    - pagos.payments → historial de pagos recientes
+    - public.users → datos del usuario (nombre, email)
+
+    Retorna un JSON con:
+    - user_info: datos básicos del usuario
+    - cards: lista de tarjetas guardadas con estado de vencimiento
+    - subscriptions: lista de suscripciones con estado y reintentos
+    - recent_payments: últimos 10 pagos
+    - summary: indicador resumen (active, payment_issues, no_card, etc.)
+    """
+    from sqlalchemy import text, select
+    from datetime import datetime, timezone
+    from calendar import monthrange
+    from app.infrastructure.models import (
+        SavedCardModel,
+        RecurringPaymentModel,
+        PaymentModel,
+    )
+
+    now = datetime.now(timezone.utc)
+
+    # ── 1. Datos del usuario desde public.users ──────────────────────────
+    user_info = {"customer_id": customer_id, "email": "", "name": "", "found": False}
+    try:
+        result = await db.execute(
+            text(
+                "SELECT email, name, last_name FROM public.users "
+                "WHERE uuid::text = :cid OR email = :cid LIMIT 1"
+            ),
+            {"cid": customer_id},
+        )
+        row = result.fetchone()
+        if row:
+            user_info["email"] = row[0] or ""
+            user_info["name"] = f"{row[1] or ''} {row[2] or ''}".strip()
+            user_info["found"] = True
+    except Exception:
+        pass  # public.users might not be accessible — continue with pagos data
+
+    # ── 2. Tarjetas guardadas ────────────────────────────────────────────
+    cards_result = await db.execute(
+        select(SavedCardModel)
+        .where(SavedCardModel.customer_id == customer_id)
+        .order_by(SavedCardModel.created_at.desc())
+    )
+    cards_raw = cards_result.scalars().all()
+
+    cards = []
+    for c in cards_raw:
+        # Verificar si la tarjeta está vencida
+        expired = False
+        if c.expiration and len(c.expiration) == 6:
+            try:
+                exp_y = int(c.expiration[:4])
+                exp_m = int(c.expiration[4:6])
+                last_day = monthrange(exp_y, exp_m)[1]
+                exp_date = datetime(exp_y, exp_m, last_day, 23, 59, 59, tzinfo=timezone.utc)
+                expired = now > exp_date
+            except (ValueError, IndexError):
+                pass
+
+        cards.append({
+            "id": c.id,
+            "card_brand": c.card_brand or "",
+            "card_last4": c.card_last4 or "",
+            "expiration": c.expiration or "",
+            "expiration_display": (
+                f"{c.expiration[4:]}/{c.expiration[2:4]}"
+                if c.expiration and len(c.expiration) == 6
+                else ""
+            ),
+            "is_default": c.is_default,
+            "is_expired": expired,
+            "status": "expired" if expired else "active",
+            "created_at": c.created_at.isoformat() if c.created_at else "",
+        })
+
+    # ── 3. Suscripciones ─────────────────────────────────────────────────
+    subs_result = await db.execute(
+        select(RecurringPaymentModel)
+        .where(RecurringPaymentModel.customer_id == customer_id)
+        .order_by(RecurringPaymentModel.created_at.desc())
+    )
+    subs_raw = subs_result.scalars().all()
+
+    subscriptions = []
+    for s in subs_raw:
+        subscriptions.append({
+            "id": s.id,
+            "status": s.status,
+            "amount": s.amount,
+            "amount_display": f"RD${s.amount / 100:,.2f}",
+            "frequency_days": s.frequency_days,
+            "description": s.description or "",
+            "card_last4": s.card_last4 or "",
+            "card_brand": s.card_brand or "",
+            "next_charge_at": s.next_charge_at.isoformat() if s.next_charge_at else None,
+            "last_charged_at": s.last_charged_at.isoformat() if s.last_charged_at else None,
+            "failed_attempts": s.failed_attempts,
+            "last_failure_reason": s.last_failure_reason or "",
+            "created_at": s.created_at.isoformat() if s.created_at else "",
+        })
+
+    # ── 4. Últimos 10 pagos ──────────────────────────────────────────────
+    payments_result = await db.execute(
+        select(PaymentModel)
+        .where(PaymentModel.customer_id == customer_id)
+        .order_by(PaymentModel.created_at.desc())
+        .limit(10)
+    )
+    payments_raw = payments_result.scalars().all()
+
+    recent_payments = []
+    for p in payments_raw:
+        recent_payments.append({
+            "id": p.id,
+            "status": p.status,
+            "amount": p.amount,
+            "amount_display": f"RD${p.amount / 100:,.2f}",
+            "iso_code": p.iso_code or "",
+            "response_message": p.response_message or "",
+            "card_last4": p.card_number_masked[-4:] if p.card_number_masked else "",
+            "payment_type": p.payment_type or "",
+            "created_at": p.created_at.isoformat() if p.created_at else "",
+        })
+
+    # ── 5. Calcular resumen ──────────────────────────────────────────────
+    has_cards = len(cards) > 0
+    has_active_card = any(c["status"] == "active" for c in cards)
+    active_subs = [s for s in subscriptions if s["status"] == "ACTIVE"]
+    paused_subs = [s for s in subscriptions if s["status"] == "PAUSED"]
+    failing_subs = [s for s in subscriptions if s["failed_attempts"] > 0]
+
+    if not has_cards:
+        overall_status = "no_card"
+        status_message = "El usuario no tiene tarjetas guardadas."
+    elif not has_active_card:
+        overall_status = "card_expired"
+        status_message = "Todas las tarjetas del usuario están vencidas."
+    elif paused_subs:
+        overall_status = "payment_issues"
+        reasons = set(s["last_failure_reason"] for s in paused_subs if s["last_failure_reason"])
+        status_message = (
+            f"{len(paused_subs)} suscripción(es) pausada(s) por fallos de cobro. "
+            f"Razón(es): {', '.join(reasons) if reasons else 'desconocida'}."
+        )
+    elif failing_subs:
+        overall_status = "retrying"
+        status_message = (
+            f"{len(failing_subs)} suscripción(es) con reintentos pendientes. "
+            f"Próximo intento más cercano: "
+            f"{min(s['next_charge_at'] for s in failing_subs if s['next_charge_at']) or 'N/A'}."
+        )
+    elif active_subs:
+        overall_status = "active"
+        status_message = f"Todo al día. {len(active_subs)} suscripción(es) activa(s)."
+    else:
+        overall_status = "no_subscription"
+        status_message = "El usuario tiene tarjeta(s) pero no tiene suscripciones activas."
+
+    return {
+        "user_info": user_info,
+        "cards": cards,
+        "cards_count": len(cards),
+        "subscriptions": subscriptions,
+        "subscriptions_count": len(subscriptions),
+        "recent_payments": recent_payments,
+        "summary": {
+            "status": overall_status,
+            "message": status_message,
+            "has_cards": has_cards,
+            "has_active_card": has_active_card,
+            "active_subscriptions": len(active_subs),
+            "paused_subscriptions": len(paused_subs),
+            "failing_subscriptions": len(failing_subs),
+        },
+    }
 
 @router.post(
     "",

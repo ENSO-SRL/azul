@@ -47,6 +47,22 @@ class PaymentService:
     # One-time Sale
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _detect_card_brand(card_number: str) -> str:
+        """Detect card brand from BIN (first 1-2 digits)."""
+        n = card_number.replace(" ", "").strip()
+        if n.startswith("4"):
+            return "VISA"
+        if n.startswith(("51", "52", "53", "54", "55")):
+            return "MASTERCARD"
+        if n[:4] in ("2221", "2222", "2223", "2224", "2225", "2226", "2227", "2228", "2229") or n[:2] in ("23", "24", "25", "26", "27"):
+            return "MASTERCARD"
+        if n.startswith(("34", "37")):
+            return "AMEX"
+        if n.startswith(("6011", "65", "644", "645", "646", "647", "648", "649")):
+            return "DISCOVER"
+        return ""
+
     async def process_sale(
         self,
         amount: int,
@@ -130,14 +146,26 @@ class PaymentService:
                 include_method_notification_url=include_method_notification_url,
             )
 
-        if save_card and payment.data_vault_token and self._cards:
+        if save_card and payment.data_vault_token and self._cards and customer_id:
             from app.domain.entities import SavedCard
+            # Detect card brand from BIN and preserve expiration
+            brand = self._detect_card_brand(card_number)
             card = SavedCard(
-                customer_id=customer_id or order_id or payment.id,
+                customer_id=customer_id,
                 token=payment.data_vault_token,
+                card_brand=brand,
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                expiration=expiration,  # YYYYMM from checkout
             )
+            # Auto-mark as default if this is the customer's first card
+            existing_cards = await self._cards.list_by_customer(customer_id)
+            if not existing_cards:
+                card.is_default = True
             await self._cards.save(card)
+            logger.warning(
+                "[SVC] ✓ card saved | customer=%s brand=%s last4=%s exp=%s default=%s",
+                customer_id, brand, card.card_last4, expiration, card.is_default,
+            )
 
         logger.warning(
             "[SVC] saving payment | payment_id=%s status=%s idempotency_key=%r",
