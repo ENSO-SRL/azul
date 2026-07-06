@@ -237,7 +237,7 @@ async def get_user_payment_status(
     has_active_card = any(c["status"] == "active" for c in cards)
     active_subs = [s for s in subscriptions if s["status"] == "ACTIVE"]
     paused_subs = [s for s in subscriptions if s["status"] == "PAUSED"]
-    failing_subs = [s for s in subscriptions if s["failed_attempts"] > 0]
+    failing_subs = [s for s in subscriptions if int(s.get("failed_attempts") or 0) > 0]
 
     if not has_cards:
         overall_status = "no_card"
@@ -250,7 +250,7 @@ async def get_user_payment_status(
         reasons = set(s["last_failure_reason"] for s in paused_subs if s["last_failure_reason"])
         status_message = (
             f"{len(paused_subs)} suscripción(es) pausada(s) por fallos de cobro. "
-            f"Razón(es): {', '.join(reasons) if reasons else 'desconocida'}."
+            f"Razón(es): {', '.join(str(r) for r in reasons) if reasons else 'desconocida'}."
         )
     elif failing_subs:
         overall_status = "retrying"
