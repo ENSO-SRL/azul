@@ -10,4 +10,5 @@ python-multipart>=0.0.9
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 cryptography>=42.0.0
+redis[hiredis]>=5.0.0
 PyJWT>=2.8.0

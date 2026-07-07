@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.infrastructure.database import engine, init_db
+from app.infrastructure.redis_client import init_redis, close_redis
 from app.security import require_api_key
 from app.services.scheduler import run_now, start_scheduler, stop_scheduler
 from routers.clubs import router as clubs_router
@@ -77,11 +78,13 @@ _openapi_url = None if _AZUL_ENV == "production" else "/openapi.json"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: create DB tables + start scheduler.  Shutdown: stop scheduler."""
+    """Startup: create DB tables + Redis + scheduler.  Shutdown: cleanup."""
     await init_db()
+    await init_redis()
     start_scheduler(engine)
     yield
     stop_scheduler()
+    await close_redis()
 
 
 app = FastAPI(
