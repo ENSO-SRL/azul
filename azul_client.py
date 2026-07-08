@@ -13,7 +13,7 @@ Usage
 -----
 ::
 
-    async with build_client("splitit") as client:
+    async with build_client("splitit")  as client:
         resp = await client.post(AZUL_URL, json=payload)
 """
 
