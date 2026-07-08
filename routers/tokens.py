@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.azul_gateway import AzulPaymentGateway
+from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
 from app.infrastructure.database import get_db
 from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
 from app.services.token_service import TokenService
@@ -392,6 +392,8 @@ async def delete_card(
         raise HTTPException(status_code=404, detail=str(exc))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
+    except AzulIntegrationError as exc:
+        raise HTTPException(status_code=503, detail=f"Error al eliminar tarjeta en Azul: {exc}")
 
 
 @router.delete(
@@ -419,6 +421,9 @@ async def delete_card_by_id(
         raise HTTPException(status_code=404, detail=str(exc))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
+    except AzulIntegrationError as exc:
+        raise HTTPException(status_code=503, detail=f"Error al eliminar tarjeta en Azul: {exc}")
+
 
 @router.put(
     "/{customer_id}/default/{card_id}",

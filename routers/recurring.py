@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.azul_gateway import AzulPaymentGateway
+from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
 from app.infrastructure.database import get_db
 from app.infrastructure.repo_impl import (
     SQLConsentRepository,
@@ -192,6 +192,8 @@ async def create_subscription(
             auth_mode=body.auth_mode,
             browser_info=browser_info_dict,
         )
+    except AzulIntegrationError as e:
+        raise HTTPException(status_code=503, detail=f"Error de integración con Azul: {e}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     resp = _to_sub_response(recurring)
@@ -249,6 +251,8 @@ async def charge_subscription(
         payment = await svc.charge(recurring_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except AzulIntegrationError as e:
+        raise HTTPException(status_code=503, detail=f"Error de integración con Azul: {e}")
     return {
         "payment_id": payment.id,
         "amount": payment.amount,

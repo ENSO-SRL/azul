@@ -584,6 +584,7 @@ class AzulPaymentGateway:
         payload = {
             "Channel": "EC",
             "Store": cfg.merchant_id,
+            "PosInputMode": "E-Commerce",
             "AzulOrderId": azul_order_id,
             "OriginalDate": original_date,
             "TrxType": "Void",
@@ -681,6 +682,7 @@ class AzulPaymentGateway:
         payload = {
             "Channel": "EC",
             "Store": cfg.merchant_id,
+            "PosInputMode": "E-Commerce",
             "AZULOrderId": azul_order_id,
             "AzulOrderId": azul_order_id,
             "MethodNotificationStatus": method_notification_status,
@@ -734,6 +736,7 @@ class AzulPaymentGateway:
         payload = {
             "Channel": "EC",
             "Store": cfg.merchant_id,
+            "PosInputMode": "E-Commerce",
             "AZULOrderId": azul_order_id,
             "AzulOrderId": azul_order_id,
         }
@@ -774,6 +777,7 @@ class AzulPaymentGateway:
         payload = {
             "Channel": "EC",
             "Store": cfg.merchant_id,
+            "PosInputMode": "E-Commerce",
             "CustomOrderId": custom_order_id,
         }
 
