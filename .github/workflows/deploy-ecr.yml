@@ -196,7 +196,7 @@ jobs:
         (github.event_name == 'workflow_dispatch' && github.event.inputs.push_image == 'yes')
       )
 
-    # OIDC — igual que build-and-push, sin claves estáticas
+    # OIDC — igual que  build-and-push, sin claves estáticas
     permissions:
       contents: read
       id-token: write
