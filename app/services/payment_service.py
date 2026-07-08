@@ -146,7 +146,16 @@ class PaymentService:
                 include_method_notification_url=include_method_notification_url,
             )
 
-        if save_card and payment.data_vault_token and self._cards and customer_id:
+        # Only save the card when the payment is fully APPROVED right now.
+        # If 3DS is pending, the card will be saved in the 3DS continuation
+        # step to avoid duplicates.
+        if (
+            save_card
+            and payment.data_vault_token
+            and self._cards
+            and customer_id
+            and payment.status == PaymentStatus.APPROVED
+        ):
             from app.domain.entities import SavedCard
             # Detect card brand from BIN and preserve expiration
             brand = self._detect_card_brand(card_number)
@@ -161,7 +170,7 @@ class PaymentService:
             existing_cards = await self._cards.list_by_customer(customer_id)
             if not existing_cards:
                 card.is_default = True
-            await self._cards.save(card)
+            await self._cards.save_if_not_exists(card)
             logger.warning(
                 "[SVC] ✓ card saved | customer=%s brand=%s last4=%s exp=%s default=%s",
                 customer_id, brand, card.card_last4, expiration, card.is_default,
@@ -472,14 +481,20 @@ class PaymentService:
             logger.warning("[SVC] → 3DS method approved | payment_id=%s token=%s", payment.id, token[:8] + "…" if token else "(none)")
             if token and self._cards:
                 from app.domain.entities import SavedCard
+                card_customer = payment.customer_id or payment.cardholder_email or payment.id
                 card = SavedCard(
-                    customer_id=payment.cardholder_email or payment.order_id or payment.id,
+                    customer_id=card_customer,
                     token=token,
+                    card_brand=payment.card_number_masked[:1] if payment.card_number_masked else "",
                     card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
                 )
+                # Auto-mark as default if first card
+                existing_cards = await self._cards.list_by_customer(card_customer)
+                if not existing_cards:
+                    card.is_default = True
                 try:
-                    await self._cards.save(card)
-                    logger.warning("[SVC] ✓ token persisted (method step) | payment_id=%s", payment.id)
+                    await self._cards.save_if_not_exists(card)
+                    logger.warning("[SVC] ✓ token persisted (method step) | payment_id=%s customer=%s", payment.id, card_customer)
                 except Exception as exc:
                     logger.error("[SVC] ✗ card save FAILED (method step) | payment_id=%s err=%s", payment.id, exc)
         elif iso_raw == IsoCode.THREE_DS_CHALLENGE:
@@ -641,17 +656,23 @@ class PaymentService:
             # Persistir token en SavedCardRepository para cobros mensuales futuros
             if token and self._cards:
                 from app.domain.entities import SavedCard
+                card_customer = payment.customer_id or payment.cardholder_email or payment.id
                 card = SavedCard(
-                    customer_id=payment.cardholder_email or payment.order_id or payment.id,
+                    customer_id=card_customer,
                     token=token,
+                    card_brand=payment.card_number_masked[:1] if payment.card_number_masked else "",
                     card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
                 )
+                # Auto-mark as default if first card
+                existing_cards = await self._cards.list_by_customer(card_customer)
+                if not existing_cards:
+                    card.is_default = True
                 try:
-                    await self._cards.save(card)
+                    await self._cards.save_if_not_exists(card)
                     logger.warning(
                         "[SVC] ✓ DataVaultToken persisted | payment_id=%s customer=%s token=%s",
                         payment.id,
-                        card.customer_id,
+                        card_customer,
                         token[:8] + "…",
                     )
                 except Exception as exc:

@@ -56,6 +56,19 @@ class SQLSavedCardRepository(SavedCardRepository):
         await self._session.commit()
         return card
 
+    async def save_if_not_exists(self, card: SavedCard) -> SavedCard:
+        """Save a card only if no card with the same token already exists.
+
+        Returns the existing card if a duplicate token is found,
+        preventing double-inserts during multi-step 3DS flows.
+        """
+        existing = await self.get_by_token(card.token)
+        if existing:
+            return existing
+        self._session.add(_card_to_model(card))
+        await self._session.commit()
+        return card
+
     async def get_by_token(self, token: str) -> SavedCard | None:
         result = await self._session.execute(
             select(SavedCardModel).where(SavedCardModel.token == token)

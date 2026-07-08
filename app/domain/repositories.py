@@ -93,6 +93,11 @@ class SavedCardRepository(ABC):
     @abstractmethod
     async def set_default(self, customer_id: str, card_id: str) -> None: ...
 
+    @abstractmethod
+    async def save_if_not_exists(self, card: SavedCard) -> SavedCard:
+        """Save a card only if no card with the same token exists."""
+        ...
+
 
 class ConsentRepository(ABC):
     """Persistence port for customer consent records."""

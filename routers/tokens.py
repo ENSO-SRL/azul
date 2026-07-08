@@ -153,8 +153,16 @@ async def get_user_payment_status(
     )
     cards_raw = cards_result.scalars().all()
 
-    cards = []
+    # Deduplicate by token — legacy bug could have created duplicates
+    seen_tokens: set[str] = set()
+    cards_deduped = []
     for c in cards_raw:
+        if c.token not in seen_tokens:
+            seen_tokens.add(c.token)
+            cards_deduped.append(c)
+
+    cards = []
+    for c in cards_deduped:
         # Verificar si la tarjeta está vencida
         expired = False
         if c.expiration and len(c.expiration) == 6:

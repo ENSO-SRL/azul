@@ -27,3 +27,6 @@ certs/
 # OS
 Thumbs.db
 .DS_Store
+
+# ECS task definitions (contain secrets like SendGrid API keys)
+*taskdef*.json

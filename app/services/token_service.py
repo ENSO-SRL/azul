@@ -50,7 +50,7 @@ class TokenService:
         if not existing_cards:
             card.is_default = True
             
-        return await self._cards.save(card)
+        return await self._cards.save_if_not_exists(card)
 
     async def set_default_card(self, customer_id: str, card_id: str) -> None:
         """Set a specific card as the default for a customer."""
@@ -82,8 +82,19 @@ class TokenService:
         await self._cards.delete(token)
 
     async def list_cards(self, customer_id: str) -> list[SavedCard]:
-        """Return all saved cards for a customer."""
-        return await self._cards.list_by_customer(customer_id)
+        """Return all saved cards for a customer, deduplicated by token.
+
+        If duplicate tokens exist (legacy bug), only the first occurrence
+        (most recent) is kept.
+        """
+        cards = await self._cards.list_by_customer(customer_id)
+        seen_tokens: set[str] = set()
+        unique: list[SavedCard] = []
+        for c in cards:
+            if c.token not in seen_tokens:
+                seen_tokens.add(c.token)
+                unique.append(c)
+        return unique
 
     async def delete_card_by_id(self, card_id: str, customer_email: str) -> None:
         """Remove a card by its DB id. Verifies ownership by email.
