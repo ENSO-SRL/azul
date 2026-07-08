@@ -213,7 +213,7 @@ jobs:
         run: |
           aws ecs update-service \
             --cluster default \
-            --service pago-azul-5325 \
+            --service pago-azul-svc \
             --force-new-deployment \
             --region ${{ env.AWS_REGION }} \
             --output json | jq '{service: .service.serviceName, status: .service.status, desiredCount: .service.desiredCount}'
@@ -226,7 +226,7 @@ jobs:
           echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Cluster | \`default\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Service | \`pago-azul-5325\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | \`pago-azul-svc\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Image | \`${{ needs.build-and-push.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Actor | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
