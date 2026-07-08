@@ -1,4 +1,4 @@
-"""Fix atlas_user_id NOT NULL constraint."""
+"""Fix atlas_user_id NOT NULL constraint ."""
 import asyncio
 from app.infrastructure.database import engine
 from sqlalchemy import text
