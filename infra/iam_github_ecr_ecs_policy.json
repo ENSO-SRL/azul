@@ -30,7 +30,7 @@
         "ecs:UpdateService",
         "ecs:DescribeServices"
       ],
-      "Resource": "arn:aws:ecs:us-east-2:293926505005:service/default/pago-azul-5325"
+      "Resource": "arn:aws:ecs:us-east-2:293926505005:service/default/pago-azul-svc"
     },
     {
       "Sid": "PassRoleToECS",
