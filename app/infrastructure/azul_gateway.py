@@ -548,6 +548,7 @@ class AzulPaymentGateway:
         payload = {
             "Channel": "EC",
             "Store": cfg.merchant_id,
+            "PosInputMode": "E-Commerce",
             "TrxType": "DELETE",
             "DataVaultToken": token,
         }
