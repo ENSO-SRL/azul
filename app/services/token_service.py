@@ -7,8 +7,12 @@ Provides register_card, delete_card, and list_cards use cases.
 from __future__ import annotations
 
 from app.domain.entities import SavedCard
+import logging
+
 from app.domain.repositories import SavedCardRepository
-from app.infrastructure.azul_gateway import AzulPaymentGateway
+from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
+
+logger = logging.getLogger(__name__)
 
 
 class TokenService:
@@ -78,7 +82,13 @@ class TokenService:
             )
 
         # Delete from Azul DataVault first, then from local DB
-        await self._gw.delete_token(token)
+        try:
+            await self._gw.delete_token(token)
+        except AzulIntegrationError as e:
+            logger.warning(f"Ignorando error al borrar token en Azul (DataVault): {e}")
+        except Exception as e:
+            logger.warning(f"Error de red o inesperado al borrar token en Azul: {e}")
+
         await self._cards.delete(token)
 
     async def list_cards(self, customer_id: str) -> list[SavedCard]:
@@ -109,5 +119,11 @@ class TokenService:
                 f"La tarjeta no pertenece al correo {customer_email!r}."
             )
 
-        await self._gw.delete_token(card.token)
+        try:
+            await self._gw.delete_token(card.token)
+        except AzulIntegrationError as e:
+            logger.warning(f"Ignorando error al borrar token por ID en Azul (DataVault): {e}")
+        except Exception as e:
+            logger.warning(f"Error de red o inesperado al borrar token por ID en Azul: {e}")
+
         await self._cards.delete(card.token)
