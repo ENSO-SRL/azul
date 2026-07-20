@@ -95,6 +95,8 @@ class SubscriptionResponse(BaseModel):
     last_failure_reason: str
     initial_payment_id: str = ""
     initial_payment_status: str = ""
+    trial_ends_at: str | None = None
+    in_trial: bool = False
     created_at: str
 
 
@@ -145,6 +147,8 @@ class SubscriptionStatusDetail(BaseModel):
     next_charge_at: str | None
     last_charged_at: str | None
     card_last4: str
+    in_trial: bool = False
+    trial_ends_at: str | None = None
 
 
 class CustomerStatusResponse(BaseModel):
@@ -154,6 +158,8 @@ class CustomerStatusResponse(BaseModel):
     is_active: bool = Field(description="True si tiene al menos una suscripción ACTIVE")
     is_current: bool = Field(description="True si está al día con TODOS los pagos")
     has_overdue_payment: bool = Field(description="True si alguna suscripción tiene pago vencido o fallido")
+    in_trial: bool = Field(False, description="True si alguna suscripción activa está en período de gracia")
+    trial_ends_at: str | None = Field(None, description="Fecha ISO en que termina el período de gracia")
     total_subscriptions: int
     active_count: int
     paused_count: int
@@ -493,6 +499,10 @@ async def get_subscription_history(
 # ---------------------------------------------------------------------------
 
 def _to_sub_response(r) -> dict:
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    trial_ends = getattr(r, "trial_ends_at", None)
+    in_trial = bool(trial_ends and trial_ends > now) if hasattr(r, "trial_ends_at") else False
     return {
         "id": r.id,
         "customer_id": r.customer_id,
@@ -509,6 +519,8 @@ def _to_sub_response(r) -> dict:
         "last_charged_at": r.last_charged_at.isoformat() if r.last_charged_at else None,
         "failed_attempts": getattr(r, "failed_attempts", 0),
         "last_failure_reason": getattr(r, "last_failure_reason", ""),
+        "trial_ends_at": trial_ends.isoformat() if trial_ends else None,
+        "in_trial": in_trial,
         "created_at": r.created_at.isoformat(),
     }
 

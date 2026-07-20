@@ -126,6 +126,7 @@ def _recurring_to_model(r: RecurringPayment) -> RecurringPaymentModel:
         last_charged_at=r.last_charged_at,
         failed_attempts=r.failed_attempts,
         last_failure_reason=r.last_failure_reason,
+        trial_ends_at=r.trial_ends_at,
         created_at=r.created_at,
     )
 
@@ -148,6 +149,7 @@ def _model_to_recurring(m: RecurringPaymentModel) -> RecurringPayment:
         last_charged_at=m.last_charged_at,
         failed_attempts=getattr(m, "failed_attempts", 0),
         last_failure_reason=getattr(m, "last_failure_reason", ""),
+        trial_ends_at=getattr(m, "trial_ends_at", None),
         created_at=m.created_at,
     )
 
@@ -299,6 +301,7 @@ class SQLRecurringRepository(RecurringRepository):
             model.status               = recurring.status.value
             model.failed_attempts      = recurring.failed_attempts
             model.last_failure_reason  = recurring.last_failure_reason
+            model.trial_ends_at        = recurring.trial_ends_at
             await self._session.commit()
         return recurring
 

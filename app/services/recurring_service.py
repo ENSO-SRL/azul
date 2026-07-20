@@ -339,6 +339,9 @@ class RecurringService:
         - ACTIVE + next_charge_at < now → ⚠️ payment overdue (scheduler hasn't charged yet)
         - PAUSED → ⛔ suspended (usually after retry exhaustion)
         - CANCELLED → ❌ no longer active
+
+        Trial (grace period):
+        - trial_ends_at is set and in the future → in_trial = True
         """
         subs = await self._recurring.list_by_customer(customer_id)
 
@@ -349,6 +352,8 @@ class RecurringService:
                 "is_active": False,
                 "is_current": False,
                 "has_overdue_payment": False,
+                "in_trial": False,
+                "trial_ends_at": None,
                 "total_subscriptions": 0,
                 "active_count": 0,
                 "paused_count": 0,
@@ -364,6 +369,8 @@ class RecurringService:
 
         subscription_details = []
         any_overdue = False
+        any_in_trial = False
+        trial_end_date = None
 
         for s in subs:
             is_overdue = False
@@ -380,6 +387,16 @@ class RecurringService:
             if is_overdue:
                 any_overdue = True
 
+            # Trial detection
+            sub_in_trial = bool(
+                s.trial_ends_at
+                and s.trial_ends_at > now
+                and s.status == SubscriptionStatus.ACTIVE
+            )
+            if sub_in_trial:
+                any_in_trial = True
+                trial_end_date = s.trial_ends_at
+
             subscription_details.append({
                 "subscription_id": s.id,
                 "description": s.description,
@@ -392,6 +409,8 @@ class RecurringService:
                 "next_charge_at": s.next_charge_at.isoformat() if s.next_charge_at else None,
                 "last_charged_at": s.last_charged_at.isoformat() if s.last_charged_at else None,
                 "card_last4": s.card_last4,
+                "in_trial": sub_in_trial,
+                "trial_ends_at": s.trial_ends_at.isoformat() if s.trial_ends_at else None,
             })
 
         has_active = len(active_subs) > 0
@@ -402,6 +421,8 @@ class RecurringService:
             "is_active": has_active,
             "is_current": has_active and not any_overdue,
             "has_overdue_payment": any_overdue,
+            "in_trial": any_in_trial,
+            "trial_ends_at": trial_end_date.isoformat() if trial_end_date else None,
             "total_subscriptions": len(subs),
             "active_count": len(active_subs),
             "paused_count": len(paused_subs),

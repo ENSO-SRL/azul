@@ -116,6 +116,9 @@ class RecurringPaymentModel(Base):
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_failure_reason: Mapped[str] = mapped_column(String(500), default="")
 
+    # Trial / período de gracia — NULL = sin trial (usuario existente)
+    trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

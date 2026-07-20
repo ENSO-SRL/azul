@@ -17,15 +17,26 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities import Payment, PaymentStatus
+from app.domain.entities import (
+    Payment,
+    PaymentStatus,
+    RecurringPayment,
+    SubscriptionStatus,
+)
 from app.services.notification_service import send_notification
 
 logger = logging.getLogger(__name__)
 
 _AUTH_API_BASE = os.getenv("AUTH_API_BASE_URL", "https://api.iamatlas.do")
+
+# Días de gracia para usuarios nuevos
+TRIAL_DAYS = 7
+SUBSCRIPTION_FREQUENCY_DAYS = 30
 
 
 @dataclass
@@ -34,6 +45,9 @@ class PostPaymentResult:
     email_sent: bool = False
     card_saved: bool = False
     confirmation_triggered: bool = False
+    subscription_created: bool = False
+    in_trial: bool = False
+    trial_ends_at: str = ""
     cardholder_email: str = ""
     payment_id: str = ""
 
@@ -174,6 +188,136 @@ async def handle_post_payment_actions(payment: Payment) -> PostPaymentResult:
         logger.warning(
             "[post-payment] ⚠ no cardholder_email — skipping notifications | payment_id=%s",
             payment.id,
+        )
+
+    return result
+
+
+async def create_subscription_if_needed(
+    payment: Payment,
+    customer_id: str,
+    db: AsyncSession,
+) -> PostPaymentResult:
+    """Create a subscription after a successful checkout payment.
+
+    - **New user** (no prior subscriptions or saved cards): creates a
+      subscription with a 7-day trial.  ``next_charge_at`` is set to
+      ``now + 7 days`` so the scheduler will fire the first real charge
+      after the grace period.
+    - **Existing user**: creates a subscription charged immediately
+      (``last_charged_at = now``, ``next_charge_at = now + 30 days``).
+    - If the user already has an ACTIVE subscription, this is a no-op
+      to avoid duplicate subscriptions.
+
+    This function **never raises**.  All errors are caught and logged.
+    """
+    result = PostPaymentResult(
+        payment_id=payment.id,
+        cardholder_email=payment.cardholder_email or "",
+    )
+
+    status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
+    if status != "APPROVED" or not payment.data_vault_token or not customer_id:
+        return result
+
+    try:
+        from sqlalchemy import select
+        from app.infrastructure.models import RecurringPaymentModel, SavedCardModel
+        from app.infrastructure.repo_impl import SQLRecurringRepository
+
+        # ── Check if user already has an ACTIVE subscription ──────────
+        existing_active = await db.execute(
+            select(RecurringPaymentModel).where(
+                RecurringPaymentModel.customer_id == customer_id,
+                RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
+            )
+        )
+        if existing_active.scalar_one_or_none():
+            logger.warning(
+                "[post-payment] ⏭ user already has ACTIVE subscription — skipping | "
+                "customer_id=%s payment_id=%s",
+                customer_id, payment.id,
+            )
+            return result
+
+        # ── Determine if user is new ──────────────────────────────────
+        # New = no prior subscriptions (any status) AND no saved cards
+        prior_subs = await db.execute(
+            select(RecurringPaymentModel.id).where(
+                RecurringPaymentModel.customer_id == customer_id,
+            ).limit(1)
+        )
+        prior_cards = await db.execute(
+            select(SavedCardModel.id).where(
+                SavedCardModel.customer_id == customer_id,
+            ).limit(1)
+        )
+        is_new_user = (
+            prior_subs.scalar_one_or_none() is None
+            and prior_cards.scalar_one_or_none() is None
+        )
+
+        now = datetime.now(timezone.utc)
+
+        if is_new_user:
+            # Trial: primer cobro real en TRIAL_DAYS días
+            trial_end = now + timedelta(days=TRIAL_DAYS)
+            recurring = RecurringPayment(
+                customer_id=customer_id,
+                amount=payment.amount,
+                itbis=payment.itbis,
+                frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
+                description="Membresía Atlas",
+                data_vault_token=payment.data_vault_token,
+                card_brand=payment.card_number_masked[:4] if payment.card_number_masked else "",
+                card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                card_expiration="",
+                cardholder_email=payment.cardholder_email or "",
+                next_charge_at=trial_end,
+                last_charged_at=None,
+                trial_ends_at=trial_end,
+            )
+            result.in_trial = True
+            result.trial_ends_at = trial_end.isoformat()
+            logger.warning(
+                "[post-payment] ✓ NEW user — trial subscription created | "
+                "customer_id=%s trial_ends=%s next_charge=%s",
+                customer_id, trial_end.isoformat(), trial_end.isoformat(),
+            )
+        else:
+            # Existing user: cobro inmediato, próximo en 30 días
+            recurring = RecurringPayment(
+                customer_id=customer_id,
+                amount=payment.amount,
+                itbis=payment.itbis,
+                frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
+                description="Membresía Atlas",
+                data_vault_token=payment.data_vault_token,
+                card_brand=payment.card_number_masked[:4] if payment.card_number_masked else "",
+                card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                card_expiration="",
+                cardholder_email=payment.cardholder_email or "",
+                next_charge_at=now + timedelta(days=SUBSCRIPTION_FREQUENCY_DAYS),
+                last_charged_at=now,
+                trial_ends_at=None,
+            )
+            result.in_trial = False
+            logger.warning(
+                "[post-payment] ✓ EXISTING user — subscription created (no trial) | "
+                "customer_id=%s next_charge=%s",
+                customer_id,
+                (now + timedelta(days=SUBSCRIPTION_FREQUENCY_DAYS)).isoformat(),
+            )
+
+        repo = SQLRecurringRepository(db)
+        await repo.save(recurring)
+        result.subscription_created = True
+
+    except Exception as exc:
+        logger.error(
+            "[post-payment] ✗ subscription creation FAILED | "
+            "customer_id=%s payment_id=%s err=%s",
+            customer_id, payment.id, exc,
         )
 
     return result

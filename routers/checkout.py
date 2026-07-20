@@ -1087,6 +1087,7 @@ async def process_checkout(
     browser_java: str = Form("false"),
     customer_id: str = Form(""),
     svc: PaymentService = Depends(_get_service),
+    db: AsyncSession = Depends(get_db),
 ):
     """Procesa el pago — recibe el form POST, llama a AZUL, redirige al resultado."""
     theme = _resolve_theme(request)
@@ -1250,9 +1251,10 @@ async def process_checkout(
     )
 
     if status == "APPROVED":
-        from app.services.post_payment import handle_post_payment_actions
+        from app.services.post_payment import handle_post_payment_actions, create_subscription_if_needed
         import asyncio
         asyncio.create_task(handle_post_payment_actions(payment))
+        await create_subscription_if_needed(payment, customer_id, db)
 
     html = _html_result(
         status=status,
@@ -1277,6 +1279,7 @@ async def continue_3ds(
     payment_id: str = Form(...),
     method_status: str = Form("RECEIVED"),
     svc: PaymentService = Depends(_get_service),
+    db: AsyncSession = Depends(get_db),
 ):
     """Continuación interna del flujo 3DS — llamada por el JS del iframe Method."""
     from app.domain.entities import PaymentStatus
@@ -1336,9 +1339,11 @@ async def continue_3ds(
     )
     
     if payment.status == PaymentStatus.APPROVED:
-        from app.services.post_payment import handle_post_payment_actions
+        from app.services.post_payment import handle_post_payment_actions, create_subscription_if_needed
         import asyncio
         asyncio.create_task(handle_post_payment_actions(payment))
+        if payment.customer_id:
+            await create_subscription_if_needed(payment, payment.customer_id, db)
 
     return JSONResponse({"status": payment.status.value, "result_url": result_url})
 

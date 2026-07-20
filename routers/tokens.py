@@ -201,6 +201,10 @@ async def get_user_payment_status(
 
     subscriptions = []
     for s in subs_raw:
+        # Trial detection
+        sub_trial_ends = getattr(s, "trial_ends_at", None)
+        sub_in_trial = bool(sub_trial_ends and sub_trial_ends > now and s.status == "ACTIVE")
+
         subscriptions.append({
             "id": s.id,
             "status": s.status,
@@ -214,6 +218,8 @@ async def get_user_payment_status(
             "last_charged_at": s.last_charged_at.isoformat() if s.last_charged_at else None,
             "failed_attempts": s.failed_attempts,
             "last_failure_reason": s.last_failure_reason or "",
+            "in_trial": sub_in_trial,
+            "trial_ends_at": sub_trial_ends.isoformat() if sub_trial_ends else None,
             "created_at": s.created_at.isoformat() if s.created_at else "",
         })
 
@@ -246,6 +252,7 @@ async def get_user_payment_status(
     active_subs = [s for s in subscriptions if s["status"] == "ACTIVE"]
     paused_subs = [s for s in subscriptions if s["status"] == "PAUSED"]
     failing_subs = [s for s in subscriptions if int(s.get("failed_attempts") or 0) > 0]
+    trial_subs = [s for s in subscriptions if s.get("in_trial")]
 
     if not has_cards:
         overall_status = "no_card"
@@ -253,6 +260,10 @@ async def get_user_payment_status(
     elif not has_active_card:
         overall_status = "card_expired"
         status_message = "Todas las tarjetas del usuario están vencidas."
+    elif trial_subs:
+        overall_status = "trial"
+        trial_end = trial_subs[0].get("trial_ends_at", "")
+        status_message = f"Período de gracia activo. Primer cobro programado para {trial_end}."
     elif paused_subs:
         overall_status = "payment_issues"
         reasons = set(s["last_failure_reason"] for s in paused_subs if s["last_failure_reason"])
@@ -289,6 +300,8 @@ async def get_user_payment_status(
             "active_subscriptions": len(active_subs),
             "paused_subscriptions": len(paused_subs),
             "failing_subscriptions": len(failing_subs),
+            "in_trial": len(trial_subs) > 0,
+            "trial_ends_at": trial_subs[0].get("trial_ends_at") if trial_subs else None,
         },
     }
 

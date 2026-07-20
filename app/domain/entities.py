@@ -196,6 +196,9 @@ class RecurringPayment:
     failed_attempts: int = 0
     last_failure_reason: str = ""
 
+    # Trial / período de gracia — solo para usuarios nuevos
+    trial_ends_at: datetime | None = None
+
     # Auto-generados
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
