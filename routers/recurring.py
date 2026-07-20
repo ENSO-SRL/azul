@@ -5,6 +5,7 @@ Routes
 ------
 POST   /api/v1/recurring                    Create subscription (CIT STANDING_ORDER)
 GET    /api/v1/recurring                    List subscriptions for a customer
+GET    /api/v1/recurring/customer-status     Customer subscription & payment status
 GET    /api/v1/recurring/{id}               Get subscription detail
 POST   /api/v1/recurring/{id}/charge        Manual MIT charge
 POST   /api/v1/recurring/{id}/pause         Pause subscription
@@ -132,6 +133,34 @@ class ConsentResponse(BaseModel):
     consented_at: str
 
 
+class SubscriptionStatusDetail(BaseModel):
+    subscription_id: str
+    description: str
+    amount: int
+    status: str
+    is_current: bool
+    is_overdue: bool
+    overdue_reason: str
+    failed_attempts: int
+    next_charge_at: str | None
+    last_charged_at: str | None
+    card_last4: str
+
+
+class CustomerStatusResponse(BaseModel):
+    """Estado consolidado de suscripciones y pagos de un cliente."""
+    customer_id: str
+    has_subscriptions: bool
+    is_active: bool = Field(description="True si tiene al menos una suscripción ACTIVE")
+    is_current: bool = Field(description="True si está al día con TODOS los pagos")
+    has_overdue_payment: bool = Field(description="True si alguna suscripción tiene pago vencido o fallido")
+    total_subscriptions: int
+    active_count: int
+    paused_count: int
+    cancelled_count: int
+    subscriptions: list[SubscriptionStatusDetail]
+
+
 class TransactionHistoryItem(BaseModel):
     id: str
     payment_id: str
@@ -218,6 +247,27 @@ async def list_subscriptions(
     """Retorna todas las suscripciones de un cliente (cualquier estado)."""
     subs = await svc.list_subscriptions(customer_id)
     return [_to_sub_response(s) for s in subs]
+
+
+@router.get(
+    "/customer-status",
+    response_model=CustomerStatusResponse,
+    summary="Estado de suscripción y pagos de un cliente",
+)
+async def get_customer_status(
+    customer_id: str,
+    svc: RecurringService = Depends(_get_service),
+):
+    """Retorna si el cliente está activo y al día con sus pagos.
+
+    Campos clave de la respuesta:
+    - **is_active**: `true` si tiene al menos una suscripción ACTIVE.
+    - **is_current**: `true` si está al día con TODOS los pagos (ningún cobro pendiente/fallido).
+    - **has_overdue_payment**: `true` si alguna suscripción tiene pago vencido o con intentos fallidos.
+
+    Para cada suscripción individual incluye `is_current` e `is_overdue` con el detalle.
+    """
+    return await svc.get_customer_status(customer_id)
 
 
 @router.get(

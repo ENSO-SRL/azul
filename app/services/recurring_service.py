@@ -322,3 +322,89 @@ class RecurringService:
         if not self._consents:
             raise RuntimeError("ConsentRepository not injected.")
         return await self._consents.get_by_subscription(subscription_id)
+
+    # ------------------------------------------------------------------
+    # Customer subscription status
+    # ------------------------------------------------------------------
+
+    async def get_customer_status(self, customer_id: str) -> dict:
+        """Return a consolidated payment/subscription status for a customer.
+
+        Evaluates all subscriptions and returns whether the customer is
+        active, current with payments, or has overdue charges.
+
+        Status logic per subscription:
+        - ACTIVE + failed_attempts == 0 + next_charge_at >= now → ✅ current
+        - ACTIVE + failed_attempts > 0 → ⚠️ has failed charges (overdue)
+        - ACTIVE + next_charge_at < now → ⚠️ payment overdue (scheduler hasn't charged yet)
+        - PAUSED → ⛔ suspended (usually after retry exhaustion)
+        - CANCELLED → ❌ no longer active
+        """
+        subs = await self._recurring.list_by_customer(customer_id)
+
+        if not subs:
+            return {
+                "customer_id": customer_id,
+                "has_subscriptions": False,
+                "is_active": False,
+                "is_current": False,
+                "has_overdue_payment": False,
+                "total_subscriptions": 0,
+                "active_count": 0,
+                "paused_count": 0,
+                "cancelled_count": 0,
+                "subscriptions": [],
+            }
+
+        now = datetime.now(timezone.utc)
+
+        active_subs = [s for s in subs if s.status == SubscriptionStatus.ACTIVE]
+        paused_subs = [s for s in subs if s.status == SubscriptionStatus.PAUSED]
+        cancelled_subs = [s for s in subs if s.status == SubscriptionStatus.CANCELLED]
+
+        subscription_details = []
+        any_overdue = False
+
+        for s in subs:
+            is_overdue = False
+            reason = ""
+
+            if s.status == SubscriptionStatus.ACTIVE:
+                if s.failed_attempts > 0:
+                    is_overdue = True
+                    reason = f"Cobro fallido ({s.failed_attempts} intento(s)): {s.last_failure_reason}"
+                elif s.next_charge_at and s.next_charge_at < now:
+                    is_overdue = True
+                    reason = "Pago vencido — pendiente de cobro automático"
+
+            if is_overdue:
+                any_overdue = True
+
+            subscription_details.append({
+                "subscription_id": s.id,
+                "description": s.description,
+                "amount": s.amount,
+                "status": s.status.value if hasattr(s.status, "value") else s.status,
+                "is_current": s.status == SubscriptionStatus.ACTIVE and not is_overdue,
+                "is_overdue": is_overdue,
+                "overdue_reason": reason,
+                "failed_attempts": s.failed_attempts,
+                "next_charge_at": s.next_charge_at.isoformat() if s.next_charge_at else None,
+                "last_charged_at": s.last_charged_at.isoformat() if s.last_charged_at else None,
+                "card_last4": s.card_last4,
+            })
+
+        has_active = len(active_subs) > 0
+
+        return {
+            "customer_id": customer_id,
+            "has_subscriptions": True,
+            "is_active": has_active,
+            "is_current": has_active and not any_overdue,
+            "has_overdue_payment": any_overdue,
+            "total_subscriptions": len(subs),
+            "active_count": len(active_subs),
+            "paused_count": len(paused_subs),
+            "cancelled_count": len(cancelled_subs),
+            "subscriptions": subscription_details,
+        }

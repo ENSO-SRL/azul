@@ -83,6 +83,7 @@ El mTLS se configura en el cliente HTTP (certificado + clave privada) — no va 
 |--------|----------|-------------|
 | `POST` | `/api/v1/recurring` | Crear suscripción (CIT STANDING_ORDER + DataVault) |
 | `GET` | `/api/v1/recurring?customer_id=...` | Listar suscripciones de un cliente |
+| `GET` | `/api/v1/recurring/customer-status?customer_id=...` | Estado de pago del cliente (activo, al día, debe) |
 | `GET` | `/api/v1/recurring/{id}` | Ver detalle de suscripción |
 | `POST` | `/api/v1/recurring/{id}/charge` | Cobrar manualmente (MIT STANDING_ORDER) |
 | `POST` | `/api/v1/recurring/{id}/pause` | Pausar suscripción |

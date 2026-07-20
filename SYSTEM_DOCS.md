@@ -414,6 +414,7 @@ Para pagos de alto riesgo con `auth_mode: "3dsecure"`:
 |--------|----------|-------------|
 | `POST` | `/api/v1/recurring` | Crear suscripción (CIT STANDING_ORDER) |
 | `GET` | `/api/v1/recurring?customer_id=` | Listar por cliente |
+| `GET` | `/api/v1/recurring/customer-status?customer_id=` | Estado de pago (activo, al día, debe) |
 | `GET` | `/api/v1/recurring/{id}` | Ver detalle |
 | `POST` | `/api/v1/recurring/{id}/charge` | Cobrar ahora (MIT) |
 | `POST` | `/api/v1/recurring/{id}/pause` | Pausar |
