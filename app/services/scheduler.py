@@ -46,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.domain.entities import Payment, PaymentStatus, PaymentType, SubscriptionStatus
 from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
 from app.services.notification_service import ctx_charge, send_notification
+from app.services.user_service_client import enviar_correo_pago
 
 logger = logging.getLogger(__name__)
 
@@ -149,34 +150,32 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
                         "[scheduler] sub=%s charged OK — iso=%s next=%s",
                         sub.id, payment.iso_code, sub.next_charge_at.date(),
                     )
-                    # Notify customer of successful charge
-                    await send_notification(
-                        "charge_approved",
+                    # Notify customer of successful charge via user service
+                    await enviar_correo_pago(
                         to_email=sub.cardholder_email,
-                        context=ctx_charge(
-                            amount=sub.amount,
-                            currency=getattr(sub, "currency_code", "DOP"),
-                            description=sub.description or "Suscripción",
-                            card_last4=sub.card_last4,
-                            next_charge_date=sub.next_charge_at,
+                        success=True,
+                        invoice_number=custom_order_id,
+                        total=sub.amount / 100,
+                        currency=getattr(sub, "currency_code", "DOP"),
+                        payment_method=(
+                            f"Tarjeta terminada en {sub.card_last4}"
+                            if sub.card_last4 else None
                         ),
                     )
                 else:
                     # Business decline — apply retry policy
                     reason = payment.response_message or f"IsoCode={payment.iso_code}"
                     sub = _handle_failure(sub, reason)
-                    # Notify customer of failed charge
-                    await send_notification(
-                        "charge_failed",
+                    # Notify customer of failed charge via user service
+                    await enviar_correo_pago(
                         to_email=sub.cardholder_email,
-                        context=ctx_charge(
-                            amount=sub.amount,
-                            currency=getattr(sub, "currency_code", "DOP"),
-                            description=sub.description or "Suscripción",
-                            card_last4=sub.card_last4,
-                            failure_reason=reason,
-                            failed_attempts=sub.failed_attempts,
+                        success=False,
+                        currency=getattr(sub, "currency_code", "DOP"),
+                        payment_method=(
+                            f"Tarjeta terminada en {sub.card_last4}"
+                            if sub.card_last4 else None
                         ),
+                        failure_reason=reason,
                     )
                     if sub.status == SubscriptionStatus.PAUSED:
                         await send_notification(

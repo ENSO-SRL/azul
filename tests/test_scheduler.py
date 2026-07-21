@@ -1,11 +1,13 @@
 """
 Tests for the recurring payment scheduler.
 
-Validates:
+Valida:
 - Expiration guard pauses before attempting charge
 - Successful MIT charge advances next_charge_at
 - Business decline triggers retry backoff
 - AzulIntegrationError does NOT pause subscription
+- Correo de pago: enviar_correo_pago llamado con success=True en aprobado
+- Correo de pago: enviar_correo_pago llamado con success=False en declinado
 
 Run with: pytest tests/test_scheduler.py -v
 """
@@ -227,3 +229,96 @@ def test_custom_order_id_unique_per_attempt():
     oid0 = sched_module._build_custom_order_id("abc-123", 0)
     oid1 = sched_module._build_custom_order_id("abc-123", 1)
     assert oid0 != oid1
+
+
+# ---------------------------------------------------------------------------
+# Correo de pago via user service
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_approved_charge_calls_enviar_correo_pago_success_true():
+    """Cobro aprobado -> enviar_correo_pago llamado con success=True."""
+    sub = _make_sub()
+    sub.cardholder_email = "cliente@test.com"
+    sub.card_last4 = "4242"
+
+    recurring_repo, payment_repo, txn_repo, gateway, session_factory = _build_mocks()
+    recurring_repo.list_due.return_value = [sub]
+    gateway.sale_mit.return_value = (_approved_payment(), MagicMock())
+
+    mock_enviar = AsyncMock(return_value=True)
+
+    with (
+        patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
+        patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
+        patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
+        patch("app.services.scheduler.AzulPaymentGateway",           return_value=gateway),
+        patch("app.services.scheduler.enviar_correo_pago",           mock_enviar),
+    ):
+        await sched_module._charge_due_subscriptions(session_factory)
+
+    mock_enviar.assert_awaited_once()
+    call_kwargs = mock_enviar.call_args.kwargs
+    assert call_kwargs["to_email"] == "cliente@test.com"
+    assert call_kwargs["success"] is True
+    assert call_kwargs["total"] == sub.amount / 100
+    assert "4242" in (call_kwargs.get("payment_method") or "")
+
+
+@pytest.mark.asyncio
+async def test_declined_charge_calls_enviar_correo_pago_success_false():
+    """Cobro declinado -> enviar_correo_pago llamado con success=False y failure_reason."""
+    sub = _make_sub()
+    sub.cardholder_email = "cliente@test.com"
+    sub.card_last4 = "1234"
+
+    recurring_repo, payment_repo, txn_repo, gateway, session_factory = _build_mocks()
+    recurring_repo.list_due.return_value = [sub]
+    gateway.sale_mit.return_value = (_declined_payment(), MagicMock())
+
+    mock_enviar = AsyncMock(return_value=False)
+
+    with (
+        patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
+        patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
+        patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
+        patch("app.services.scheduler.AzulPaymentGateway",           return_value=gateway),
+        patch("app.services.scheduler.enviar_correo_pago",           mock_enviar),
+    ):
+        await sched_module._charge_due_subscriptions(session_factory)
+
+    mock_enviar.assert_awaited_once()
+    call_kwargs = mock_enviar.call_args.kwargs
+    assert call_kwargs["to_email"] == "cliente@test.com"
+    assert call_kwargs["success"] is False
+    assert call_kwargs.get("failure_reason") is not None
+    assert len(call_kwargs["failure_reason"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_correo_fallo_no_bloquea_cobro():
+    """Si enviar_correo_pago retorna False, el cobro ya fue procesado y la sub se actualiza igual."""
+    sub = _make_sub()
+    sub.cardholder_email = "cliente@test.com"
+
+    recurring_repo, payment_repo, txn_repo, gateway, session_factory = _build_mocks()
+    recurring_repo.list_due.return_value = [sub]
+    gateway.sale_mit.return_value = (_approved_payment(), MagicMock())
+
+    # El correo falla
+    mock_enviar = AsyncMock(return_value=False)
+
+    with (
+        patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
+        patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
+        patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
+        patch("app.services.scheduler.AzulPaymentGateway",           return_value=gateway),
+        patch("app.services.scheduler.enviar_correo_pago",           mock_enviar),
+    ):
+        await sched_module._charge_due_subscriptions(session_factory)
+
+    # El pago se guardo y la suscripcion se actualizo a pesar del fallo de correo
+    payment_repo.save.assert_awaited()
+    recurring_repo.update.assert_awaited_once()
+    updated = recurring_repo.update.call_args[0][0]
+    assert updated.failed_attempts == 0  # reset en exito
