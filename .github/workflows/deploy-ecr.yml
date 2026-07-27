@@ -166,7 +166,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       # -----------------------------------------------------------------------
-      # Build y push — con cache en ECR
+      # Build y push — con cache interno (GHA) para mantener ECR limpio
       # -----------------------------------------------------------------------
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -175,8 +175,9 @@ jobs:
           file: ./Dockerfile
           push: ${{ steps.meta.outputs.should_push == 'true' }}
           tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
-          cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:buildcache
-          cache-to: type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:buildcache,mode=max
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
