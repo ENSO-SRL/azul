@@ -245,23 +245,42 @@ jobs:
       - name: Force new ECS deployment
         id: ecs-deploy
         run: |
+          if [[ "${{ github.ref_name }}" == "qa" || "${{ github.ref_name }}" == "QA" ]]; then
+            CLUSTER="Atlas-Prueba"
+            SERVICE="pago-azul-qa-svc"
+          else
+            CLUSTER="default"
+            SERVICE="pago-azul-svc"
+          fi
+          
           aws ecs update-service \
-            --cluster default \
-            --service pago-azul-svc \
+            --cluster $CLUSTER \
+            --service $SERVICE \
             --force-new-deployment \
             --region ${{ env.AWS_REGION }} \
             --output json | jq '{service: .service.serviceName, status: .service.status, desiredCount: .service.desiredCount}'
+            
+          echo "CLUSTER=$CLUSTER" >> $GITHUB_ENV
+          echo "SERVICE=$SERVICE" >> $GITHUB_ENV
 
       - name: Deploy summary
         if: always()
         run: |
+          if [[ "${{ github.ref_name }}" == "qa" || "${{ github.ref_name }}" == "QA" ]]; then
+            CLUSTER="Atlas-Prueba"
+            SERVICE="pago-azul-qa-svc"
+          else
+            CLUSTER="default"
+            SERVICE="pago-azul-svc"
+          fi
           echo "## ECS Deploy Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Cluster | \`default\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Service | \`pago-azul-svc\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cluster | \`${CLUSTER}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | \`${SERVICE}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Image | \`${{ needs.build-and-push.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Actor | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Ambiente | ${{ (github.ref_name == 'qa' || github.ref_name == 'QA') && 'QA' || 'produccion' }} |" >> $GITHUB_STEP_SUMMARY
+
