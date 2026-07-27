@@ -34,7 +34,7 @@ concurrency:
 env:
   AWS_REGION: us-east-2
   ECR_REGISTRY: 293926505005.dkr.ecr.us-east-2.amazonaws.com
-  ECR_REPOSITORY: ${{ (github.ref_name == 'qa' || github.ref_name == 'QA') && 'ambienteprueba-pago-azul' || 'pago-azul' }}
+  ECR_REPOSITORY: "" # Se sobreescribe dinámicamente en el paso 'meta'
   # ARN del IAM Role creado con infra/iam_github_oidc_trust.json
   AWS_ROLE_ARN: arn:aws:iam::293926505005:role/GitHubActions-ECR-Deploy
 
@@ -113,7 +113,15 @@ jobs:
       - name: Compute push flag
         id: meta
         run: |
-          IMAGE_URI="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest"
+          # Determinar repositorio basado en la rama
+          if [[ "${{ github.ref_name }}" == "qa" || "${{ github.ref_name }}" == "QA" ]]; then
+            REPO="ambienteprueba-pago-azul"
+          else
+            REPO="pago-azul"
+          fi
+          echo "ECR_REPOSITORY=$REPO" >> $GITHUB_ENV
+
+          IMAGE_URI="${{ env.ECR_REGISTRY }}/${REPO}:latest"
 
           SHOULD_PUSH="false"
           if [[ "${{ github.event_name }}" == "push" && ( "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/qa" || "${{ github.ref }}" == "refs/heads/QA" ) ]]; then
@@ -126,9 +134,12 @@ jobs:
           echo "image_uri=${IMAGE_URI}"     >> $GITHUB_OUTPUT
           echo "should_push=${SHOULD_PUSH}" >> $GITHUB_OUTPUT
 
-          echo "### Image tag" >> $GITHUB_STEP_SUMMARY
-          echo "- \`latest\`"               >> $GITHUB_STEP_SUMMARY
-          echo "- **Push:** ${SHOULD_PUSH}" >> $GITHUB_STEP_SUMMARY
+          echo "### Deploy Info" >> $GITHUB_STEP_SUMMARY
+          echo "- **Event:** \`${{ github.event_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ref:** \`${{ github.ref }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ref Name:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target ECR:** \`${REPO}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Will Push?:** \`${SHOULD_PUSH}\`" >> $GITHUB_STEP_SUMMARY
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
