@@ -321,3 +321,98 @@ async def create_subscription_if_needed(
         )
 
     return result
+
+
+async def create_trial_subscription(
+    customer_id: str,
+    saved_card,
+    amount: int,
+    itbis: int,
+    cardholder_email: str,
+    db: AsyncSession,
+) -> PostPaymentResult:
+    """Create a trial subscription from a tokenized card (no charge).
+
+    Called when a NEW user registers their card for the first time via
+    checkout.  The card was tokenized via TrxType=CREATE (no charge).
+
+    Creates a RecurringPayment with:
+    - trial_ends_at = now + TRIAL_DAYS
+    - next_charge_at = now + TRIAL_DAYS  (scheduler will charge after trial)
+    - last_charged_at = None  (no charge has been made)
+
+    This function **never raises**.  All errors are caught and logged.
+    """
+    result = PostPaymentResult(
+        cardholder_email=cardholder_email,
+    )
+
+    try:
+        from sqlalchemy import select
+        from app.infrastructure.models import RecurringPaymentModel
+        from app.infrastructure.repo_impl import SQLRecurringRepository
+
+        # Guard: don't create duplicate subscriptions
+        existing_active = await db.execute(
+            select(RecurringPaymentModel).where(
+                RecurringPaymentModel.customer_id == customer_id,
+                RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
+            )
+        )
+        if existing_active.scalar_one_or_none():
+            logger.warning(
+                "[post-payment] ⏭ user already has ACTIVE subscription — "
+                "skipping trial creation | customer_id=%s",
+                customer_id,
+            )
+            return result
+
+        now = datetime.now(timezone.utc)
+        trial_end = now + timedelta(days=TRIAL_DAYS)
+
+        recurring = RecurringPayment(
+            customer_id=customer_id,
+            amount=amount,
+            itbis=itbis,
+            frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
+            description="Membresía Atlas",
+            data_vault_token=saved_card.token,
+            card_brand=getattr(saved_card, "card_brand", ""),
+            card_last4=saved_card.card_last4,
+            card_expiration=getattr(saved_card, "expiration", ""),
+            cardholder_email=cardholder_email,
+            next_charge_at=trial_end,
+            last_charged_at=None,
+            trial_ends_at=trial_end,
+        )
+
+        repo = SQLRecurringRepository(db)
+        await repo.save(recurring)
+
+        result.subscription_created = True
+        result.in_trial = True
+        result.trial_ends_at = trial_end.isoformat()
+
+        logger.warning(
+            "[post-payment] ✓ TRIAL subscription created (tokenize-only, no charge) | "
+            "customer_id=%s trial_ends=%s next_charge=%s token=%s",
+            customer_id,
+            trial_end.isoformat(),
+            trial_end.isoformat(),
+            saved_card.token[:12] + "…" if saved_card.token else "(none)",
+        )
+
+        # Trigger account confirmation email (auth service)
+        if cardholder_email:
+            result.confirmation_triggered = await _trigger_confirmation_email(
+                cardholder_email,
+            )
+
+    except Exception as exc:
+        logger.error(
+            "[post-payment] ✗ trial subscription creation FAILED | "
+            "customer_id=%s err=%s",
+            customer_id, exc,
+        )
+
+    return result

@@ -934,8 +934,276 @@ def _html_result(
 </html>"""
 
 # ---------------------------------------------------------------------------
+# Trial result page (new users — tokenize only, no charge)
+# ---------------------------------------------------------------------------
+
+def _html_result_trial(
+    card_last4: str = "",
+    cardholder_name: str = "",
+    cardholder_email: str = "",
+    trial_ends_at: str = "",
+    theme: str = "dark",
+) -> str:
+    """Página de resultado para usuarios nuevos que solo tokenizaron (sin cobro)."""
+    theme_class = "theme-dark" if theme == "dark" else "theme-light"
+    card_display = f"•••• {card_last4}" if card_last4 else ""
+
+    # Parse trial end date for human display
+    trial_date_display = ""
+    if trial_ends_at:
+        try:
+            from datetime import datetime as _dt
+            if isinstance(trial_ends_at, str):
+                dt = _dt.fromisoformat(trial_ends_at)
+            else:
+                dt = trial_ends_at
+            # Format: "13 de agosto, 2026"
+            meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+                     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+            trial_date_display = f"{dt.day} de {meses[dt.month - 1]}, {dt.year}"
+        except Exception:
+            trial_date_display = str(trial_ends_at)[:10]
+
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Tarjeta Guardada — Atlas</title>
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="/public/css/checkout.css?v=3">
+<style>
+  body {{
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+  }}
+  .result-wrapper {{
+    width: 100%;
+    max-width: 460px;
+    margin: 0 auto;
+    animation: resultFadeUp 0.5s ease-out;
+  }}
+  @keyframes resultFadeUp {{
+    from {{ opacity: 0; transform: translateY(20px); }}
+    to   {{ opacity: 1; transform: translateY(0); }}
+  }}
+  .result-card {{
+    background: white;
+    border-radius: 16px;
+    padding: 40px 32px 32px;
+    text-align: center;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+    color: #1a1a1a;
+  }}
+  .result-icon-wrap {{
+    width: 80px; height: 80px;
+    border-radius: 50%;
+    background: rgba(16, 185, 129, 0.08);
+    border: 1.5px solid rgba(16, 185, 129, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 24px;
+  }}
+  .check-anim {{
+    stroke-dasharray: 32;
+    stroke-dashoffset: 32;
+    animation: draw 0.5s 0.3s ease-out forwards;
+  }}
+  @keyframes draw {{ to {{ stroke-dashoffset: 0; }} }}
+  .result-status-title {{
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: #10b981;
+    margin-bottom: 8px;
+    letter-spacing: -0.02em;
+  }}
+  .result-status-subtitle {{
+    font-size: 0.85rem;
+    color: #666;
+    line-height: 1.6;
+    margin-bottom: 28px;
+    max-width: 340px;
+    margin-left: auto;
+    margin-right: auto;
+  }}
+  .result-divider {{
+    height: 1px;
+    background: rgba(0,0,0,0.08);
+    margin: 0 -32px 16px;
+  }}
+  .result-row {{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 9px 0;
+  }}
+  .result-row + .result-row {{
+    border-top: 1px solid rgba(0,0,0,0.04);
+  }}
+  .result-label {{
+    font-size: 0.8rem;
+    color: #94a3b8;
+    font-weight: 500;
+  }}
+  .result-value {{
+    font-size: 0.85rem;
+    color: #334155;
+    font-weight: 600;
+  }}
+  .trial-badge {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 18px;
+    padding: 12px 16px;
+    background: rgba(99, 102, 241, 0.06);
+    border: 1px solid rgba(99, 102, 241, 0.15);
+    border-radius: 10px;
+    font-size: 0.8rem;
+    color: #6366f1;
+    font-weight: 500;
+  }}
+  .result-saved-badge {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding: 10px 16px;
+    background: rgba(16, 185, 129, 0.06);
+    border: 1px solid rgba(16, 185, 129, 0.15);
+    border-radius: 10px;
+    font-size: 0.78rem;
+    color: #059669;
+    font-weight: 500;
+  }}
+  .result-actions {{ margin-top: 28px; display: flex; flex-direction: column; gap: 10px; }}
+  .result-btn-solid {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 14px 20px;
+    border: none;
+    border-radius: 100px;
+    font-family: inherit;
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.2s ease;
+    background: #DA007C;
+    color: white;
+  }}
+  .result-btn-solid:hover {{
+    background: #c0006c;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(218, 0, 124, 0.2);
+  }}
+  .result-footer-ref {{
+    margin-top: 20px;
+    font-size: 0.7rem;
+    color: #cbd5e1;
+    text-align: center;
+    letter-spacing: 0.02em;
+  }}
+  /* Dark mode */
+  body.theme-dark .result-card {{
+    background: #1e1e1e;
+    color: #e2e8f0;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  }}
+  body.theme-dark .result-status-subtitle {{ color: #94a3b8; }}
+  body.theme-dark .result-divider {{ background: rgba(255,255,255,0.08); }}
+  body.theme-dark .result-row + .result-row {{ border-top-color: rgba(255,255,255,0.06); }}
+  body.theme-dark .result-label {{ color: #64748b; }}
+  body.theme-dark .result-value {{ color: #cbd5e1; }}
+  body.theme-dark .trial-badge {{
+    color: #a5b4fc;
+    background: rgba(99, 102, 241, 0.08);
+    border-color: rgba(99, 102, 241, 0.2);
+  }}
+  body.theme-dark .result-saved-badge {{
+    color: #86efac;
+    background: rgba(16, 185, 129, 0.08);
+    border-color: rgba(16, 185, 129, 0.2);
+  }}
+  body.theme-dark .result-footer-ref {{ color: #475569; }}
+  @media (max-width: 480px) {{
+    .result-card {{ padding: 32px 20px 24px; border-radius: 12px; }}
+    .result-wrapper {{ padding: 0 4px; }}
+  }}
+</style>
+</head>
+<body class="{theme_class}">
+
+<a href="https://www.iamatlas.do/profile" class="back-btn" id="backToProfile" title="Volver al perfil">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="19" y1="12" x2="5" y2="12"></line>
+    <polyline points="12,19 5,12 12,5"></polyline>
+  </svg>
+  <span>Volver al perfil</span>
+</a>
+
+<div class="result-wrapper">
+  <div class="result-card">
+    <div class="result-icon-wrap">
+      <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+        <circle cx="28" cy="28" r="26" stroke="#10b981" stroke-width="2.5" fill="rgba(16,185,129,0.06)"/>
+        <path d="M18 29 L24 35 L38 21" stroke="#10b981" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="check-anim"/>
+      </svg>
+    </div>
+
+    <div class="result-status-title">¡Tarjeta guardada!</div>
+    <div class="result-status-subtitle">Tu tarjeta ha sido registrada exitosamente. Tu período de prueba de 7 días ha comenzado — no se realizó ningún cobro.</div>
+
+    <div class="result-divider"></div>
+
+    {"<div class='result-row'><span class='result-label'>Tarjeta</span><span class='result-value'>" + card_display + "</span></div>" if card_display else ""}
+    {"<div class='result-row'><span class='result-label'>Titular</span><span class='result-value'>" + cardholder_name + "</span></div>" if cardholder_name else ""}
+    <div class="result-row">
+      <span class="result-label">Estado</span>
+      <span class="result-value" style="color:#10b981">Período de prueba</span>
+    </div>
+    {"<div class='result-row'><span class='result-label'>Primer cobro</span><span class='result-value'>" + trial_date_display + "</span></div>" if trial_date_display else ""}
+
+    <div class="trial-badge">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <polyline points="12 6 12 12 16 14"></polyline>
+      </svg>
+      <span>7 días de prueba gratis — primer cobro el {trial_date_display}</span>
+    </div>
+
+    <div class="result-saved-badge">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6L9 17l-5-5"/>
+      </svg>
+      <span>Tarjeta guardada para pagos futuros</span>
+    </div>
+
+    <div class="result-actions">
+      <a href="https://www.iamatlas.do/profile" class="result-btn-solid">
+        Ir a mi perfil
+      </a>
+    </div>
+
+    <div class="result-footer-ref">Atlas Payments · Período de prueba</div>
+  </div>
+</div>
+</body>
+</html>"""
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 @router.get("", response_class=HTMLResponse, include_in_schema=False)
 async def checkout_form(
@@ -1099,9 +1367,16 @@ async def process_checkout(
     browser_java: str = Form("false"),
     customer_id: str = Form(""),
     svc: PaymentService = Depends(_get_service),
+    token_svc: TokenService = Depends(_get_token_svc),
     db: AsyncSession = Depends(get_db),
 ):
-    """Procesa el pago — recibe el form POST, llama a AZUL, redirige al resultado."""
+    """Procesa el pago — recibe el form POST, llama a AZUL, redirige al resultado.
+
+    Flujo diferenciado:
+    - Usuario NUEVO (sin suscripciones ni tarjetas previas): solo tokeniza la
+      tarjeta (TrxType=CREATE, sin cobro) y crea suscripción con trial de 7 días.
+    - Usuario EXISTENTE: cobro inmediato normal (Sale + 3DS).
+    """
     theme = _resolve_theme(request)
     card_clean = card_number.replace(" ", "").strip()
     card_masked = f"{'*' * (len(card_clean) - 4)}{card_clean[-4:]}" if len(card_clean) >= 4 else "****"
@@ -1125,6 +1400,103 @@ async def process_checkout(
     amount = 200
     itbis  = 36
 
+    # ── Detectar si es usuario nuevo ──────────────────────────────────────
+    is_new_user = False
+    if customer_id:
+        try:
+            from sqlalchemy import select
+            from app.infrastructure.models import RecurringPaymentModel, SavedCardModel
+            from app.domain.entities import SubscriptionStatus
+
+            prior_subs = await db.execute(
+                select(RecurringPaymentModel.id).where(
+                    RecurringPaymentModel.customer_id == customer_id,
+                    RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
+                ).limit(1)
+            )
+            prior_cards = await db.execute(
+                select(SavedCardModel.id).where(
+                    SavedCardModel.customer_id == customer_id,
+                ).limit(1)
+            )
+            is_new_user = (
+                prior_subs.scalar_one_or_none() is None
+                and prior_cards.scalar_one_or_none() is None
+            )
+            logger.warning(
+                "[CHECKOUT] user detection | customer_id=%s is_new_user=%s",
+                customer_id, is_new_user,
+            )
+        except Exception as exc:
+            logger.error(
+                "[CHECKOUT] ✗ user detection FAILED (defaulting to charge) | err=%s",
+                exc,
+            )
+
+    # ── Flujo para USUARIO NUEVO: solo tokenizar (sin cobro) ──────────────
+    if is_new_user and customer_id:
+        logger.warning(
+            "[CHECKOUT] → NEW USER — tokenize only (no charge) | customer_id=%s card=%s",
+            customer_id, card_masked,
+        )
+        try:
+            saved_card = await token_svc.register_card(
+                customer_id=customer_id,
+                card_number=card_clean,
+                expiration=exp_azul,
+                cvc=cvc.strip(),
+                cardholder_name=cardholder_name.strip(),
+                cardholder_email=cardholder_email.strip(),
+            )
+            logger.warning(
+                "[CHECKOUT] ✓ card tokenized | customer_id=%s token=%s last4=%s",
+                customer_id,
+                saved_card.token[:12] + "…" if saved_card.token else "(none)",
+                saved_card.card_last4,
+            )
+        except Exception as exc:
+            logger.error(
+                "[CHECKOUT] ✗ tokenize EXCEPTION | type=%s msg=%s",
+                type(exc).__name__, str(exc)[:400],
+            )
+            return HTMLResponse(_html_form(f"Error al guardar tarjeta: {exc}", theme=theme), status_code=422)
+
+        # Crear suscripción con trial de 7 días
+        trial_result = None
+        try:
+            from app.services.post_payment import create_trial_subscription
+            trial_result = await create_trial_subscription(
+                customer_id=customer_id,
+                saved_card=saved_card,
+                amount=amount,
+                itbis=itbis,
+                cardholder_email=cardholder_email.strip(),
+                db=db,
+            )
+            logger.warning(
+                "[CHECKOUT] ✓ trial subscription created | customer_id=%s trial_ends=%s",
+                customer_id, trial_result.trial_ends_at,
+            )
+        except Exception as exc:
+            logger.error(
+                "[CHECKOUT] ✗ trial subscription FAILED | customer_id=%s err=%s",
+                customer_id, exc,
+            )
+
+        # Renderizar página de éxito de trial (sin cobro)
+        html = _html_result_trial(
+            card_last4=saved_card.card_last4,
+            cardholder_name=cardholder_name.strip(),
+            cardholder_email=cardholder_email.strip(),
+            trial_ends_at=trial_result.trial_ends_at if trial_result else "",
+            theme=theme,
+        )
+        resp = HTMLResponse(html)
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
+
+    # ── Flujo para USUARIO EXISTENTE: cobro normal ────────────────────────
     # IP real del cliente
     client_ip = (
         request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
@@ -1151,7 +1523,7 @@ async def process_checkout(
         browser_info["time_zone"],
     )
 
-    # ── Llamada a Azul ────────────────────────────────────────────────────
+    # ── Llamada a Azul (cobro real) ───────────────────────────────────────
     logger.warning(
         "[CHECKOUT] → calling process_sale | amount=%d itbis=%d auth_mode=3dsecure card=%s",
         amount, itbis, card_masked,
