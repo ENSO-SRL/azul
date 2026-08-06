@@ -252,7 +252,7 @@ jobs:
             CLUSTER="default"
             SERVICE="pago-azul-svc"
           fi
-          
+
           aws ecs update-service \
             --cluster $CLUSTER \
             --service $SERVICE \
@@ -283,4 +283,3 @@ jobs:
           echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Actor | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Ambiente | ${{ (github.ref_name == 'qa' || github.ref_name == 'QA') && 'QA' || 'produccion' }} |" >> $GITHUB_STEP_SUMMARY
-

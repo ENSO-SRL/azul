@@ -9,8 +9,12 @@ from __future__ import annotations
 from app.domain.entities import SavedCard
 import logging
 
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.domain.repositories import SavedCardRepository
 from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
+from app.infrastructure.models import RecurringPaymentModel
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +25,11 @@ class TokenService:
         self,
         card_repo: SavedCardRepository,
         gateway: AzulPaymentGateway,
+        db_session: AsyncSession | None = None,
     ):
         self._cards = card_repo
         self._gw    = gateway
+        self._db    = db_session
 
     async def register_card(
         self,
@@ -91,6 +97,9 @@ class TokenService:
 
         await self._cards.delete(token)
 
+        # Cancel any ACTIVE recurring payments that used this token
+        await self._cancel_subscriptions_for_token(token, customer_id)
+
     async def list_cards(self, customer_id: str) -> list[SavedCard]:
         """Return all saved cards for a customer, deduplicated by token.
 
@@ -127,3 +136,48 @@ class TokenService:
             logger.warning(f"Error de red o inesperado al borrar token por ID en Azul: {e}")
 
         await self._cards.delete(card.token)
+
+        # Cancel any ACTIVE recurring payments that used this token
+        await self._cancel_subscriptions_for_token(card.token, card.customer_id)
+
+    # -----------------------------------------------------------------------
+    # Internal helpers
+    # -----------------------------------------------------------------------
+
+    async def _cancel_subscriptions_for_token(
+        self, token: str, customer_id: str,
+    ) -> None:
+        """Cancel ACTIVE recurring payments tied to a deleted DataVault token."""
+        if not self._db:
+            logger.warning(
+                "[token-svc] No DB session — skipping subscription cancellation "
+                "for token=%s customer=%s",
+                token[:12] + "…" if token else "(none)", customer_id,
+            )
+            return
+
+        try:
+            result = await self._db.execute(
+                update(RecurringPaymentModel)
+                .where(
+                    RecurringPaymentModel.customer_id == customer_id,
+                    RecurringPaymentModel.data_vault_token == token,
+                    RecurringPaymentModel.status == "ACTIVE",
+                )
+                .values(status="CANCELLED")
+            )
+            await self._db.commit()
+
+            rows_affected = getattr(result, "rowcount", 0) or 0
+            if rows_affected > 0:
+                logger.warning(
+                    "[token-svc] ✓ cancelled %d subscription(s) for deleted token | "
+                    "customer_id=%s token=%s",
+                    rows_affected, customer_id, token[:12] + "…",
+                )
+        except Exception as exc:
+            logger.error(
+                "[token-svc] ✗ failed to cancel subscriptions | "
+                "customer_id=%s token=%s err=%s",
+                customer_id, token[:12] + "…" if token else "(none)", exc,
+            )

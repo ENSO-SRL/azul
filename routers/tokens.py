@@ -79,6 +79,7 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> TokenService:
     return TokenService(
         card_repo=SQLSavedCardRepository(db),
         gateway=AzulPaymentGateway(),
+        db_session=db,
     )
 
 
