@@ -26,7 +26,11 @@ _SECRET_KEY = os.getenv("SECRET_KEY", "")
 _ALGORITHM = os.getenv("ALGORITHM", "HS256")
 
 
-def decode_user_info_token(token: str | None) -> dict[str, Any] | None:
+def decode_user_info_token(
+    token: str | None,
+    *,
+    require_scope: str | None = None,
+) -> dict[str, Any] | None:
     """Decode and validate a ``user_info`` JWT cookie.
 
     Returns the payload dict on success, or ``None`` if the token is
@@ -42,6 +46,14 @@ def decode_user_info_token(token: str | None) -> dict[str, Any] | None:
             "scope": "user_info",
             "exp": 1753000000
         }
+
+    Parameters
+    ----------
+    token : str or None
+        The raw JWT string.
+    require_scope : str or None
+        If given, the decoded payload must contain ``"scope": <require_scope>``.
+        Tokens with a different (or missing) scope are rejected.
     """
     if not token:
         return None
@@ -57,10 +69,19 @@ def decode_user_info_token(token: str | None) -> dict[str, Any] | None:
             algorithms=[_ALGORITHM],
         )
     except jwt.ExpiredSignatureError:
-        logger.debug("[token_utils] access_token expired")
+        logger.debug("[token_utils] token expired")
         return None
     except jwt.InvalidTokenError as exc:
-        logger.debug("[token_utils] access_token invalid: %s", exc)
+        logger.debug("[token_utils] token invalid: %s", exc)
+        return None
+
+    # Optional scope validation
+    if require_scope is not None and payload.get("scope") != require_scope:
+        logger.debug(
+            "[token_utils] scope mismatch: expected %r, got %r",
+            require_scope,
+            payload.get("scope"),
+        )
         return None
 
     return payload
@@ -74,6 +95,11 @@ async def require_user_info(request: Request) -> dict[str, Any]:
     If the cookie is missing, expired, or invalid, redirects the user
     to the Atlas login page instead of returning a JSON 401.
 
+    Cookie priority:
+      1. ``user_info`` — new cookie with ``scope: "user_info"``
+         (set by auth on sign_up / sign_in / google_sign_in).
+      2. ``access_token`` — legacy fallback (no scope validation).
+
     Usage::
 
         from app.utils.token_utils import require_user_info
@@ -85,12 +111,18 @@ async def require_user_info(request: Request) -> dict[str, Any]:
     """
     from fastapi.responses import RedirectResponse
 
-    token = request.cookies.get("access_token")
-    user_data = decode_user_info_token(token)
+    # 1) Preferred: user_info cookie (with scope validation)
+    token = request.cookies.get("user_info")
+    user_data = decode_user_info_token(token, require_scope="user_info")
+
+    # 2) Legacy fallback: access_token cookie (no scope validation)
+    if user_data is None:
+        token = request.cookies.get("access_token")
+        user_data = decode_user_info_token(token)
 
     if user_data is None:
         logger.warning(
-            "[token_utils] ✗ access_token cookie missing/invalid — redirecting to login"
+            "[token_utils] ✗ user_info/access_token cookie missing/invalid — redirecting to login"
         )
         raise _LoginRedirectException()
 

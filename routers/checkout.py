@@ -4,8 +4,9 @@ Checkout — Payment Form UI.
 GET  /checkout          → Formulario HTML de pago
 POST /checkout/process  → Procesa el pago y redirige al resultado
 
-OPCIONAL: Usa cookie ``access_token`` (JWT del auth service) para pre-llenar datos
-y mostrar tarjetas guardadas. Si no está presente, muestra checkout como invitado.
+OPCIONAL: Usa cookie ``user_info`` (JWT del auth service) para pre-llenar datos
+y mostrar tarjetas guardadas. Fallback a ``access_token`` (legacy).
+Si ninguna está presente, muestra checkout como invitado.
   - CSP headers estrictos
   - Validación Luhn client-side (no se envía tarjeta inválida)
   - Datos de tarjeta NUNCA se loguean ni persisten en texto claro
@@ -946,22 +947,32 @@ async def checkout_form(
 ):
     """Sirve el formulario de pago y carga tarjetas si hay un customer_id.
 
-    Si el usuario tiene la cookie `access_token` (JWT del auth service),
+    Si el usuario tiene la cookie `user_info` (JWT del auth service),
     se extrae su ID y se busca su información en public.users para:
       - Pre-llenar los campos del formulario
       - Cargar tarjetas guardadas sin necesidad de query param
+
+    Fallback: si `user_info` no está presente, intenta `access_token` (legacy).
     """
     saved_cards_html = ""
     cards_count = 0
     prefill_email = ""
     prefill_name = ""
 
-    # ── Read access_token cookie (JWT from auth service) ─────────────────
+    # ── Read user_info cookie (preferred) or access_token (legacy fallback) ──
     from app.utils.token_utils import decode_user_info_token
     from sqlalchemy import text
     
-    user_info_token = request.cookies.get("access_token")
-    user_data = decode_user_info_token(user_info_token)
+    # 1) Preferred: user_info cookie (with scope validation)
+    user_info_token = request.cookies.get("user_info")
+    user_data = decode_user_info_token(user_info_token, require_scope="user_info")
+    cookie_source = "user_info"
+
+    # 2) Legacy fallback: access_token cookie (no scope validation)
+    if user_data is None:
+        user_info_token = request.cookies.get("access_token")
+        user_data = decode_user_info_token(user_info_token)
+        cookie_source = "access_token"
 
     if user_data:
         sub = user_data.get("sub", "")
@@ -989,7 +1000,8 @@ async def checkout_form(
         if not customer_id:
             customer_id = sub or prefill_email
         logger.warning(
-            "[CHECKOUT] access_token cookie decoded | sub=%s email=%s name=%s customer_id=%s",
+            "[CHECKOUT] %s cookie decoded | sub=%s email=%s name=%s customer_id=%s",
+            cookie_source,
             sub, prefill_email, prefill_name, customer_id,
         )
 
