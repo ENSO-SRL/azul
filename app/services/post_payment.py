@@ -134,7 +134,7 @@ async def handle_post_payment_actions(payment: Payment) -> PostPaymentResult:
         )
         return result
 
-    # ── 1. Identify if card was saved ─────────────────────────────────────
+    # ── 1. I   dentify if card was saved ─────────────────────────────────────
     result.card_saved = bool(payment.data_vault_token)
     logger.warning(
         "[post-payment] payment_id=%s email=%s card_saved=%s token=%s",
