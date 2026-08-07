@@ -1433,12 +1433,17 @@ async def process_checkout(
                 exc,
             )
 
-    # ── Flujo para USUARIO NUEVO: solo tokenizar (sin cobro) ──────────────
+    # ── Flujo para USUARIO NUEVO: tokenizar sin cobrar ──────────────────────
+    # Cadena de fallback: CREATE → Hold+Void → Sale
+    # Cada paso intenta la siguiente opción si Azul devuelve VALIDATION_ERROR:TrxType
+    payment = None  # Se define aquí para que Hold pueda setearla antes del Sale
     if is_new_user and customer_id:
         logger.warning(
             "[CHECKOUT] → NEW USER — tokenize only (no charge) | customer_id=%s card=%s",
             customer_id, card_masked,
         )
+
+        # ── Paso 1: Intentar CREATE (tokenizar sin cobro, sin 3DS) ────────
         try:
             saved_card = await token_svc.register_card(
                 customer_id=customer_id,
@@ -1449,31 +1454,11 @@ async def process_checkout(
                 cardholder_email=cardholder_email.strip(),
             )
             logger.warning(
-                "[CHECKOUT] ✓ card tokenized | customer_id=%s token=%s last4=%s",
+                "[CHECKOUT] ✓ card tokenized (CREATE) | customer_id=%s token=%s last4=%s",
                 customer_id,
                 saved_card.token[:12] + "…" if saved_card.token else "(none)",
                 saved_card.card_last4,
             )
-        except Exception as exc:
-            err_msg = str(exc)
-            if "VALIDATION_ERROR:TrxType" in err_msg:
-                # TrxType=CREATE no habilitado en el merchant — fallback a Sale + SaveToDataVault + 3DS
-                logger.warning(
-                    "[CHECKOUT] ⚠ CREATE not enabled — falling back to Sale + SaveToDataVault "
-                    "| customer_id=%s err=%s",
-                    customer_id, err_msg[:200],
-                )
-                # No hacer return — caer al flujo de Sale + 3DS de abajo
-            else:
-                logger.error(
-                    "[CHECKOUT] ✗ tokenize EXCEPTION | type=%s msg=%s",
-                    type(exc).__name__, err_msg[:400],
-                )
-                return HTMLResponse(
-                    _html_form(f"Error al guardar tarjeta: {exc}", theme=theme, customer_id=customer_id),
-                    status_code=422,
-                )
-        else:
             # CREATE exitoso — crear trial y retornar sin cobro
             trial_result = None
             try:
@@ -1496,7 +1481,6 @@ async def process_checkout(
                     customer_id, exc,
                 )
 
-            # Renderizar página de éxito de trial (sin cobro)
             html = _html_result_trial(
                 card_last4=saved_card.card_last4,
                 cardholder_name=cardholder_name.strip(),
@@ -1509,61 +1493,138 @@ async def process_checkout(
             resp.headers["X-Content-Type-Options"] = "nosniff"
             return resp
 
-    # ── Flujo para USUARIO EXISTENTE: cobro normal ────────────────────────
-    # IP real del cliente
-    client_ip = (
-        request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        or (request.client.host if request.client else "")
-        or browser_ip
-    )
+        except Exception as exc:
+            err_msg = str(exc)
+            if "VALIDATION_ERROR:TrxType" not in err_msg:
+                logger.error(
+                    "[CHECKOUT] ✗ tokenize EXCEPTION | type=%s msg=%s",
+                    type(exc).__name__, err_msg[:400],
+                )
+                return HTMLResponse(
+                    _html_form(f"Error al guardar tarjeta: {exc}", theme=theme, customer_id=customer_id),
+                    status_code=422,
+                )
+            logger.warning(
+                "[CHECKOUT] ⚠ CREATE not enabled — trying Hold+Void | customer_id=%s",
+                customer_id,
+            )
 
-    # Browser fingerprint para 3DS 2.0
-    browser_info = {
-        "accept_header": browser_accept_header or "text/html",
-        "ip_address": client_ip,
-        "language": browser_language or "es-DO",
-        "color_depth": browser_color_depth or "24",
-        "screen_width": browser_screen_width or "1280",
-        "screen_height": browser_screen_height or "720",
-        "time_zone": browser_time_zone or "240",
-        "user_agent": browser_user_agent or request.headers.get("User-Agent", ""),
-        "javascript_enabled": "true",
-    }
-    logger.warning(
-        "[CHECKOUT] browser_info → ip=%s lang=%s w=%s h=%s tz=%s",
-        client_ip, browser_info["language"],
-        browser_info["screen_width"], browser_info["screen_height"],
-        browser_info["time_zone"],
-    )
-ose aper
-    # ── Llamada a Azul (cobro real) ───────────────────────────────────────
-    logger.warning(
-        "[CHECKOUT] → calling process_sale | amount=%d itbis=%d auth_mode=3dsecure card=%s",
-        amount, itbis, card_masked,
-    )
-    try:
-        # Para suscripciones siempre tokenizamos: save_card=True + STANDING_ORDER indicator
-        payment = await svc.process_sale(
-            amount=amount,
-            itbis=itbis,
-            card_number=card_clean,
-            expiration=exp_azul,
-            cvc=cvc.strip(),
-            order_id=f"CHK-{uuid.uuid4().hex[:8].upper()}",
-            auth_mode="3dsecure",
-            save_card=True,
-            cardholder_name=cardholder_name.strip(),
-            cardholder_email=cardholder_email.strip(),
-            customer_id=customer_id,
-            browser_info=browser_info,
-        )
-    except Exception as exc:
-        logger.error(
-            "[CHECKOUT] ✗ process_sale EXCEPTION | type=%s msg=%s",
-            type(exc).__name__, str(exc)[:400],
-        )
-        return HTMLResponse(_html_form(f"Error al procesar: {exc}", theme=theme), status_code=422)
+        # ── Paso 2: Intentar Hold+Void (3DS + tokenizar, liberar fondos) ──
+        from app.infrastructure.azul_gateway import AzulIntegrationError
+        try:
+            # Build browser_info for 3DS
+            client_ip = (
+                request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                or (request.client.host if request.client else "")
+                or browser_ip
+            )
+            hold_browser_info = {
+                "accept_header": browser_accept_header or "text/html",
+                "ip_address": client_ip,
+                "language": browser_language or "es-DO",
+                "color_depth": browser_color_depth or "24",
+                "screen_width": browser_screen_width or "1280",
+                "screen_height": browser_screen_height or "720",
+                "time_zone": browser_time_zone or "240",
+                "user_agent": browser_user_agent or request.headers.get("User-Agent", ""),
+                "javascript_enabled": "true",
+            }
+            payment = await svc.process_hold_verify(
+                card_number=card_clean,
+                expiration=exp_azul,
+                cvc=cvc.strip(),
+                order_id=f"HOLD-{uuid.uuid4().hex[:8].upper()}",
+                cardholder_name=cardholder_name.strip(),
+                cardholder_email=cardholder_email.strip(),
+                customer_id=customer_id,
+                browser_info=hold_browser_info,
+            )
+            logger.warning(
+                "[CHECKOUT] ← Hold response | payment_id=%s status=%s iso=%s",
+                payment.id, payment.status.value, payment.iso_code,
+            )
+            # Hold va por 3DS — reusar el mismo flujo de abajo (3DS method/challenge/result)
+            # El auto-void se ejecuta cuando APPROVED (detectado por order_id "HOLD-*")
 
+        except AzulIntegrationError as exc:
+            hold_err = str(exc)
+            if "VALIDATION_ERROR:TrxType" in hold_err:
+                logger.warning(
+                    "[CHECKOUT] ⚠ Hold not enabled either — falling back to Sale | customer_id=%s",
+                    customer_id,
+                )
+                # Fall through to Sale flow below
+            else:
+                logger.error("[CHECKOUT] ✗ Hold EXCEPTION | %s", hold_err[:400])
+                return HTMLResponse(
+                    _html_form(f"Error al verificar tarjeta: {exc}", theme=theme, customer_id=customer_id),
+                    status_code=422,
+                )
+        except Exception as exc:
+            logger.error("[CHECKOUT] ✗ Hold EXCEPTION | type=%s msg=%s", type(exc).__name__, str(exc)[:400])
+            # Fall through to Sale
+        else:
+            # Hold fue enviado — redirigir al flujo 3DS (method/challenge/result)
+            # El código de 3DS de abajo maneja el payment object
+            pass  # payment ya está definido, cae al manejo de 3DS abajo
+
+    # ── Flujo Sale (usuario existente O fallback final de usuario nuevo) ───
+    if payment is None:
+        # IP real del cliente
+        client_ip = (
+            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or (request.client.host if request.client else "")
+            or browser_ip
+        )
+
+        # Browser fingerprint para 3DS 2.0
+        browser_info = {
+            "accept_header": browser_accept_header or "text/html",
+            "ip_address": client_ip,
+            "language": browser_language or "es-DO",
+            "color_depth": browser_color_depth or "24",
+            "screen_width": browser_screen_width or "1280",
+            "screen_height": browser_screen_height or "720",
+            "time_zone": browser_time_zone or "240",
+            "user_agent": browser_user_agent or request.headers.get("User-Agent", ""),
+            "javascript_enabled": "true",
+        }
+        logger.warning(
+            "[CHECKOUT] browser_info → ip=%s lang=%s w=%s h=%s tz=%s",
+            client_ip, browser_info["language"],
+            browser_info["screen_width"], browser_info["screen_height"],
+            browser_info["time_zone"],
+        )
+
+        # ── Llamada a Azul (cobro real) ───────────────────────────────────────
+        logger.warning(
+            "[CHECKOUT] → calling process_sale | amount=%d itbis=%d auth_mode=3dsecure card=%s",
+            amount, itbis, card_masked,
+        )
+        try:
+            # Para suscripciones siempre tokenizamos: save_card=True + STANDING_ORDER indicator
+            payment = await svc.process_sale(
+                amount=amount,
+                itbis=itbis,
+                card_number=card_clean,
+                expiration=exp_azul,
+                cvc=cvc.strip(),
+                order_id=f"CHK-{uuid.uuid4().hex[:8].upper()}",
+                auth_mode="3dsecure",
+                save_card=True,
+                cardholder_name=cardholder_name.strip(),
+                cardholder_email=cardholder_email.strip(),
+                customer_id=customer_id,
+                browser_info=browser_info,
+            )
+        except Exception as exc:
+            logger.error(
+                "[CHECKOUT] ✗ process_sale EXCEPTION | type=%s msg=%s",
+                type(exc).__name__, str(exc)[:400],
+            )
+            return HTMLResponse(_html_form(f"Error al procesar: {exc}", theme=theme), status_code=422)
+
+    # A partir de aquí, payment está definido (por Hold o por Sale)
     logger.warning(
         "[CHECKOUT] ← Azul response | payment_id=%s status=%s iso=%s rc=%s msg=%r "
         "azul_order_id=%s method_form_len=%d",
@@ -1648,6 +1709,63 @@ ose aper
     )
 
     if status == "APPROVED":
+        # Auto-void si fue un Hold de verificación (order_id empieza con HOLD-)
+        if payment.order_id and payment.order_id.startswith("HOLD-"):
+            try:
+                from datetime import datetime as _dt
+                original_date = _dt.utcnow().strftime("%Y%m%d")
+                void_result = await svc._gw.void(
+                    azul_order_id=payment.azul_order_id,
+                    original_date=original_date,
+                )
+                logger.warning(
+                    "[CHECKOUT] ✓ Hold auto-voided | payment_id=%s azul_order_id=%s",
+                    payment.id, payment.azul_order_id,
+                )
+            except Exception as void_exc:
+                logger.error(
+                    "[CHECKOUT] ✗ Hold auto-void FAILED | payment_id=%s err=%s",
+                    payment.id, void_exc,
+                )
+            # Crear trial subscription para el usuario verificado
+            trial_result = None
+            try:
+                from app.services.post_payment import create_trial_subscription
+                from app.domain.entities import SavedCard as _SC
+                # Build a minimal SavedCard for the trial
+                _card = _SC(
+                    customer_id=customer_id,
+                    token=payment.data_vault_token or "",
+                    card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                    expiration="",
+                )
+                trial_result = await create_trial_subscription(
+                    customer_id=customer_id,
+                    saved_card=_card,
+                    amount=amount,
+                    itbis=itbis,
+                    cardholder_email=payment.cardholder_email or "",
+                    db=db,
+                )
+                logger.warning(
+                    "[CHECKOUT] ✓ trial created (hold-verify) | customer_id=%s",
+                    customer_id,
+                )
+            except Exception as te:
+                logger.error("[CHECKOUT] ✗ trial FAILED (hold-verify) | %s", te)
+
+            html = _html_result_trial(
+                card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                cardholder_name=payment.cardholder_name or "",
+                cardholder_email=payment.cardholder_email or "",
+                trial_ends_at=trial_result.trial_ends_at if trial_result else "",
+                theme=theme,
+            )
+            resp = HTMLResponse(html)
+            resp.headers["X-Frame-Options"] = "DENY"
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            return resp
+
         from app.services.post_payment import handle_post_payment_actions, create_subscription_if_needed
         import asyncio
         asyncio.create_task(handle_post_payment_actions(payment))
@@ -1736,6 +1854,27 @@ async def continue_3ds(
     )
     
     if payment.status == PaymentStatus.APPROVED:
+        # Auto-void si fue un Hold de verificación
+        if payment.order_id and payment.order_id.startswith("HOLD-"):
+            try:
+                from datetime import datetime as _dt
+                from app.infrastructure.azul_gateway import AzulPaymentGateway
+                _gw = AzulPaymentGateway()
+                original_date = _dt.utcnow().strftime("%Y%m%d")
+                await _gw.void(
+                    azul_order_id=payment.azul_order_id,
+                    original_date=original_date,
+                )
+                logger.warning(
+                    "[CHECKOUT] ✓ Hold auto-voided (3ds-continue) | payment_id=%s",
+                    payment.id,
+                )
+            except Exception as void_exc:
+                logger.error(
+                    "[CHECKOUT] ✗ Hold auto-void FAILED (3ds-continue) | payment_id=%s err=%s",
+                    payment.id, void_exc,
+                )
+
         from app.services.post_payment import handle_post_payment_actions, create_subscription_if_needed
         import asyncio
         asyncio.create_task(handle_post_payment_actions(payment))

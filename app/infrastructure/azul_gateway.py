@@ -434,6 +434,57 @@ class AzulPaymentGateway:
         })
         return await self._execute(payment, payload)
 
+    async def hold_verify_card(
+        self,
+        payment: Payment,
+        card_number: str,
+        expiration: str,
+        cvc: str,
+        browser_info: dict[str, str] | None = None,
+    ) -> tuple[Payment, Transaction]:
+        """Pre-authorize + tokenize (Hold + SaveToDataVault + 3DS).
+
+        Used to verify a card has funds and tokenize it without charging.
+        After approval, the caller should immediately ``void()`` the hold
+        to release the reserved funds.
+
+        Flow: Hold(RD$1) → 3DS → Approved → Void → net charge = $0
+        """
+        cfg = load_azul_config()
+        payload = self._base_payload(payment)
+        force = _force_no3ds(cfg, "1" if payment.auth_mode == "splitit" else "0")
+        payload.update({
+            "TrxType": "Hold",
+            "CardNumber": card_number,
+            "Expiration": expiration,
+            "CVC": cvc,
+            **_datavault_fields(True),  # save token
+            **force,
+            "cardholderInitiatedIndicator": "STANDING_ORDER",
+        })
+
+        if payment.auth_mode == "3dsecure" and browser_info:
+            payload["ThreeDSAuth"] = {
+                "TermUrl": f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}",
+                "MethodNotificationUrl": (
+                    f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}"
+                ),
+                "RequestorChallengeIndicator": "01",
+            }
+            payload["BrowserInfo"] = {
+                "AcceptHeader": browser_info.get("accept_header", "text/html"),
+                "IPAddress": browser_info.get("ip_address", ""),
+                "Language": browser_info.get("language", "es-DO"),
+                "ColorDepth": browser_info.get("color_depth", "24"),
+                "ScreenWidth": browser_info.get("screen_width", "1920"),
+                "ScreenHeight": browser_info.get("screen_height", "1080"),
+                "TimeZone": browser_info.get("time_zone", "240"),
+                "UserAgent": browser_info.get("user_agent", ""),
+                "JavaScriptEnabled": browser_info.get("javascript_enabled", "true"),
+            }
+
+        return await self._execute(payment, payload)
+
     async def post_capture(
         self,
         payment: Payment,

@@ -332,6 +332,72 @@ class PaymentService:
         await self._txns.save(txn)
         return payment
 
+    async def process_hold_verify(
+        self,
+        card_number: str,
+        expiration: str,
+        cvc: str,
+        order_id: str = "",
+        cardholder_name: str = "",
+        cardholder_email: str = "",
+        customer_id: str = "",
+        browser_info: dict[str, str] | None = None,
+    ) -> Payment:
+        """Hold + SaveToDataVault + 3DS — verify card and tokenize without charging.
+
+        Uses amount=100 (RD$1.00) / itbis=0 for the hold.
+        The caller should void the hold after 3DS approval completes.
+        The Payment.order_id starts with 'HOLD-' so post-approval handlers
+        can detect it and auto-void.
+        """
+        payment = Payment(
+            amount=100,   # RD$1.00 mínimo
+            itbis=0,
+            payment_type=PaymentType.SALE,
+            order_id=order_id or f"HOLD-{__import__('uuid').uuid4().hex[:8].upper()}",
+            auth_mode="3dsecure",
+            initiated_by="cardholder",
+            cardholder_name=cardholder_name,
+            cardholder_email=cardholder_email,
+            customer_id=customer_id,
+        )
+
+        from app.infrastructure.azul_gateway import AzulIntegrationError
+        payment, txn = await self._gw.hold_verify_card(
+            payment, card_number, expiration, cvc,
+            browser_info=browser_info,
+        )
+
+        # Save card if immediately approved (no 3DS redirect)
+        if (
+            payment.data_vault_token
+            and self._cards
+            and customer_id
+            and payment.status == PaymentStatus.APPROVED
+        ):
+            from app.domain.entities import SavedCard
+            brand = self._detect_card_brand(card_number)
+            card = SavedCard(
+                customer_id=customer_id,
+                token=payment.data_vault_token,
+                card_brand=brand,
+                card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                expiration=expiration,
+            )
+            existing_cards = await self._cards.list_by_customer(customer_id)
+            if not existing_cards:
+                card.is_default = True
+            await self._cards.save_if_not_exists(card)
+            logger.warning(
+                "[SVC] ✓ card saved (hold-verify) | customer=%s brand=%s last4=%s",
+                customer_id, brand, card.card_last4,
+            )
+
+        await self._payments.save(payment)
+        await self._txns.save(txn)
+        logger.warning("[SVC] hold-verify saved | payment_id=%s status=%s", payment.id, payment.status.value)
+        return payment
+
     async def process_post(
         self,
         amount: int,
