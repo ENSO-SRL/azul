@@ -1455,46 +1455,59 @@ async def process_checkout(
                 saved_card.card_last4,
             )
         except Exception as exc:
-            logger.error(
-                "[CHECKOUT] ✗ tokenize EXCEPTION | type=%s msg=%s",
-                type(exc).__name__, str(exc)[:400],
-            )
-            return HTMLResponse(_html_form(f"Error al guardar tarjeta: {exc}", theme=theme), status_code=422)
+            err_msg = str(exc)
+            if "VALIDATION_ERROR:TrxType" in err_msg:
+                # TrxType=CREATE no habilitado en el merchant — fallback a Sale + SaveToDataVault + 3DS
+                logger.warning(
+                    "[CHECKOUT] ⚠ CREATE not enabled — falling back to Sale + SaveToDataVault "
+                    "| customer_id=%s err=%s",
+                    customer_id, err_msg[:200],
+                )
+                # No hacer return — caer al flujo de Sale + 3DS de abajo
+            else:
+                logger.error(
+                    "[CHECKOUT] ✗ tokenize EXCEPTION | type=%s msg=%s",
+                    type(exc).__name__, err_msg[:400],
+                )
+                return HTMLResponse(
+                    _html_form(f"Error al guardar tarjeta: {exc}", theme=theme, customer_id=customer_id),
+                    status_code=422,
+                )
+        else:
+            # CREATE exitoso — crear trial y retornar sin cobro
+            trial_result = None
+            try:
+                from app.services.post_payment import create_trial_subscription
+                trial_result = await create_trial_subscription(
+                    customer_id=customer_id,
+                    saved_card=saved_card,
+                    amount=amount,
+                    itbis=itbis,
+                    cardholder_email=cardholder_email.strip(),
+                    db=db,
+                )
+                logger.warning(
+                    "[CHECKOUT] ✓ trial subscription created | customer_id=%s trial_ends=%s",
+                    customer_id, trial_result.trial_ends_at,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[CHECKOUT] ✗ trial subscription FAILED | customer_id=%s err=%s",
+                    customer_id, exc,
+                )
 
-        # Crear suscripción con trial de 7 días
-        trial_result = None
-        try:
-            from app.services.post_payment import create_trial_subscription
-            trial_result = await create_trial_subscription(
-                customer_id=customer_id,
-                saved_card=saved_card,
-                amount=amount,
-                itbis=itbis,
+            # Renderizar página de éxito de trial (sin cobro)
+            html = _html_result_trial(
+                card_last4=saved_card.card_last4,
+                cardholder_name=cardholder_name.strip(),
                 cardholder_email=cardholder_email.strip(),
-                db=db,
+                trial_ends_at=trial_result.trial_ends_at if trial_result else "",
+                theme=theme,
             )
-            logger.warning(
-                "[CHECKOUT] ✓ trial subscription created | customer_id=%s trial_ends=%s",
-                customer_id, trial_result.trial_ends_at,
-            )
-        except Exception as exc:
-            logger.error(
-                "[CHECKOUT] ✗ trial subscription FAILED | customer_id=%s err=%s",
-                customer_id, exc,
-            )
-
-        # Renderizar página de éxito de trial (sin cobro)
-        html = _html_result_trial(
-            card_last4=saved_card.card_last4,
-            cardholder_name=cardholder_name.strip(),
-            cardholder_email=cardholder_email.strip(),
-            trial_ends_at=trial_result.trial_ends_at if trial_result else "",
-            theme=theme,
-        )
-        resp = HTMLResponse(html)
-        resp.headers["X-Frame-Options"] = "DENY"
-        resp.headers["X-Content-Type-Options"] = "nosniff"
-        return resp
+            resp = HTMLResponse(html)
+            resp.headers["X-Frame-Options"] = "DENY"
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            return resp
 
     # ── Flujo para USUARIO EXISTENTE: cobro normal ────────────────────────
     # IP real del cliente
@@ -1522,7 +1535,7 @@ async def process_checkout(
         browser_info["screen_width"], browser_info["screen_height"],
         browser_info["time_zone"],
     )
-
+ose aper
     # ── Llamada a Azul (cobro real) ───────────────────────────────────────
     logger.warning(
         "[CHECKOUT] → calling process_sale | amount=%d itbis=%d auth_mode=3dsecure card=%s",
