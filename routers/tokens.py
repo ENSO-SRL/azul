@@ -330,15 +330,15 @@ async def register_card(
             cardholder_name=body.cardholder_name,
             cardholder_email=body.cardholder_email,
         )
-    except ValueError as exc:
+    except (ValueError, AzulIntegrationError) as exc:
         err = str(exc)
         if "VALIDATION_ERROR:TrxType" in err:
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "DataVault CREATE (tokenizar sin cobrar) no está habilitado en sandbox. "
-                    "Usa POST /api/v1/payments con save_card=true para obtener un token "
-                    "en el mismo cobro. Solicitar habilitación a solucionesintegradas@bpd.com.do."
+                    "DataVault CREATE (tokenizar sin cobrar) no está habilitado en el merchant. "
+                    "Usa el checkout (/checkout) que hace Sale + SaveToDataVault en un solo paso, "
+                    "o solicita activación de TrxType=CREATE a solucionesintegradas@bpd.com.do."
                 ),
             )
         raise HTTPException(status_code=422, detail=err)
