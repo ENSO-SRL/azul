@@ -1433,16 +1433,68 @@ async def process_checkout(
                 exc,
             )
 
-    # ── WORKAROUND: TrxType=CREATE no habilitado en merchant ─────────────
-    # Cuando Azul active TrxType=CREATE, restaurar el flujo de solo tokenizar
-    # (sin cobro) + trial de 7 días para usuarios nuevos.
-    # Por ahora, todos los usuarios pasan por Sale + SaveToDataVault=1.
+    # ── Flujo para USUARIO NUEVO: solo tokenizar (sin cobro) ──────────────
     if is_new_user and customer_id:
         logger.warning(
-            "[CHECKOUT] → NEW USER — Sale + SaveToDataVault (workaround: CREATE disabled) "
-            "| customer_id=%s card=%s",
+            "[CHECKOUT] → NEW USER — tokenize only (no charge) | customer_id=%s card=%s",
             customer_id, card_masked,
         )
+        try:
+            saved_card = await token_svc.register_card(
+                customer_id=customer_id,
+                card_number=card_clean,
+                expiration=exp_azul,
+                cvc=cvc.strip(),
+                cardholder_name=cardholder_name.strip(),
+                cardholder_email=cardholder_email.strip(),
+            )
+            logger.warning(
+                "[CHECKOUT] ✓ card tokenized | customer_id=%s token=%s last4=%s",
+                customer_id,
+                saved_card.token[:12] + "…" if saved_card.token else "(none)",
+                saved_card.card_last4,
+            )
+        except Exception as exc:
+            logger.error(
+                "[CHECKOUT] ✗ tokenize EXCEPTION | type=%s msg=%s",
+                type(exc).__name__, str(exc)[:400],
+            )
+            return HTMLResponse(_html_form(f"Error al guardar tarjeta: {exc}", theme=theme), status_code=422)
+
+        # Crear suscripción con trial de 7 días
+        trial_result = None
+        try:
+            from app.services.post_payment import create_trial_subscription
+            trial_result = await create_trial_subscription(
+                customer_id=customer_id,
+                saved_card=saved_card,
+                amount=amount,
+                itbis=itbis,
+                cardholder_email=cardholder_email.strip(),
+                db=db,
+            )
+            logger.warning(
+                "[CHECKOUT] ✓ trial subscription created | customer_id=%s trial_ends=%s",
+                customer_id, trial_result.trial_ends_at,
+            )
+        except Exception as exc:
+            logger.error(
+                "[CHECKOUT] ✗ trial subscription FAILED | customer_id=%s err=%s",
+                customer_id, exc,
+            )
+
+        # Renderizar página de éxito de trial (sin cobro)
+        html = _html_result_trial(
+            card_last4=saved_card.card_last4,
+            cardholder_name=cardholder_name.strip(),
+            cardholder_email=cardholder_email.strip(),
+            trial_ends_at=trial_result.trial_ends_at if trial_result else "",
+            theme=theme,
+        )
+        resp = HTMLResponse(html)
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
 
     # ── Flujo para USUARIO EXISTENTE: cobro normal ────────────────────────
     # IP real del cliente
