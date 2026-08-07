@@ -962,7 +962,7 @@ def _html_result_trial(
                      "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
             trial_date_display = f"{dt.day} de {meses[dt.month - 1]}, {dt.year}"
         except Exception:
-            trial_date_display = str(trial_ends_at)[:10]
+            trial_date_display = f"{trial_ends_at}"[:10]
 
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -1292,7 +1292,7 @@ async def checkout_form(
                 default_badge = '<div class="card-default-badge">Predeterminada</div>' if c.is_default else ''
                 default_attr = 'true' if c.is_default else 'false'
                 card_id = c.id if hasattr(c, 'id') else c.card_last4
-                token = c.data_vault_token if hasattr(c, 'data_vault_token') else ''
+                token = c.token if hasattr(c, 'token') else ''
                 
                 saved_cards_html += f'''
                 <div class="saved-visual-card" data-card-id="{card_id}" data-token="{token}" data-default="{default_attr}" onclick="selectCard('{card_id}')">
@@ -1712,8 +1712,8 @@ async def process_checkout(
         # Auto-void si fue un Hold de verificación (order_id empieza con HOLD-)
         if payment.order_id and payment.order_id.startswith("HOLD-"):
             try:
-                from datetime import datetime as _dt
-                original_date = _dt.utcnow().strftime("%Y%m%d")
+                from datetime import datetime as _dt, timezone as _tz
+                original_date = _dt.now(_tz.utc).strftime("%Y%m%d")
                 void_result = await svc._gw.void(
                     azul_order_id=payment.azul_order_id,
                     original_date=original_date,
@@ -1857,10 +1857,10 @@ async def continue_3ds(
         # Auto-void si fue un Hold de verificación
         if payment.order_id and payment.order_id.startswith("HOLD-"):
             try:
-                from datetime import datetime as _dt
+                from datetime import datetime as _dt, timezone as _tz
                 from app.infrastructure.azul_gateway import AzulPaymentGateway
                 _gw = AzulPaymentGateway()
-                original_date = _dt.utcnow().strftime("%Y%m%d")
+                original_date = _dt.now(_tz.utc).strftime("%Y%m%d")
                 await _gw.void(
                     azul_order_id=payment.azul_order_id,
                     original_date=original_date,
@@ -1945,7 +1945,7 @@ async def checkout_result(
         status=status,
         message=msg,
         payment_id=payment.id,
-        amount=payment.amount + payment.itbis,
+        amount=0 if (payment.order_id and payment.order_id.startswith("HOLD-")) else (payment.amount + payment.itbis),
         iso=payment.iso_code,
         theme=theme,
         card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
