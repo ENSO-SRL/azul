@@ -235,7 +235,14 @@ class RecurringService:
         if not sub.data_vault_token:
             raise ValueError(f"Subscription {recurring_id} has no DataVault token")
 
+        from app.services.scheduler import build_custom_order_id
+        
+        cycle = sub.next_charge_at.strftime("%Y%m") if sub.next_charge_at else datetime.now(timezone.utc).strftime("%Y%m")
+        custom_order_id = build_custom_order_id(sub.id, sub.failed_attempts, cycle)
+
         payment = Payment(
+            id=custom_order_id,
+            order_id=f"sub-{sub.id}",
             amount=sub.amount,
             itbis=sub.itbis,
             payment_type=PaymentType.RECURRING,

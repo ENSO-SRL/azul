@@ -58,15 +58,15 @@ _MAX_ATTEMPTS = 3
 _scheduler: AsyncIOScheduler | None = None
 
 
-def _build_custom_order_id(sub_id: str, failed_attempts: int) -> str:
+def build_custom_order_id(sub_id: str, failed_attempts: int, cycle: str) -> str:
     """Deterministic CustomOrderId for idempotent retries.
 
-    Format: sub-{id_prefix}-att{attempt}
+    Format: sub-{id_prefix}-c{cycle}-att{attempt}
     Azul uses this to detect duplicate requests and avoid double-charging.
     """
     # Use first 8 chars of UUID to keep within Azul field length limits
     short_id = sub_id.replace("-", "")[:12]
-    return f"sub-{short_id}-att{failed_attempts}"
+    return f"sub-{short_id}-c{cycle}-att{failed_attempts}"
 
 
 async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None:
@@ -121,7 +121,8 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
                         )
 
                 # Build idempotent CustomOrderId — same on retry, unique per cycle+attempt
-                custom_order_id = _build_custom_order_id(sub.id, sub.failed_attempts)
+                cycle = sub.next_charge_at.strftime("%Y%m") if sub.next_charge_at else datetime.now(timezone.utc).strftime("%Y%m")
+                custom_order_id = build_custom_order_id(sub.id, sub.failed_attempts, cycle)
 
                 payment = Payment(
                     id=custom_order_id,  # use as CustomOrderId for Azul idempotency
