@@ -482,15 +482,24 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
   window.payWithSaved = function() {
     if (!selectedCardId) return;
     var card = document.querySelector('[data-card-id="' + selectedCardId + '"]');
-    var token = card ? card.getAttribute('data-token') : null;
-    if (token) {
+    if (card) {
       showFeedback('success', 'Procesando pago con tarjeta guardada…');
-      // TODO: POST /checkout/pay-with-token endpoint
       setTimeout(function() {
-        window.location.href = '/checkout/pay-with-token?token=' + encodeURIComponent(token);
+        var form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '/checkout/pay-with-token';
+        
+        var input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'card_id';
+        input.value = selectedCardId;
+        
+        form.appendChild(input);
+        document.body.appendChild(form);
+        form.submit();
       }, 500);
     } else {
-      showFeedback('error', 'No se encontró el token de la tarjeta.');
+      showFeedback('error', 'No se encontró la tarjeta seleccionada.');
     }
   };
 
@@ -1782,6 +1791,110 @@ async def process_checkout(
         cardholder_name=payment.cardholder_name or "",
         cardholder_email=payment.cardholder_email or "",
         card_saved=bool(payment.data_vault_token),
+    )
+    resp = HTMLResponse(html)
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@router.post("/pay-with-token", response_class=HTMLResponse, include_in_schema=False)
+async def pay_with_token(
+    request: Request,
+    card_id: str = Form(...),
+    svc: PaymentService = Depends(_get_service),
+    token_svc: TokenService = Depends(_get_token_svc),
+    db: AsyncSession = Depends(get_db),
+):
+    """Procesa un cobro (CIT) usando una tarjeta previamente guardada (DataVault Token)."""
+    theme = _resolve_theme(request)
+    
+    from app.utils.token_utils import decode_user_info_token
+    user_info_token = request.cookies.get("user_info")
+    user_data = decode_user_info_token(user_info_token, require_scope="user_info")
+    if user_data is None:
+        user_info_token = request.cookies.get("access_token")
+        user_data = decode_user_info_token(user_info_token)
+    
+    customer_id = ""
+    if user_data:
+        customer_id = user_data.get("sub", "") or user_data.get("email", "")
+        
+    if not customer_id:
+        return HTMLResponse(_html_form("Sesión expirada. Inicia sesión nuevamente.", theme=theme), status_code=401)
+        
+    logger.warning("[CHECKOUT] ▶ POST /pay-with-token | customer_id=%s card_id=%s", customer_id, card_id)
+
+    cards = await token_svc.list_cards(customer_id)
+    selected_card = next((c for c in cards if (hasattr(c, 'id') and c.id == card_id) or (hasattr(c, 'card_last4') and c.card_last4 == card_id)), None)
+    
+    if not selected_card or not hasattr(selected_card, 'token') or not selected_card.token:
+        logger.error("[CHECKOUT] ✗ Tarjeta no encontrada o sin token: %s", card_id)
+        return HTMLResponse(_html_form("Tarjeta no encontrada o inválida.", theme=theme, customer_id=customer_id), status_code=404)
+        
+    token = selected_card.token
+    expiration = getattr(selected_card, 'expiration', '')
+
+    from sqlalchemy import select
+    from app.infrastructure.models import RecurringPaymentModel
+    from app.domain.entities import SubscriptionStatus
+    
+    existing_active = await db.execute(
+        select(RecurringPaymentModel).where(
+            RecurringPaymentModel.customer_id == customer_id,
+            RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
+        )
+    )
+    if existing_active.scalar_one_or_none():
+        logger.warning("[CHECKOUT] ⚠ Usuario ya tiene suscripción activa | customer_id=%s", customer_id)
+        return HTMLResponse(_html_result("DECLINED", "El usuario ya tiene una suscripción activa.", "", 0, "", theme=theme, card_last4=""), status_code=409)
+
+    amount = 200
+    itbis = 36
+    
+    from app.domain.entities import Payment, PaymentType, PaymentStatus
+    from app.infrastructure.azul_gateway import AzulPaymentGateway
+    gateway = AzulPaymentGateway()
+    
+    payment = Payment(
+        amount=amount,
+        itbis=itbis,
+        payment_type=PaymentType.RECURRING,
+        auth_mode="splitit",
+        cardholder_email=user_data.get("email", "") if user_data else "",
+        initiated_by="cardholder",
+    )
+    
+    try:
+        payment, txn = await gateway.sale_cit(payment, token)
+        from app.infrastructure.repo_impl import SQLPaymentRepository, SQLTransactionRepository
+        await SQLPaymentRepository(db).save(payment)
+        await SQLTransactionRepository(db).save(txn)
+    except Exception as e:
+        logger.error("[CHECKOUT] ✗ Error llamando a sale_cit: %s", e)
+        return HTMLResponse(_html_result("DECLINED", f"Error de comunicación con el banco: {e}", "", 0, "", theme=theme, card_last4=""), status_code=502)
+
+    status = payment.status == PaymentStatus.APPROVED
+    msg = payment.response_message or "Declinada"
+    
+    if status:
+        msg = "¡Suscripción exitosa!"
+        from app.services.post_payment import handle_post_payment_actions, create_subscription_if_needed
+        import asyncio
+        asyncio.create_task(handle_post_payment_actions(payment))
+        await create_subscription_if_needed(payment, customer_id, db, card_expiration=expiration)
+
+    html = _html_result(
+        status="APPROVED" if status else "DECLINED",
+        message=msg,
+        payment_id=payment.id,
+        amount=payment.amount + payment.itbis,
+        iso=payment.iso_code,
+        theme=theme,
+        card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else selected_card.card_last4,
+        cardholder_name=payment.cardholder_name or getattr(selected_card, 'cardholder_name', ""),
+        cardholder_email=payment.cardholder_email or "",
+        card_saved=True,
     )
     resp = HTMLResponse(html)
     resp.headers["X-Frame-Options"] = "DENY"
