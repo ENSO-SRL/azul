@@ -514,7 +514,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 })();
 </script>
 </body>
-</html>    """.replace("THEME_CLASS", theme_class).replace("{error_block}", error_block).replace("{saved_cards_html}", saved_cards_html).replace("{cards_count}", str(cards_count)).replace("{prefill_email}", prefill_email).replace("{prefill_name}", prefill_name).replace("{customer_id}", customer_id)
+</html>    """.replace("THEME_CLASS", theme_class).replace("{error_block}", error_block).replace("{saved_cards_html}", saved_cards_html).replace("{cards_count}", str(cards_count)).replace("{prefill_email}", prefill_email).replace("{prefill_name}", prefill_name).replace("{customer_id}", customer_id).replace("{csrf_token}", csrf_token)
 
 
 def _html_3ds_method(payment_id: str, method_form: str, amount: int, theme: str = "light") -> str:
