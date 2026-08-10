@@ -213,22 +213,52 @@ async def test_integration_error_does_not_pause():
     assert updated.failed_attempts == 0  # not bumped for integration errors
 
 
+@pytest.mark.asyncio
+async def test_charge_due_subscriptions_expired_card():
+    """Si card_expiration venció, pausa directo sin cobrar."""
+    sub = _make_sub()
+    # Expired card: year 2020, month 12
+    sub.card_expiration = "202012"
+    
+    recurring_repo, payment_repo, txn_repo, gateway, session_factory = _build_mocks()
+    recurring_repo.list_due.return_value = [sub]
+    
+    with (
+        patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
+        patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
+        patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
+        patch("app.infrastructure.azul_gateway.AzulPaymentGateway",   return_value=gateway),
+    ):
+        await sched_module._charge_due_subscriptions(session_factory)
+        
+    # Gateway shouldn't be called
+    gateway.sale_mit.assert_not_called()
+    
+    # Repo should have paused the sub
+    recurring_repo.update.assert_awaited_once()
+    updated = recurring_repo.update.call_args[0][0]
+    assert updated.status == SubscriptionStatus.PAUSED
+    assert "Tarjeta vencida" in updated.last_failure_reason
+
+
 # ---------------------------------------------------------------------------
 # Idempotency key
 # ---------------------------------------------------------------------------
 
 def test_custom_order_id_deterministic():
-    """Same sub_id + failed_attempts must always yield the same order ID."""
-    oid1 = sched_module._build_custom_order_id("abc-123", 0)
-    oid2 = sched_module._build_custom_order_id("abc-123", 0)
+    """Same sub_id + failed_attempts + cycle must always yield the same order ID."""
+    oid1 = sched_module.build_custom_order_id("abc-123", 0, "202609")
+    oid2 = sched_module.build_custom_order_id("abc-123", 0, "202609")
     assert oid1 == oid2
 
 
 def test_custom_order_id_unique_per_attempt():
-    """Different attempt counts must yield different order IDs."""
-    oid0 = sched_module._build_custom_order_id("abc-123", 0)
-    oid1 = sched_module._build_custom_order_id("abc-123", 1)
+    """Different attempt counts or cycles must yield different order IDs."""
+    oid0 = sched_module.build_custom_order_id("abc-123", 0, "202609")
+    oid1 = sched_module.build_custom_order_id("abc-123", 1, "202609")
+    oid_cycle = sched_module.build_custom_order_id("abc-123", 0, "202610")
     assert oid0 != oid1
+    assert oid0 != oid_cycle
 
 
 # ---------------------------------------------------------------------------

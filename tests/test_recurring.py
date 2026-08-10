@@ -138,6 +138,51 @@ async def test_create_subscription_happy_path():
 
 
 @pytest.mark.asyncio
+async def test_create_subscription_with_trial():
+    """If trial_days > 0, it should tokenize without charging and start a trial."""
+    from app.domain.entities import SavedCard
+    saved_mock = SavedCard(
+        customer_id="CLI-002",
+        token="TRIAL-TOKEN",
+        card_brand="Visa",
+        card_last4="1234",
+        expiration="203012",
+        is_default=True
+    )
+    
+    gw_create_token = AsyncMock(return_value=saved_mock)
+    svc = _make_service(gateway_sale_recurring_cit=AsyncMock())
+    svc._gw.create_token = gw_create_token
+    svc._card_repo = MagicMock()
+    svc._card_repo.save = AsyncMock()
+
+    recurring, initial_payment = await svc.create_subscription(
+        customer_id="CLI-002",
+        amount=5000,
+        itbis=900,
+        card_number="4260550061841234",
+        expiration="203012",
+        cvc="123",
+        cardholder_name="Maria Gomez",
+        cardholder_email="maria@ejemplo.com",
+        trial_days=7,
+    )
+
+    # Gateway should have called create_token instead of sale_recurring_cit
+    gw_create_token.assert_awaited_once()
+    svc._gw.sale_recurring_cit.assert_not_called()  # type: ignore[attr-defined]
+
+    assert initial_payment is None
+    assert recurring.data_vault_token == "TRIAL-TOKEN"
+    assert recurring.trial_ends_at is not None
+    assert recurring.last_charged_at is None
+    assert recurring.status == SubscriptionStatus.ACTIVE
+
+    svc._card_repo.save.assert_awaited_once()
+    svc._recurring.save.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_create_subscription_declined_does_not_save():
     """A declined first charge should NOT persist a subscription."""
     payment = Payment(amount=5000, itbis=900, payment_type=PaymentType.RECURRING)
@@ -161,6 +206,7 @@ async def test_create_subscription_declined_does_not_save():
 
     # No subscription should be saved on decline
     svc._recurring.save.assert_not_awaited()  # type: ignore[attr-defined]
+    assert initial_payment is not None
     assert initial_payment.status == PaymentStatus.DECLINED
 
 
@@ -245,7 +291,7 @@ async def test_pause_subscription():
     sub = _make_recurring()
     svc = _make_service(saved_recurring=sub)
     paused = _make_recurring(status=SubscriptionStatus.PAUSED)
-    svc._recurring.pause.return_value = paused
+    svc._recurring.pause.return_value = paused  # type: ignore
 
     result = await svc.pause_subscription("sub-test-id")
 
@@ -260,7 +306,7 @@ async def test_resume_subscription():
     svc = _make_service(saved_recurring=sub)
     resumed = _make_recurring(status=SubscriptionStatus.ACTIVE)
     resumed.failed_attempts = 0
-    svc._recurring.resume.return_value = resumed
+    svc._recurring.resume.return_value = resumed  # type: ignore
 
     result = await svc.resume_subscription("sub-test-id")
 

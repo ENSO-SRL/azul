@@ -20,7 +20,7 @@ import os
 import uuid
 from typing import Dict
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Request, Cookie
 from fastapi.responses import HTMLResponse
 
 from app.infrastructure.azul_gateway import AzulPaymentGateway
@@ -340,7 +340,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
   const previewExp = document.getElementById('previewExp');
 
   cardInput.addEventListener('input', function() {
-    let v = this.value.replace(/\D/g,'').slice(0,16);
+    let v = this.value.replace(/\\D/g,'').slice(0,16);
     this.value = v.match(/.{1,4}/g)?.join(' ') || '';
     const masked = (v + '················').slice(0,16);
     previewPan.textContent = masked.match(/.{1,4}/g).join(' ');
@@ -351,7 +351,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
   });
 
   document.getElementById('cardExp').addEventListener('input', function() {
-    let v = this.value.replace(/\D/g,'');
+    let v = this.value.replace(/\\D/g,'');
     if(v.length >= 2) v = v.slice(0,2) + '/' + v.slice(2,4);
     this.value = v;
     previewExp.textContent = v || 'MM/AA';
@@ -490,8 +490,14 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
         input.type = 'hidden';
         input.name = 'card_id';
         input.value = selectedCardId;
-        
         form.appendChild(input);
+
+        var csrf = document.createElement('input');
+        csrf.type = 'hidden';
+        csrf.name = 'csrf_token';
+        csrf.value = document.getElementById('csrf_token').value;
+        form.appendChild(csrf);
+
         document.body.appendChild(form);
         form.submit();
       }, 500);
