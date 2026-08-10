@@ -9,9 +9,11 @@ DELETE /api/v1/tokens/{token}               → Remove a card from DataVault + l
 
 from __future__ import annotations
 
+from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.utils.token_utils import require_user_info
 
 from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
 from app.infrastructure.database import get_db
@@ -88,6 +90,27 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> TokenService:
 # NOTA: /status/{customer_id} y /by-email/{email} deben ir ANTES de
 # /{customer_id} para que FastAPI no interprete esos prefijos como customer_id.
 # ---------------------------------------------------------------------------
+
+@router.get(
+    "/",
+    response_model=list[SavedCardSafeResponse],
+    summary="Listar tarjetas del usuario logueado",
+    description="Devuelve las tarjetas guardadas del usuario autenticado vía cookie de sesión.",
+)
+@router.get(
+    "",
+    response_model=list[SavedCardSafeResponse],
+    include_in_schema=False,
+)
+async def get_my_cards(
+    user_data: dict[str, Any] = Depends(require_user_info),
+    svc: TokenService = Depends(_get_service),
+):
+    """Devuelve las tarjetas usando el email de la cookie de sesión."""
+    email = user_data["email"]
+    cards = await svc.list_cards(customer_id=email)
+    return [_to_safe_response(c) for c in cards]
+
 
 @router.get(
     "/status/{customer_id}",
