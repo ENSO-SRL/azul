@@ -234,6 +234,8 @@ async def create_subscription(
     except AzulIntegrationError as e:
         raise HTTPException(status_code=503, detail=f"Error de integración con Azul: {e}")
     except Exception as e:
+        if str(e).startswith("CONFLICT:"):
+            raise HTTPException(status_code=409, detail=str(e).replace("CONFLICT: ", ""))
         raise HTTPException(status_code=400, detail=str(e))
     resp = _to_sub_response(recurring)
     resp["initial_payment_id"] = initial_payment.id if initial_payment else ""

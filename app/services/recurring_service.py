@@ -101,6 +101,12 @@ class RecurringService:
         the subscription will NOT be saved yet — the caller must complete 3DS
         via /api/v1/3ds/ and then finalise.
         """
+        
+        # Guard: check if customer already has an active subscription for this plan
+        existing_subs = await self._recurring.list_by_customer(customer_id)
+        for sub in existing_subs:
+            if sub.status == SubscriptionStatus.ACTIVE and sub.description == description:
+                raise ValueError("CONFLICT: El usuario ya tiene una suscripción activa para este plan.")
 
         if trial_days > 0:
             try:
