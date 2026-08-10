@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database import Base
@@ -89,7 +89,15 @@ class SavedCardModel(Base):
 
 class RecurringPaymentModel(Base):
     __tablename__ = "recurring_payments"
-    __table_args__ = {"schema": "pagos"}
+    __table_args__ = (
+        Index(
+            "uq_active_sub_per_customer",
+            "customer_id",
+            unique=True,
+            postgresql_where=text("status = 'ACTIVE'")
+        ),
+        {"schema": "pagos"}
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     customer_id: Mapped[str] = mapped_column(String(100), nullable=False)

@@ -75,7 +75,7 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
 # HTML
 # ---------------------------------------------------------------------------
 
-def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0, theme: str = "dark", customer_id: str = "", prefill_email: str = "", prefill_name: str = "") -> str:
+def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0, theme: str = "dark", customer_id: str = "", prefill_email: str = "", prefill_name: str = "", csrf_token: str = "") -> str:
     error_block = f'<div class="error-msg"> {error}</div>' if error else ""
     theme_class = "theme-dark" if theme == "dark" else "theme-light"
     return """<!DOCTYPE html>
@@ -136,7 +136,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 
   <form id="payForm" class="payment-form" method="POST" action="/checkout/process" autocomplete="off">
     <!-- Anti-CSRF token -->
-    <input type="hidden" name="csrf_token" id="csrf_token"/>
+    <input type="hidden" name="csrf_token" id="csrf_token" value="{csrf_token}"/>
     <input type="hidden" name="customer_id" value="{customer_id}"/>
 
     <div class="form-group">
@@ -333,9 +333,6 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 <script>
 (function(){
   'use strict';
-
-  const csrf = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  document.getElementById('csrf_token').value = csrf;
 
   const cardInput = document.getElementById('cardNumber');
   const previewPan = document.getElementById('previewPan');
@@ -1217,7 +1214,6 @@ def _html_result_trial(
 @router.get("", response_class=HTMLResponse, include_in_schema=False)
 async def checkout_form(
     request: Request,
-    customer_id: str | None = None,
     theme: str | None = None,
     token_svc: TokenService = Depends(_get_token_svc),
     db: AsyncSession = Depends(get_db)
@@ -1235,6 +1231,9 @@ async def checkout_form(
     cards_count = 0
     prefill_email = ""
     prefill_name = ""
+    customer_id = ""
+    import secrets
+    csrf_token = secrets.token_hex(32)
 
     # ── Read user_info cookie (preferred) or access_token (legacy fallback) ──
     from app.utils.token_utils import decode_user_info_token
@@ -1274,8 +1273,7 @@ async def checkout_form(
 
         prefill_name = f"{name} {last_name}".strip()
         # Use user UUID (sub) as canonical customer_id for consistency across all pagos tables
-        if not customer_id:
-            customer_id = sub or prefill_email
+        customer_id = sub or prefill_email
         logger.warning(
             "[CHECKOUT] %s cookie decoded | sub=%s email=%s name=%s customer_id=%s",
             cookie_source,
@@ -1301,10 +1299,9 @@ async def checkout_form(
                 default_badge = '<div class="card-default-badge">Predeterminada</div>' if c.is_default else ''
                 default_attr = 'true' if c.is_default else 'false'
                 card_id = c.id if hasattr(c, 'id') else c.card_last4
-                token = c.token if hasattr(c, 'token') else ''
                 
                 saved_cards_html += f'''
-                <div class="saved-visual-card" data-card-id="{card_id}" data-token="{token}" data-default="{default_attr}" onclick="selectCard('{card_id}')">
+                <div class="saved-visual-card" data-card-id="{card_id}" data-default="{default_attr}" onclick="selectCard('{card_id}')">
                     <div class="card-bg-decoration"></div>
                     {default_badge}
                     <div class="svc-brand">
@@ -1347,8 +1344,17 @@ async def checkout_form(
         customer_id=customer_id or "",
         prefill_email=prefill_email,
         prefill_name=prefill_name,
+        csrf_token=csrf_token,
     )
     resp = HTMLResponse(html_content)
+    resp.set_cookie(
+        "checkout_csrf", 
+        csrf_token, 
+        httponly=True, 
+        secure=request.url.scheme == "https", 
+        samesite="lax", 
+        max_age=3600
+    )
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -1375,6 +1381,8 @@ async def process_checkout(
     browser_user_agent: str = Form(""),
     browser_java: str = Form("false"),
     customer_id: str = Form(""),
+    csrf_token: str = Form(""),
+    checkout_csrf: str = Cookie(None),
     svc: PaymentService = Depends(_get_service),
     token_svc: TokenService = Depends(_get_token_svc),
     db: AsyncSession = Depends(get_db),
@@ -1387,6 +1395,11 @@ async def process_checkout(
     - Usuario EXISTENTE: cobro inmediato normal (Sale + 3DS).
     """
     theme = _resolve_theme(request)
+    import secrets
+    if not checkout_csrf or not csrf_token or not secrets.compare_digest(csrf_token, checkout_csrf):
+        logger.warning("[CHECKOUT] ✗ Validación CSRF fallida en /checkout/process")
+        return HTMLResponse(_html_form("Error de seguridad (CSRF). Intenta de nuevo.", theme=theme), status_code=400)
+
     card_clean = card_number.replace(" ", "").strip()
     card_masked = f"{'*' * (len(card_clean) - 4)}{card_clean[-4:]}" if len(card_clean) >= 4 else "****"
 
@@ -1802,12 +1815,18 @@ async def process_checkout(
 async def pay_with_token(
     request: Request,
     card_id: str = Form(...),
+    csrf_token: str = Form(""),
+    checkout_csrf: str = Cookie(None),
     svc: PaymentService = Depends(_get_service),
     token_svc: TokenService = Depends(_get_token_svc),
     db: AsyncSession = Depends(get_db),
 ):
     """Procesa un cobro (CIT) usando una tarjeta previamente guardada (DataVault Token)."""
     theme = _resolve_theme(request)
+    import secrets
+    if not checkout_csrf or not csrf_token or not secrets.compare_digest(csrf_token, checkout_csrf):
+        logger.warning("[CHECKOUT] ✗ Validación CSRF fallida en /checkout/pay-with-token")
+        return HTMLResponse(_html_form("Error de seguridad (CSRF). Intenta de nuevo.", theme=theme), status_code=400)
     
     from app.utils.token_utils import decode_user_info_token
     user_info_token = request.cookies.get("user_info")
@@ -1867,12 +1886,15 @@ async def pay_with_token(
     
     try:
         payment, txn = await gateway.sale_cit(payment, token)
+        payment.data_vault_token = payment.data_vault_token or token
+        payment.card_number_masked = payment.card_number_masked or getattr(selected_card, 'card_last4', "")
+        
         from app.infrastructure.repo_impl import SQLPaymentRepository, SQLTransactionRepository
         await SQLPaymentRepository(db).save(payment)
         await SQLTransactionRepository(db).save(txn)
     except Exception as e:
         logger.error("[CHECKOUT] ✗ Error llamando a sale_cit: %s", e)
-        return HTMLResponse(_html_result("DECLINED", f"Error de comunicación con el banco: {e}", "", 0, "", theme=theme, card_last4=""), status_code=502)
+        return HTMLResponse(_html_result("DECLINED", "Ocurrió un error al procesar el pago. Por favor, intenta de nuevo más tarde.", "", 0, "", theme=theme, card_last4=""), status_code=502)
 
     status = payment.status == PaymentStatus.APPROVED
     msg = payment.response_message or "Declinada"

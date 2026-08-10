@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import httpx
+import sqlalchemy.exc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import (
@@ -314,6 +315,12 @@ async def create_subscription_if_needed(
         await repo.save(recurring)
         result.subscription_created = True
 
+    except sqlalchemy.exc.IntegrityError as exc:
+        logger.warning(
+            "[post-payment] ⚠ colisión al crear suscripción (ya existe una activa) | "
+            "customer_id=%s payment_id=%s",
+            customer_id, payment.id
+        )
     except Exception as exc:
         logger.error(
             "[post-payment] ✗ subscription creation FAILED | "
