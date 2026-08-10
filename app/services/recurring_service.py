@@ -35,12 +35,14 @@ from app.domain.entities import (
     PaymentStatus,
     PaymentType,
     RecurringPayment,
+    SavedCard,
     SubscriptionStatus,
 )
 from app.domain.repositories import (
     ConsentRepository,
     PaymentRepository,
     RecurringRepository,
+    SavedCardRepository,
     TransactionRepository,
 )
 from app.infrastructure.azul_gateway import AzulPaymentGateway
@@ -56,12 +58,14 @@ class RecurringService:
         txn_repo: TransactionRepository,
         gateway: AzulPaymentGateway,
         consent_repo: ConsentRepository | None = None,
+        card_repo: SavedCardRepository | None = None,
     ):
         self._payments   = payment_repo
         self._recurring  = recurring_repo
         self._txns       = txn_repo
         self._gw         = gateway
         self._consents   = consent_repo  # optional — only needed for consent endpoints
+        self._card_repo  = card_repo
 
     # ------------------------------------------------------------------
     # Subscription creation (CIT — first charge + tokenise)
@@ -81,7 +85,8 @@ class RecurringService:
         cardholder_email: str = "",
         auth_mode: str = "splitit",
         browser_info: dict[str, str] | None = None,
-    ) -> tuple[RecurringPayment, Payment]:
+        trial_days: int = 0,
+    ) -> tuple[RecurringPayment, Payment | None]:
         """First charge + tokenise the card via DataVault (CIT STANDING_ORDER).
 
         Returns the new subscription and the initial payment.
@@ -96,6 +101,49 @@ class RecurringService:
         the subscription will NOT be saved yet — the caller must complete 3DS
         via /api/v1/3ds/ and then finalise.
         """
+
+        if trial_days > 0:
+            try:
+                saved = await self._gw.create_token(
+                    card_number=card_number,
+                    expiration=expiration,
+                    cvc=cvc,
+                    customer_id=customer_id,
+                    cardholder_name=cardholder_name,
+                    cardholder_email=cardholder_email,
+                )
+            except ValueError as exc:
+                if "VALIDATION_ERROR:TrxType" in str(exc):
+                    raise ValueError("DataVault CREATE no está habilitado en sandbox. El trial requiere TrxType=CREATE habilitado en Azul.")
+                raise
+            
+            if self._card_repo:
+                local_card = SavedCard(
+                    customer_id=customer_id,
+                    token=saved.token,
+                    card_brand=saved.card_brand,
+                    card_last4=saved.card_last4,
+                    expiration=expiration,
+                    is_default=True
+                )
+                await self._card_repo.save(local_card)
+
+            now = datetime.now(timezone.utc)
+            recurring = RecurringPayment(
+                customer_id=customer_id,
+                amount=amount,
+                itbis=itbis,
+                frequency_days=frequency_days,
+                description=description,
+                card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
+                card_expiration=expiration,
+                data_vault_token=saved.token,
+                next_charge_at=now + timedelta(days=trial_days),
+                trial_ends_at=now + timedelta(days=trial_days),
+                last_charged_at=None,
+            )
+            await self._recurring.save(recurring)
+            return recurring, None
 
         payment = Payment(
             amount=amount,

@@ -59,6 +59,7 @@ class CreateSubscriptionRequest(BaseModel):
     expiration: str = Field(..., description="Expiración YYYYMM")
     cvc: str
     frequency_days: int = Field(30, description="Frecuencia de cobro en días")
+    trial_days: int = Field(0, description="Días de prueba gratuita (sin cobro inicial)")
     description: str = Field("", description="Descripción de la suscripción")
     currency: str    = Field("DOP", description="Moneda: DOP (peso dominicano) o USD")
     cardholder_name: str  = Field(..., description="Nombre del tarjetahabiente")
@@ -182,12 +183,14 @@ class TransactionHistoryItem(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _get_service(db: AsyncSession = Depends(get_db)) -> RecurringService:
+    from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
     return RecurringService(
         payment_repo=SQLPaymentRepository(db),
         recurring_repo=SQLRecurringRepository(db),
         txn_repo=SQLTransactionRepository(db),
         gateway=AzulPaymentGateway(),
         consent_repo=SQLConsentRepository(db),
+        card_repo=SQLSavedCardRepository(db),
     )
 
 
@@ -226,17 +229,18 @@ async def create_subscription(
             cardholder_email=body.cardholder_email,
             auth_mode=body.auth_mode,
             browser_info=browser_info_dict,
+            trial_days=body.trial_days,
         )
     except AzulIntegrationError as e:
         raise HTTPException(status_code=503, detail=f"Error de integración con Azul: {e}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     resp = _to_sub_response(recurring)
-    resp["initial_payment_id"] = initial_payment.id
+    resp["initial_payment_id"] = initial_payment.id if initial_payment else ""
     resp["initial_payment_status"] = (
         initial_payment.status.value
-        if hasattr(initial_payment.status, "value")
-        else initial_payment.status
+        if initial_payment and hasattr(initial_payment.status, "value")
+        else getattr(initial_payment, "status", "") if initial_payment else ""
     )
     return resp
 

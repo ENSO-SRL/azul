@@ -1737,7 +1737,7 @@ async def process_checkout(
                     customer_id=customer_id,
                     token=payment.data_vault_token or "",
                     card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
-                    expiration="",
+                    expiration=exp_azul,
                 )
                 trial_result = await create_trial_subscription(
                     customer_id=customer_id,
@@ -1769,7 +1769,7 @@ async def process_checkout(
         from app.services.post_payment import handle_post_payment_actions, create_subscription_if_needed
         import asyncio
         asyncio.create_task(handle_post_payment_actions(payment))
-        await create_subscription_if_needed(payment, customer_id, db)
+        await create_subscription_if_needed(payment, customer_id, db, card_expiration=exp_azul)
 
     html = _html_result(
         status=status,
@@ -1879,7 +1879,16 @@ async def continue_3ds(
         import asyncio
         asyncio.create_task(handle_post_payment_actions(payment))
         if payment.customer_id:
-            await create_subscription_if_needed(payment, payment.customer_id, db)
+            exp_db = ""
+            if payment.data_vault_token:
+                from sqlalchemy import select
+                from app.infrastructure.models import SavedCardModel
+                card_query = await db.execute(
+                    select(SavedCardModel.expiration)
+                    .where(SavedCardModel.token == payment.data_vault_token)
+                )
+                exp_db = card_query.scalar_one_or_none() or ""
+            await create_subscription_if_needed(payment, payment.customer_id, db, card_expiration=exp_db)
 
     return JSONResponse({"status": payment.status.value, "result_url": result_url})
 

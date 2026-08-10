@@ -197,6 +197,7 @@ async def create_subscription_if_needed(
     payment: Payment,
     customer_id: str,
     db: AsyncSession,
+    card_expiration: str = "",
 ) -> PostPaymentResult:
     """Create a subscription after a successful checkout payment.
 
@@ -271,7 +272,7 @@ async def create_subscription_if_needed(
                 data_vault_token=payment.data_vault_token,
                 card_brand=payment.card_number_masked[:4] if payment.card_number_masked else "",
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
-                card_expiration="",
+                card_expiration=card_expiration,
                 cardholder_email=payment.cardholder_email or "",
                 next_charge_at=trial_end,
                 last_charged_at=None,
@@ -295,7 +296,7 @@ async def create_subscription_if_needed(
                 data_vault_token=payment.data_vault_token,
                 card_brand=payment.card_number_masked[:4] if payment.card_number_masked else "",
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
-                card_expiration="",
+                card_expiration=card_expiration,
                 cardholder_email=payment.cardholder_email or "",
                 next_charge_at=now + timedelta(days=SUBSCRIPTION_FREQUENCY_DAYS),
                 last_charged_at=now,
