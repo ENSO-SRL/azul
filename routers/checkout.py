@@ -492,10 +492,11 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
         input.value = selectedCardId;
         form.appendChild(input);
 
+        var csrfEl = document.getElementById('csrf_token');
         var csrf = document.createElement('input');
         csrf.type = 'hidden';
         csrf.name = 'csrf_token';
-        csrf.value = document.getElementById('csrf_token').value;
+        csrf.value = csrfEl ? csrfEl.value : '';
         form.appendChild(csrf);
 
         document.body.appendChild(form);
