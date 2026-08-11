@@ -437,18 +437,59 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
     if (!cardToDeleteId) return;
     var deletingId = cardToDeleteId;
     var card = document.querySelector('[data-card-id="' + deletingId + '"]');
-    if (card) {
-      card.style.transition = 'opacity 0.3s, transform 0.3s';
-      card.style.opacity = '0';
-      card.style.transform = 'scale(0.92)';
-      setTimeout(function() { card.remove(); updateCardCount(); }, 300);
-    }
-    if (selectedCardId === deletingId) {
-      selectedCardId = null;
-      document.getElementById('paySavedBtn').style.display = 'none';
-    }
+    var customerId = document.querySelector('input[name="customer_id"]');
+    var email = customerId ? customerId.value : '';
     closeConfirm();
-    showFeedback('success', 'Tarjeta eliminada correctamente.');
+
+    if (!email) {
+      showFeedback('error', 'No se pudo identificar tu cuenta para eliminar la tarjeta.');
+      return;
+    }
+
+    // Deshabilitar la tarjeta visualmente mientras se procesa
+    if (card) {
+      card.style.opacity = '0.5';
+      card.style.pointerEvents = 'none';
+    }
+
+    // Llamar al backend para borrar la tarjeta de la base de datos
+    var formData = new FormData();
+    formData.append('card_id', deletingId);
+    formData.append('customer_id', email);
+
+    fetch('/checkout/delete-card', {
+      method: 'POST',
+      body: formData
+    }).then(function(resp) {
+      if (resp.ok || resp.status === 204) {
+        // Éxito: remover la tarjeta del DOM
+        if (card) {
+          card.style.transition = 'opacity 0.3s, transform 0.3s';
+          card.style.opacity = '0';
+          card.style.transform = 'scale(0.92)';
+          setTimeout(function() { card.remove(); updateCardCount(); }, 300);
+        }
+        if (selectedCardId === deletingId) {
+          selectedCardId = null;
+          document.getElementById('paySavedBtn').style.display = 'none';
+        }
+        showFeedback('success', 'Tarjeta eliminada correctamente.');
+      } else {
+        // Error del backend: restaurar visual
+        if (card) {
+          card.style.opacity = '1';
+          card.style.pointerEvents = '';
+        }
+        showFeedback('error', 'No se pudo eliminar la tarjeta. Intenta de nuevo.');
+      }
+    }).catch(function() {
+      // Error de red: restaurar visual
+      if (card) {
+        card.style.opacity = '1';
+        card.style.pointerEvents = '';
+      }
+      showFeedback('error', 'Error de conexión al eliminar la tarjeta.');
+    });
   };
 
   function updateCardCount() {
@@ -1366,6 +1407,34 @@ async def checkout_form(
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return resp
+
+@router.post("/delete-card", include_in_schema=False)
+async def checkout_delete_card(
+    request: Request,
+    card_id: str = Form(...),
+    customer_id: str = Form(""),
+    token_svc: TokenService = Depends(_get_token_svc),
+):
+    """Elimina una tarjeta guardada desde el checkout.
+
+    Protegido por cookie user_info (no requiere X-API-Key).
+    Verifica que el customer_id del form coincida con la sesión.
+    """
+    from fastapi.responses import JSONResponse
+
+    if not customer_id:
+        return JSONResponse({"error": "customer_id requerido"}, status_code=400)
+
+    try:
+        await token_svc.delete_card_by_id(card_id=card_id, customer_email=customer_id)
+        return JSONResponse({"ok": True}, status_code=200)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except PermissionError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=403)
+    except Exception as exc:
+        logger.error("[CHECKOUT] Error deleting card %s for %s: %s", card_id, customer_id, exc)
+        return JSONResponse({"error": "Error interno al eliminar la tarjeta"}, status_code=500)
 
 
 @router.post("/process", include_in_schema=False)
