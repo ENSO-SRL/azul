@@ -548,10 +548,16 @@ class PaymentService:
             if token and self._cards:
                 from app.domain.entities import SavedCard
                 card_customer = payment.customer_id or payment.cardholder_email or payment.id
+                # Try to get brand from existing card (saved during process_sale with real BIN)
+                existing_card = await self._cards.get_by_token(token)
+                brand = existing_card.card_brand if existing_card else ""
+                if not brand and payment.card_number_masked:
+                    from app.services.post_payment import _detect_brand_from_masked
+                    brand = _detect_brand_from_masked(payment.card_number_masked)
                 card = SavedCard(
                     customer_id=card_customer,
                     token=token,
-                    card_brand=payment.card_number_masked[:1] if payment.card_number_masked else "",
+                    card_brand=brand,
                     card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
                 )
                 # Auto-mark as default if first card
@@ -560,7 +566,7 @@ class PaymentService:
                     card.is_default = True
                 try:
                     await self._cards.save_if_not_exists(card)
-                    logger.warning("[SVC] ✓ token persisted (method step) | payment_id=%s customer=%s", payment.id, card_customer)
+                    logger.warning("[SVC] ✓ token persisted (method step) | payment_id=%s customer=%s brand=%s", payment.id, card_customer, brand)
                 except Exception as exc:
                     logger.error("[SVC] ✗ card save FAILED (method step) | payment_id=%s err=%s", payment.id, exc)
         elif iso_raw == IsoCode.THREE_DS_CHALLENGE:
@@ -723,10 +729,16 @@ class PaymentService:
             if token and self._cards:
                 from app.domain.entities import SavedCard
                 card_customer = payment.customer_id or payment.cardholder_email or payment.id
+                # Try to get brand from existing card (saved during process_sale with real BIN)
+                existing_card = await self._cards.get_by_token(token)
+                brand = existing_card.card_brand if existing_card else ""
+                if not brand and payment.card_number_masked:
+                    from app.services.post_payment import _detect_brand_from_masked
+                    brand = _detect_brand_from_masked(payment.card_number_masked)
                 card = SavedCard(
                     customer_id=card_customer,
                     token=token,
-                    card_brand=payment.card_number_masked[:1] if payment.card_number_masked else "",
+                    card_brand=brand,
                     card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
                 )
                 # Auto-mark as default if first card
@@ -736,10 +748,8 @@ class PaymentService:
                 try:
                     await self._cards.save_if_not_exists(card)
                     logger.warning(
-                        "[SVC] ✓ DataVaultToken persisted | payment_id=%s customer=%s token=%s",
-                        payment.id,
-                        card_customer,
-                        token[:8] + "…",
+                        "[SVC] ✓ DataVaultToken persisted | payment_id=%s customer=%s token=%s brand=%s",
+                        payment.id, card_customer, token[:8] + "…", brand,
                     )
                 except Exception as exc:
                     logger.error(
