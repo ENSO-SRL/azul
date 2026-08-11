@@ -33,6 +33,28 @@ from app.services.notification_service import send_notification
 
 logger = logging.getLogger(__name__)
 
+def _detect_brand_from_masked(masked: str) -> str:
+    """Detect card brand from masked card number or DataVault token prefix.
+
+    Visa BINs start with 4, Mastercard with 5 or 2.
+    If the masked number has visible BIN digits, use them.
+    Otherwise return empty string.
+    """
+    if not masked:
+        return ""
+    # Strip asterisks and spaces to find any visible digits
+    digits = masked.lstrip("*").lstrip(" ")
+    first_digit = ""
+    for ch in masked:
+        if ch.isdigit():
+            first_digit = ch
+            break
+    if first_digit == "4":
+        return "Visa"
+    elif first_digit in ("5", "2"):
+        return "Mastercard"
+    return ""
+
 _AUTH_API_BASE = os.getenv("AUTH_API_BASE_URL", "https://api.iamatlas.do")
 
 # Días de gracia para usuarios nuevos
@@ -272,7 +294,7 @@ async def create_subscription_if_needed(
                 frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
                 description="Membresía Atlas",
                 data_vault_token=payment.data_vault_token,
-                card_brand=payment.card_number_masked[:4] if payment.card_number_masked else "",
+                card_brand=_detect_brand_from_masked(payment.card_number_masked),
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
                 card_expiration=card_expiration,
                 cardholder_email=payment.cardholder_email or "",
@@ -296,7 +318,7 @@ async def create_subscription_if_needed(
                 frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
                 description="Membresía Atlas",
                 data_vault_token=payment.data_vault_token,
-                card_brand=payment.card_number_masked[:4] if payment.card_number_masked else "",
+                card_brand=_detect_brand_from_masked(payment.card_number_masked),
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
                 card_expiration=card_expiration,
                 cardholder_email=payment.cardholder_email or "",

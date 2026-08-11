@@ -39,6 +39,11 @@ router = APIRouter(prefix="/checkout", tags=["Checkout"])
 
 _APP_BASE = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
+# ── Membership pricing (centavos) ────────────────────────────────────────────
+# Centralizado para evitar inconsistencias entre /process y /pay-with-token.
+MEMBERSHIP_AMOUNT = int(os.getenv("MEMBERSHIP_AMOUNT", "200"))   # RD$2.00
+MEMBERSHIP_ITBIS  = int(os.getenv("MEMBERSHIP_ITBIS", "36"))     # RD$0.36
+
 # In-memory cache for 3DS challenge forms (keyed by payment_id)
 # The challenge page is fetched within seconds of being stored; no TTL needed.
 _challenge_cache: Dict[str, str] = {}
@@ -437,14 +442,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
     if (!cardToDeleteId) return;
     var deletingId = cardToDeleteId;
     var card = document.querySelector('[data-card-id="' + deletingId + '"]');
-    var customerId = document.querySelector('input[name="customer_id"]');
-    var email = customerId ? customerId.value : '';
     closeConfirm();
-
-    if (!email) {
-      showFeedback('error', 'No se pudo identificar tu cuenta para eliminar la tarjeta.');
-      return;
-    }
 
     // Deshabilitar la tarjeta visualmente mientras se procesa
     if (card) {
@@ -455,7 +453,6 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
     // Llamar al backend para borrar la tarjeta de la base de datos
     var formData = new FormData();
     formData.append('card_id', deletingId);
-    formData.append('customer_id', email);
 
     fetch('/checkout/delete-card', {
       method: 'POST',
@@ -1406,24 +1403,36 @@ async def checkout_form(
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     return resp
 
 @router.post("/delete-card", include_in_schema=False)
 async def checkout_delete_card(
     request: Request,
     card_id: str = Form(...),
-    customer_id: str = Form(""),
     token_svc: TokenService = Depends(_get_token_svc),
 ):
     """Elimina una tarjeta guardada desde el checkout.
 
     Protegido por cookie user_info (no requiere X-API-Key).
-    Verifica que el customer_id del form coincida con la sesión.
+    Extrae el customer_id del JWT de sesión para evitar manipulación.
     """
     from fastapi.responses import JSONResponse
+    from app.utils.token_utils import decode_user_info_token
+
+    # Extraer customer_id del JWT (NO del form, para evitar manipulación)
+    user_info_token = request.cookies.get("user_info")
+    user_data = decode_user_info_token(user_info_token, require_scope="user_info")
+    if user_data is None:
+        user_info_token = request.cookies.get("access_token")
+        user_data = decode_user_info_token(user_info_token)
+
+    customer_id = ""
+    if user_data:
+        customer_id = user_data.get("sub", "") or user_data.get("email", "")
 
     if not customer_id:
-        return JSONResponse({"error": "customer_id requerido"}, status_code=400)
+        return JSONResponse({"error": "Sesión expirada"}, status_code=401)
 
     try:
         await token_svc.delete_card_by_id(card_id=card_id, customer_email=customer_id)
@@ -1494,9 +1503,9 @@ async def process_checkout(
         logger.error("[CHECKOUT] ✗ Expiration parse failed: %r", expiration)
         return HTMLResponse(_html_form("Fecha de vencimiento inválida. Usa MM/AA.", theme=theme), status_code=422)
 
-    # Monto fijo de prueba: RD$2.00 + ITBIS RD$0.36 = RD$2.36
-    amount = 200
-    itbis  = 36
+    # Monto de membresía (centralizado en constantes del módulo)
+    amount = MEMBERSHIP_AMOUNT
+    itbis  = MEMBERSHIP_ITBIS
 
     # ── Detectar si es usuario nuevo ──────────────────────────────────────
     is_new_user = False
@@ -1865,8 +1874,10 @@ async def process_checkout(
             return resp
 
         from app.services.post_payment import handle_post_payment_actions, create_subscription_if_needed
-        import asyncio
-        asyncio.create_task(handle_post_payment_actions(payment))
+        try:
+            await handle_post_payment_actions(payment)
+        except Exception as _pp_exc:
+            logger.error("[CHECKOUT] ✗ post-payment actions FAILED | payment_id=%s err=%s", payment.id, _pp_exc)
         await create_subscription_if_needed(payment, customer_id, db, card_expiration=exp_azul)
 
     html = _html_result(
@@ -1921,7 +1932,7 @@ async def pay_with_token(
     logger.warning("[CHECKOUT] ▶ POST /pay-with-token | customer_id=%s card_id=%s", customer_id, card_id)
 
     cards = await token_svc.list_cards(customer_id)
-    selected_card = next((c for c in cards if (hasattr(c, 'id') and c.id == card_id) or (hasattr(c, 'card_last4') and c.card_last4 == card_id)), None)
+    selected_card = next((c for c in cards if hasattr(c, 'id') and c.id == card_id), None)
     
     if not selected_card or not hasattr(selected_card, 'token') or not selected_card.token:
         logger.error("[CHECKOUT] ✗ Tarjeta no encontrada o sin token: %s", card_id)
@@ -1944,8 +1955,8 @@ async def pay_with_token(
         logger.warning("[CHECKOUT] ⚠ Usuario ya tiene suscripción activa | customer_id=%s", customer_id)
         return HTMLResponse(_html_result("DECLINED", "El usuario ya tiene una suscripción activa.", "", 0, "", theme=theme, card_last4=""), status_code=409)
 
-    amount = 200
-    itbis = 36
+    amount = MEMBERSHIP_AMOUNT
+    itbis = MEMBERSHIP_ITBIS
     
     from app.domain.entities import Payment, PaymentType, PaymentStatus
     from app.infrastructure.azul_gateway import AzulPaymentGateway
@@ -1978,8 +1989,10 @@ async def pay_with_token(
     if status:
         msg = "¡Suscripción exitosa!"
         from app.services.post_payment import handle_post_payment_actions, create_subscription_if_needed
-        import asyncio
-        asyncio.create_task(handle_post_payment_actions(payment))
+        try:
+            await handle_post_payment_actions(payment)
+        except Exception as _pp_exc:
+            logger.error("[CHECKOUT] post-payment actions FAILED | payment_id=%s err=%s", payment.id, _pp_exc)
         await create_subscription_if_needed(payment, customer_id, db, card_expiration=expiration)
 
     html = _html_result(
@@ -2047,8 +2060,10 @@ async def continue_3ds(
             (redirect_url or "")[:80],
         )
         if challenge_form:
-            # Store in cache and redirect the browser — avoids document.write() Cloudflare block
+            # Store in Redis (survives deploys) + in-memory fallback
             _challenge_cache[payment.id] = challenge_form
+            from app.infrastructure.redis_client import store_challenge_form
+            await store_challenge_form(payment.id, challenge_form)
         return JSONResponse({
             "status": payment.status.value,
             "payment_id": payment.id,
@@ -2087,8 +2102,10 @@ async def continue_3ds(
                 )
 
         from app.services.post_payment import handle_post_payment_actions, create_subscription_if_needed
-        import asyncio
-        asyncio.create_task(handle_post_payment_actions(payment))
+        try:
+            await handle_post_payment_actions(payment)
+        except Exception as _pp_exc:
+            logger.error("[CHECKOUT] post-payment actions FAILED | payment_id=%s err=%s", payment.id, _pp_exc)
         if payment.customer_id:
             exp_db = ""
             if payment.data_vault_token:
@@ -2117,9 +2134,13 @@ async def challenge_page(
     giving the subsequent POST to CardinalCommerce a proper Referer header
     and making it look like a human-initiated action to Cloudflare's WAF.
     """
-    form_html = _challenge_cache.pop(payment_id, None)
+    # Try Redis first (survives deploys), then in-memory fallback
+    from app.infrastructure.redis_client import get_challenge_form
+    form_html = await get_challenge_form(payment_id)
     if not form_html:
-        logger.warning("[CHECKOUT] challenge page | payment_id=%s not in cache, checking DB", payment_id)
+        form_html = _challenge_cache.pop(payment_id, None)
+    if not form_html:
+        logger.warning("[CHECKOUT] challenge page | payment_id=%s not in Redis or memory cache, checking DB", payment_id)
         payment = await svc.get_payment(payment_id)
         if payment and payment.threeds_challenge_form:
             form_html = payment.threeds_challenge_form
