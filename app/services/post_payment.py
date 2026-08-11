@@ -252,6 +252,7 @@ async def create_subscription_if_needed(
         prior_cards = await db.execute(
             select(SavedCardModel.id).where(
                 SavedCardModel.customer_id == customer_id,
+                SavedCardModel.token != payment.data_vault_token,
             ).limit(1)
         )
         is_new_user = (

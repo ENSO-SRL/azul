@@ -154,19 +154,27 @@ async def get_user_payment_status(
     # ── 1. Datos del usuario desde public.users ──────────────────────────
     user_info = {"customer_id": customer_id, "email": "", "name": "", "found": False}
     try:
-        result = await db.execute(
-            text(
-                "SELECT email, name, last_name FROM public.users "
-                "WHERE uuid::text = :cid OR email = :cid LIMIT 1"
-            ),
-            {"cid": customer_id},
+        query_text = (
+            "SELECT email, name, last_name FROM public.users WHERE id = :cid_int LIMIT 1"
+            if customer_id.isdigit()
+            else "SELECT email, name, last_name FROM public.users WHERE uuid::text = :cid OR email = :cid LIMIT 1"
         )
+        params = {"cid_int": int(customer_id)} if customer_id.isdigit() else {"cid": customer_id}
+        
+        result = await db.execute(text(query_text), params)
         row = result.fetchone()
         if row:
             user_info["email"] = row[0] or ""
             user_info["name"] = f"{row[1] or ''} {row[2] or ''}".strip()
             user_info["found"] = True
-    except Exception:
+            
+            # Checkout guarda todo usando el email (JWT sub), por lo que debemos
+            # reasignar customer_id al email para que las consultas a pagos.* encuentren los datos.
+            if user_info["email"]:
+                customer_id = user_info["email"]
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("Error fetching user from public.users: %s", e)
         pass  # public.users might not be accessible — continue with pagos data
 
     # ── 2. Tarjetas guardadas ────────────────────────────────────────────
