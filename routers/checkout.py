@@ -80,10 +80,10 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
 # HTML
 # ---------------------------------------------------------------------------
 
-def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0, theme: str = "dark", customer_id: str = "", prefill_email: str = "", prefill_name: str = "", csrf_token: str = "") -> str:
+def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0, theme: str = "dark", customer_id: str = "", prefill_email: str = "", prefill_name: str = "", csrf_token: str = "", subscription_status_html: str = "") -> str:
     error_block = f'<div class="error-msg"> {error}</div>' if error else ""
     theme_class = "theme-dark" if theme == "dark" else "theme-light"
-    return """<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8"/>
@@ -93,8 +93,47 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
         content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="/public/css/checkout.css?v=3">
+  <style>
+    .sub-status-banner {{
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 24px;
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+    }}
+    .theme-light .sub-status-banner {{
+        background: #f8f9fa;
+        border-color: #e9ecef;
+    }}
+    .sub-status-icon {{
+        flex-shrink: 0;
+        margin-top: 2px;
+    }}
+    .sub-status-text {{
+        flex-grow: 1;
+    }}
+    .sub-status-title {{
+        font-weight: 600;
+        font-size: 14px;
+        margin-bottom: 4px;
+    }}
+    .sub-status-desc {{
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.7);
+        line-height: 1.4;
+    }}
+    .theme-light .sub-status-desc {{ color: #6c757d; }}
+    
+    .status-active .sub-status-icon {{ color: #10B981; }}
+    .status-trial .sub-status-icon {{ color: #3B82F6; }}
+    .status-paused .sub-status-icon {{ color: #EF4444; }}
+    .status-cancelled .sub-status-icon {{ color: #F59E0B; }}
+  </style>
 </head>
-<body class="THEME_CLASS">
+<body class="{theme_class}">
 
 <a href="https://www.iamatlas.do/profile" class="back-btn" id="backToProfile" title="Volver al perfil">
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -107,6 +146,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 <div class="checkout-layout">
   <!-- Columna izquierda: formulario de pago -->
   <div class="payment-container">
+    {subscription_status_html}
     <div class="header-section">
       <div class="icon-wrapper">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#DA007C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -144,7 +184,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
     <input type="hidden" name="csrf_token" id="csrf_token" value="{csrf_token}"/>
     <input type="hidden" name="customer_id" value="{customer_id}"/>
 
-    <div class="form-group">
+    <div class="form-group">  
       <label>Número de tarjeta</label>
       <div class="input-with-icon">
         <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
@@ -1325,7 +1365,57 @@ async def checkout_form(
             sub, prefill_email, prefill_name, customer_id,
         )
 
+    subscription_status_html = ""
     if customer_id:
+        try:
+            from sqlalchemy import select
+            from app.infrastructure.models import RecurringPaymentModel
+            from datetime import datetime, timezone
+            
+            now = datetime.now(timezone.utc)
+            subs_result = await db.execute(
+                select(RecurringPaymentModel)
+                .where(RecurringPaymentModel.customer_id == customer_id)
+                .order_by(RecurringPaymentModel.created_at.desc())
+                .limit(1)
+            )
+            sub = subs_result.scalar_one_or_none()
+            
+            if sub:
+                status_class = "status-cancelled"
+                icon_svg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>'
+                title = "Sin membresía activa"
+                desc = "Tu suscripción ha sido cancelada. Agrega una nueva tarjeta para reactivarla."
+                
+                if sub.status == "ACTIVE":
+                    if sub.trial_ends_at and sub.trial_ends_at > now:
+                        status_class = "status-trial"
+                        icon_svg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>'
+                        title = "Prueba gratuita activa"
+                        desc = f"Tu primer cobro de RD${sub.amount/100:,.2f} se realizará el {sub.trial_ends_at.strftime('%d/%m/%Y')}."
+                    else:
+                        status_class = "status-active"
+                        icon_svg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>'
+                        title = "Membresía activa"
+                        desc = f"Tu próximo cobro será el {sub.next_charge_at.strftime('%d/%m/%Y')} si aplica." if sub.next_charge_at else "Tu membresía está activa."
+                elif sub.status == "PAUSED":
+                    status_class = "status-paused"
+                    icon_svg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>'
+                    title = "Problema con tu pago"
+                    desc = "No pudimos procesar tu último cobro. Por favor, actualiza tu tarjeta para evitar la interrupción del servicio."
+                
+                subscription_status_html = f'''
+                <div class="sub-status-banner {status_class}">
+                    <div class="sub-status-icon">{icon_svg}</div>
+                    <div class="sub-status-text">
+                        <div class="sub-status-title">{title}</div>
+                        <div class="sub-status-desc">{desc}</div>
+                    </div>
+                </div>
+                '''
+        except Exception as e:
+            logger.error(f"[CHECKOUT] Error fetching subscription status: {e}")
+
         try:
             cards = await token_svc.list_cards(customer_id)
             cards_count = len(cards)
@@ -1390,6 +1480,7 @@ async def checkout_form(
         prefill_email=prefill_email,
         prefill_name=prefill_name,
         csrf_token=csrf_token,
+        subscription_status_html=subscription_status_html,
     )
     resp = HTMLResponse(html_content)
     resp.set_cookie(
