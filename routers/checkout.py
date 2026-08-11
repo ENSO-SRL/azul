@@ -83,7 +83,7 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
 def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0, theme: str = "dark", customer_id: str = "", prefill_email: str = "", prefill_name: str = "", csrf_token: str = "", subscription_status_html: str = "") -> str:
     error_block = f'<div class="error-msg"> {error}</div>' if error else ""
     theme_class = "theme-dark" if theme == "dark" else "theme-light"
-    return f"""<!DOCTYPE html>
+    return """<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8"/>
@@ -94,7 +94,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="/public/css/checkout.css?v=3">
   <style>
-    .sub-status-banner {{
+    .sub-status-banner {
         background: rgba(255, 255, 255, 0.05);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 12px;
@@ -103,37 +103,37 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
         display: flex;
         align-items: flex-start;
         gap: 12px;
-    }}
-    .theme-light .sub-status-banner {{
+    }
+    .theme-light .sub-status-banner {
         background: #f8f9fa;
         border-color: #e9ecef;
-    }}
-    .sub-status-icon {{
+    }
+    .sub-status-icon {
         flex-shrink: 0;
         margin-top: 2px;
-    }}
-    .sub-status-text {{
+    }
+    .sub-status-text {
         flex-grow: 1;
-    }}
-    .sub-status-title {{
+    }
+    .sub-status-title {
         font-weight: 600;
         font-size: 14px;
         margin-bottom: 4px;
-    }}
-    .sub-status-desc {{
+    }
+    .sub-status-desc {
         font-size: 13px;
         color: rgba(255, 255, 255, 0.7);
         line-height: 1.4;
-    }}
-    .theme-light .sub-status-desc {{ color: #6c757d; }}
+    }
+    .theme-light .sub-status-desc { color: #6c757d; }
     
-    .status-active .sub-status-icon {{ color: #10B981; }}
-    .status-trial .sub-status-icon {{ color: #3B82F6; }}
-    .status-paused .sub-status-icon {{ color: #EF4444; }}
-    .status-cancelled .sub-status-icon {{ color: #F59E0B; }}
+    .status-active .sub-status-icon { color: #10B981; }
+    .status-trial .sub-status-icon { color: #3B82F6; }
+    .status-paused .sub-status-icon { color: #EF4444; }
+    .status-cancelled .sub-status-icon { color: #F59E0B; }
   </style>
 </head>
-<body class="{theme_class}">
+<body class="THEME_CLASS">
 
 <a href="https://www.iamatlas.do/profile" class="back-btn" id="backToProfile" title="Volver al perfil">
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -593,7 +593,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 })();
 </script>
 </body>
-</html>    """.replace("THEME_CLASS", theme_class).replace("{error_block}", error_block).replace("{saved_cards_html}", saved_cards_html).replace("{cards_count}", str(cards_count)).replace("{prefill_email}", prefill_email).replace("{prefill_name}", prefill_name).replace("{customer_id}", customer_id).replace("{csrf_token}", csrf_token)
+</html>    """.replace("THEME_CLASS", theme_class).replace("{error_block}", error_block).replace("{subscription_status_html}", subscription_status_html).replace("{saved_cards_html}", saved_cards_html).replace("{cards_count}", str(cards_count)).replace("{prefill_email}", prefill_email).replace("{prefill_name}", prefill_name).replace("{customer_id}", customer_id).replace("{csrf_token}", csrf_token)
 
 
 def _html_3ds_method(payment_id: str, method_form: str, amount: int, theme: str = "light") -> str:
