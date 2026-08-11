@@ -548,17 +548,23 @@ class PaymentService:
             if token and self._cards:
                 from app.domain.entities import SavedCard
                 card_customer = payment.customer_id or payment.cardholder_email or payment.id
-                # Try to get brand from existing card (saved during process_sale with real BIN)
+                # Try to get brand from Azul response first
+                brand = data.get("DataVaultBrand", "")
                 existing_card = await self._cards.get_by_token(token)
-                brand = existing_card.card_brand if existing_card else ""
+                if not brand and existing_card:
+                    brand = existing_card.card_brand
                 if not brand and payment.card_number_masked:
                     from app.services.post_payment import _detect_brand_from_masked
                     brand = _detect_brand_from_masked(payment.card_number_masked)
+
+                exp = data.get("DataVaultExpiration", "")
+
                 card = SavedCard(
                     customer_id=card_customer,
                     token=token,
                     card_brand=brand,
                     card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                    expiration=exp,
                 )
                 # Auto-mark as default if first card
                 existing_cards = await self._cards.list_by_customer(card_customer)
@@ -729,17 +735,23 @@ class PaymentService:
             if token and self._cards:
                 from app.domain.entities import SavedCard
                 card_customer = payment.customer_id or payment.cardholder_email or payment.id
-                # Try to get brand from existing card (saved during process_sale with real BIN)
+                # Try to get brand from Azul response first
+                brand = data.get("DataVaultBrand", "")
                 existing_card = await self._cards.get_by_token(token)
-                brand = existing_card.card_brand if existing_card else ""
+                if not brand and existing_card:
+                    brand = existing_card.card_brand
                 if not brand and payment.card_number_masked:
                     from app.services.post_payment import _detect_brand_from_masked
                     brand = _detect_brand_from_masked(payment.card_number_masked)
+                
+                exp = data.get("DataVaultExpiration", "")
+
                 card = SavedCard(
                     customer_id=card_customer,
                     token=token,
                     card_brand=brand,
                     card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                    expiration=exp,
                 )
                 # Auto-mark as default if first card
                 existing_cards = await self._cards.list_by_customer(card_customer)

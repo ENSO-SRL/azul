@@ -639,6 +639,9 @@ class AzulPaymentGateway:
             "AzulOrderId": azul_order_id,
             "OriginalDate": original_date,
             "TrxType": "Void",
+            "CardNumber": "",
+            "Expiration": "",
+            "CVC": "",
         }
 
         async with self._build_client("splitit") as client:
