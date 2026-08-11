@@ -116,17 +116,46 @@ class TokenService:
         return unique
 
     async def delete_card_by_id(self, card_id: str, customer_email: str) -> None:
-        """Remove a card by its DB id. Verifies ownership by email.
+        """Remove a card by its DB id. Verifies ownership by customer_id or email.
 
-        Raises ValueError if card not found, PermissionError if email doesn't match.
+        The checkout passes the JWT `sub` (numeric ID like '173') as customer_email,
+        while the card may have been saved with the same ID or the user's email.
+        We accept both as valid ownership proof.
+
+        Raises ValueError if card not found, PermissionError if ownership doesn't match.
         """
         card = await self._cards.get_by_id(card_id)
         if not card:
             raise ValueError(f"Tarjeta con id {card_id!r} no encontrada.")
+        # Accept ownership if the caller's ID matches the card's customer_id
+        # (could be numeric ID like "173" or email — both are valid)
         if card.customer_id != customer_email:
-            raise PermissionError(
-                f"La tarjeta no pertenece al correo {customer_email!r}."
-            )
+            # Also check if the caller's email matches (for cross-format lookups)
+            # e.g., card saved with "173" but caller sends email, or vice versa
+            if self._db:
+                from sqlalchemy import text
+                try:
+                    result = await self._db.execute(
+                        text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
+                        {"cid": int(customer_email)} if customer_email.isdigit() else {"cid": -1},
+                    )
+                    row = result.fetchone()
+                    user_email = row[0] if row else None
+                    if not (user_email and card.customer_id in (customer_email, user_email)):
+                        raise PermissionError(
+                            f"La tarjeta no pertenece al usuario {customer_email!r}."
+                        )
+                except PermissionError:
+                    raise
+                except Exception:
+                    # DB lookup failed — fall back to strict check
+                    raise PermissionError(
+                        f"La tarjeta no pertenece al usuario {customer_email!r}."
+                    )
+            else:
+                raise PermissionError(
+                    f"La tarjeta no pertenece al usuario {customer_email!r}."
+                )
 
         try:
             await self._gw.delete_token(card.token)

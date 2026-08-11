@@ -1485,14 +1485,27 @@ async def process_checkout(
         logger.warning("[CHECKOUT] ✗ Validación CSRF fallida en /checkout/process")
         return HTMLResponse(_html_form("Error de seguridad (CSRF). Intenta de nuevo.", theme=theme), status_code=400)
 
+    # ── Extraer customer_id del JWT (no del form, para evitar manipulación) ──
+    from app.utils.token_utils import decode_user_info_token
+    user_info_token = request.cookies.get("user_info")
+    user_data = decode_user_info_token(user_info_token, require_scope="user_info")
+    if user_data is None:
+        user_info_token = request.cookies.get("access_token")
+        user_data = decode_user_info_token(user_info_token)
+
+    if user_data:
+        customer_id = user_data.get("sub", "") or user_data.get("email", "")
+    # else: keep the form-provided customer_id as fallback
+
+    if not customer_id:
+        return HTMLResponse(_html_form("Sesión expirada. Inicia sesión nuevamente.", theme=theme), status_code=401)
+
     card_clean = card_number.replace(" ", "").strip()
     card_masked = f"{'*' * (len(card_clean) - 4)}{card_clean[-4:]}" if len(card_clean) >= 4 else "****"
 
     logger.warning(
-        "[CHECKOUT] ▶ POST /checkout/process | card=%s exp=%s email=%s ua=%s ip=%s",
-        card_masked, expiration, cardholder_email,
-        request.headers.get("User-Agent", "")[:60],
-        request.headers.get("X-Forwarded-For", request.client.host if request.client else "?"),
+        "[CHECKOUT] ▶ POST /checkout/process | card=%s exp=%s email=%s customer_id=%s",
+        card_masked, expiration, cardholder_email, customer_id,
     )
 
     # Convertir expiración MM/AA → YYYYMM

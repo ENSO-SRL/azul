@@ -176,6 +176,27 @@ async def term_callback(
             except Exception as _pp_exc:
                 logger.error("[3ds] post-payment actions FAILED | payment_id=%s err=%s", payment_id, _pp_exc)
             
+            # ── Auto-void del Hold (liberar fondos retenidos) ─────────────
+            if payment.order_id and payment.order_id.startswith("HOLD-") and payment.azul_order_id:
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    from app.infrastructure.azul_gateway import AzulPaymentGateway
+                    _gw = AzulPaymentGateway()
+                    original_date = _dt.now(_tz.utc).strftime("%Y%m%d")
+                    await _gw.void(
+                        azul_order_id=payment.azul_order_id,
+                        original_date=original_date,
+                    )
+                    logger.warning(
+                        "[3ds] ✓ Hold auto-voided (term callback) | payment_id=%s azul_order=%s",
+                        payment_id, payment.azul_order_id,
+                    )
+                except Exception as void_exc:
+                    logger.error(
+                        "[3ds] ✗ Hold auto-void FAILED (term callback) | payment_id=%s err=%s",
+                        payment_id, void_exc,
+                    )
+
             # Recuperar expiración y marca si la tarjeta fue guardada en el flujo 3DS
             exp_db = ""
             if payment.customer_id and payment.data_vault_token:

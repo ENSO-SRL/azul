@@ -360,15 +360,14 @@ async def _purge_old_transactions(session_factory: async_sessionmaker) -> None:
 
     async with session_factory() as session:
         # 1. Delete transactions linked to old DECLINED payments
+        from sqlalchemy import select
+        declined_ids = select(PaymentModel.id).where(
+            PaymentModel.status == "DECLINED",
+            PaymentModel.created_at < cutoff,
+        )
         del_txns = await session.execute(
             delete(TransactionModel).where(
-                TransactionModel.payment_id.in_(
-                    text(
-                        "SELECT id FROM pagos.payments "
-                        "WHERE status = 'DECLINED' "
-                        f"AND created_at < '{cutoff.isoformat()}'"
-                    )
-                )
+                TransactionModel.payment_id.in_(declined_ids)
             )
         )
         # 2. Delete the old DECLINED payment records

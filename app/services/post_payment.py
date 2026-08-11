@@ -362,8 +362,8 @@ async def create_subscription_if_needed(
 async def create_trial_subscription(
     customer_id: str,
     saved_card,
-    amount: int,
-    itbis: int,
+    amount: int,       # DEPRECATED — ignored, uses MEMBERSHIP_AMOUNT
+    itbis: int,        # DEPRECATED — ignored, uses MEMBERSHIP_ITBIS
     cardholder_email: str,
     db: AsyncSession,
 ) -> PostPaymentResult:
@@ -371,6 +371,9 @@ async def create_trial_subscription(
 
     Called when a NEW user registers their card for the first time via
     checkout.  The card was tokenized via TrxType=CREATE (no charge).
+
+    The subscription always uses MEMBERSHIP_AMOUNT/MEMBERSHIP_ITBIS,
+    regardless of the amount/itbis parameters (which may be from a Hold).
 
     Creates a RecurringPayment with:
     - trial_ends_at = now + TRIAL_DAYS
@@ -408,8 +411,8 @@ async def create_trial_subscription(
 
         recurring = RecurringPayment(
             customer_id=customer_id,
-            amount=amount,
-            itbis=itbis,
+            amount=MEMBERSHIP_AMOUNT,
+            itbis=MEMBERSHIP_ITBIS,
             frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
             description="Membresía Atlas",
             data_vault_token=saved_card.token,
