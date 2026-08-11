@@ -269,7 +269,18 @@ async def create_subscription_if_needed(
             )
             return result
 
-        # ── Determine if user is new ──────────────────────────────────
+        # ── Check for existing active trial ───────────────────────────
+        now = datetime.now(timezone.utc)
+        
+        active_trial_query = await db.execute(
+            select(RecurringPaymentModel.trial_ends_at).where(
+                RecurringPaymentModel.customer_id == customer_id,
+                RecurringPaymentModel.trial_ends_at > now,
+            ).order_by(RecurringPaymentModel.trial_ends_at.desc()).limit(1)
+        )
+        remaining_trial_end = active_trial_query.scalar_one_or_none()
+
+        # ── Determine if user is completely new ───────────────────────
         # New = no prior subscriptions (any status) AND no saved cards
         prior_subs = await db.execute(
             select(RecurringPaymentModel.id).where(
@@ -287,9 +298,31 @@ async def create_subscription_if_needed(
             and prior_cards.scalar_one_or_none() is None
         )
 
-        now = datetime.now(timezone.utc)
-
-        if is_new_user:
+        if remaining_trial_end:
+            # Heredar período de gracia restante
+            recurring = RecurringPayment(
+                customer_id=customer_id,
+                amount=MEMBERSHIP_AMOUNT,
+                itbis=MEMBERSHIP_ITBIS,
+                frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
+                description="Membresía Atlas",
+                data_vault_token=payment.data_vault_token,
+                card_brand=_detect_brand_from_masked(payment.card_number_masked),
+                card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                card_expiration=card_expiration,
+                cardholder_email=payment.cardholder_email or "",
+                next_charge_at=remaining_trial_end,
+                last_charged_at=None,
+                trial_ends_at=remaining_trial_end,
+            )
+            result.in_trial = True
+            result.trial_ends_at = remaining_trial_end.isoformat()
+            logger.warning(
+                "[post-payment] ✓ EXISTING user — inheriting remaining trial | "
+                "customer_id=%s trial_ends=%s next_charge=%s",
+                customer_id, remaining_trial_end.isoformat(), remaining_trial_end.isoformat(),
+            )
+        elif is_new_user:
             # Trial: primer cobro real en TRIAL_DAYS días
             trial_end = now + timedelta(days=TRIAL_DAYS)
             recurring = RecurringPayment(
@@ -315,7 +348,7 @@ async def create_subscription_if_needed(
                 customer_id, trial_end.isoformat(), trial_end.isoformat(),
             )
         else:
-            # Existing user: cobro inmediato, próximo en 30 días
+            # Existing user (sin trial): cobro inmediato, próximo en 30 días
             recurring = RecurringPayment(
                 customer_id=customer_id,
                 amount=MEMBERSHIP_AMOUNT,
