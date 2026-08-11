@@ -70,7 +70,41 @@ def build_custom_order_id(sub_id: str, failed_attempts: int, cycle: str) -> str:
 
 
 async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None:
-    """Job body: charge all subscriptions that are due."""
+    """Job body: charge all subscriptions that are due.
+
+    Uses a Redis distributed lock to prevent double-charging when
+    multiple ECS tasks run simultaneously (e.g. during rolling deploys).
+    """
+    # ── Distributed lock ─────────────────────────────────────────────────
+    from app.infrastructure.redis_client import get_redis
+    redis = get_redis()
+    lock_key = "atlas:scheduler:charge_lock"
+    lock_ttl = 600  # 10 minutes — enough for the job to complete
+    acquired = False
+    if redis:
+        try:
+            acquired = await redis.set(lock_key, "1", nx=True, ex=lock_ttl)
+            if not acquired:
+                logger.info("[scheduler] Another instance holds the charge lock — skipping this run.")
+                return
+        except Exception as e:
+            logger.warning("[scheduler] Redis lock failed (%s) — proceeding without lock.", e)
+            acquired = True  # proceed anyway if Redis is down
+    else:
+        acquired = True  # no Redis configured, proceed normally
+
+    try:
+        await _charge_due_subscriptions_inner(session_factory)
+    finally:
+        if redis and acquired:
+            try:
+                await redis.delete(lock_key)
+            except Exception:
+                pass  # lock will auto-expire via TTL
+
+
+async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -> None:
+    """Inner charging logic — called under the distributed lock."""
     from app.infrastructure.repo_impl import (
         SQLPaymentRepository,
         SQLRecurringRepository,

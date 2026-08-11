@@ -61,6 +61,11 @@ _AUTH_API_BASE = os.getenv("AUTH_API_BASE_URL", "https://api.iamatlas.do")
 TRIAL_DAYS = 7
 SUBSCRIPTION_FREQUENCY_DAYS = 30
 
+# Monto real de la membresía (centavos) — para el cobro recurrente.
+# El Hold de verificación usa RD$1.00 pero la suscripción debe cobrar el precio real.
+MEMBERSHIP_AMOUNT = int(os.getenv("MEMBERSHIP_AMOUNT", "200"))   # RD$2.00
+MEMBERSHIP_ITBIS  = int(os.getenv("MEMBERSHIP_ITBIS", "36"))     # RD$0.36
+
 
 @dataclass
 class PostPaymentResult:
@@ -289,8 +294,8 @@ async def create_subscription_if_needed(
             trial_end = now + timedelta(days=TRIAL_DAYS)
             recurring = RecurringPayment(
                 customer_id=customer_id,
-                amount=payment.amount,
-                itbis=payment.itbis,
+                amount=MEMBERSHIP_AMOUNT,
+                itbis=MEMBERSHIP_ITBIS,
                 frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
                 description="Membresía Atlas",
                 data_vault_token=payment.data_vault_token,
@@ -313,8 +318,8 @@ async def create_subscription_if_needed(
             # Existing user: cobro inmediato, próximo en 30 días
             recurring = RecurringPayment(
                 customer_id=customer_id,
-                amount=payment.amount,
-                itbis=payment.itbis,
+                amount=MEMBERSHIP_AMOUNT,
+                itbis=MEMBERSHIP_ITBIS,
                 frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
                 description="Membresía Atlas",
                 data_vault_token=payment.data_vault_token,
