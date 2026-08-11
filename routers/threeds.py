@@ -131,6 +131,7 @@ async def term_callback(
     request: Request,
     payment_id: str = Query(..., description="ID del pago"),
     svc: PaymentService = Depends(_get_service),
+    db: AsyncSession = Depends(get_db),
 ):
     """ACS redirects here after the cardholder completes the challenge.
 
@@ -170,8 +171,21 @@ async def term_callback(
         # ── Post-payment actions (email + card check) ─────────────────────
         if status == "APPROVED":
             import asyncio
-            from app.services.post_payment import handle_post_payment_actions
+            from app.services.post_payment import handle_post_payment_actions, create_subscription_if_needed
             asyncio.create_task(handle_post_payment_actions(payment))
+            
+            # Recuperar expiración si la tarjeta fue guardada en el flujo 3DS
+            exp_db = ""
+            if payment.customer_id and payment.data_vault_token:
+                from sqlalchemy import select
+                from app.infrastructure.models import SavedCardModel
+                card_query = await db.execute(
+                    select(SavedCardModel.expiration)
+                    .where(SavedCardModel.token == payment.data_vault_token)
+                )
+                exp_db = card_query.scalar_one_or_none() or ""
+            
+            await create_subscription_if_needed(payment, payment.customer_id, db, card_expiration=exp_db)
 
     except Exception as exc:
         logger.error("[3ds] term: challenge error | payment_id=%s error=%s", payment_id, exc)
