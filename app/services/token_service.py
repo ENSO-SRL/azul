@@ -164,13 +164,22 @@ class TokenService:
             if self._db:
                 from sqlalchemy import text
                 try:
-                    result = await self._db.execute(
-                        text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
-                        {"cid": int(customer_email)} if customer_email.isdigit() else {"cid": -1},
-                    )
-                    row = result.fetchone()
-                    user_email = row[0] if row else None
-                    if not (user_email and card.customer_id in (customer_email, user_email)):
+                    if customer_email.isdigit():
+                        result = await self._db.execute(
+                            text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
+                            {"cid": int(customer_email)},
+                        )
+                        row = result.fetchone()
+                        cross_id = row[0] if row else None
+                    else:
+                        result = await self._db.execute(
+                            text("SELECT id FROM public.users WHERE email = :email LIMIT 1"),
+                            {"email": customer_email},
+                        )
+                        row = result.fetchone()
+                        cross_id = str(row[0]) if row else None
+                        
+                    if not (cross_id and card.customer_id == cross_id):
                         raise PermissionError(
                             f"La tarjeta no pertenece al usuario {customer_email!r}."
                         )
