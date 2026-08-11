@@ -106,9 +106,38 @@ class TokenService:
         If duplicate tokens exist (legacy bug), only the first occurrence
         (most recent) is kept.
         """
-        cards = await self._cards.list_by_customer(customer_id)
+        search_ids = {customer_id}
+        if self._db:
+            from sqlalchemy import text
+            try:
+                if customer_id.isdigit():
+                    result = await self._db.execute(
+                        text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
+                        {"cid": int(customer_id)},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        search_ids.add(row[0])
+                else:
+                    result = await self._db.execute(
+                        text("SELECT id FROM public.users WHERE email = :email LIMIT 1"),
+                        {"email": customer_id},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        search_ids.add(str(row[0]))
+            except Exception as e:
+                logger.warning(f"Error fetching user cross-reference in list_cards: {e}")
+
+        cards = []
+        for sid in search_ids:
+            cards.extend(await self._cards.list_by_customer(sid))
+            
+        # Deduplicate
         seen_tokens: set[str] = set()
         unique: list[SavedCard] = []
+        # Sort cards by created_at desc to maintain the expected order
+        cards.sort(key=lambda c: c.created_at, reverse=True)
         for c in cards:
             if c.token not in seen_tokens:
                 seen_tokens.add(c.token)
