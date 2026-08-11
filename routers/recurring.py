@@ -191,6 +191,7 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> RecurringService:
         gateway=AzulPaymentGateway(),
         consent_repo=SQLConsentRepository(db),
         card_repo=SQLSavedCardRepository(db),
+        db_session=db,
     )
 
 

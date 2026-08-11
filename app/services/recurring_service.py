@@ -29,6 +29,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.domain.entities import (
     ConsentRecord,
     Payment,
@@ -59,6 +61,7 @@ class RecurringService:
         gateway: AzulPaymentGateway,
         consent_repo: ConsentRepository | None = None,
         card_repo: SavedCardRepository | None = None,
+        db_session: AsyncSession | None = None,
     ):
         self._payments   = payment_repo
         self._recurring  = recurring_repo
@@ -66,6 +69,33 @@ class RecurringService:
         self._gw         = gateway
         self._consents   = consent_repo  # optional — only needed for consent endpoints
         self._card_repo  = card_repo
+        self._db         = db_session
+
+    async def _get_search_ids(self, customer_id: str) -> set[str]:
+        search_ids = {customer_id}
+        if self._db:
+            from sqlalchemy import text
+            try:
+                if customer_id.isdigit():
+                    result = await self._db.execute(
+                        text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
+                        {"cid": int(customer_id)},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        search_ids.add(row[0])
+                else:
+                    result = await self._db.execute(
+                        text("SELECT id FROM public.users WHERE email = :email LIMIT 1"),
+                        {"email": customer_id},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        search_ids.add(str(row[0]))
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Error fetching user cross-reference: {e}")
+        return search_ids
 
     # ------------------------------------------------------------------
     # Subscription creation (CIT — first charge + tokenise)
@@ -273,7 +303,18 @@ class RecurringService:
 
     async def list_subscriptions(self, customer_id: str) -> list[RecurringPayment]:
         """Return all subscriptions for a customer (any status)."""
-        return await self._recurring.list_by_customer(customer_id)
+        search_ids = await self._get_search_ids(customer_id)
+        subs = []
+        for sid in search_ids:
+            subs.extend(await self._recurring.list_by_customer(sid))
+            
+        seen_ids = set()
+        unique_subs = []
+        for s in subs:
+            if s.id not in seen_ids:
+                seen_ids.add(s.id)
+                unique_subs.append(s)
+        return unique_subs
 
     async def pause_subscription(self, recurring_id: str) -> RecurringPayment:
         """Pause an active subscription (no DataVault DELETE — card kept for resume)."""
@@ -404,7 +445,18 @@ class RecurringService:
         Trial (grace period):
         - trial_ends_at is set and in the future → in_trial = True
         """
-        subs = await self._recurring.list_by_customer(customer_id)
+        search_ids = await self._get_search_ids(customer_id)
+        subs = []
+        for sid in search_ids:
+            subs.extend(await self._recurring.list_by_customer(sid))
+            
+        seen_ids = set()
+        unique_subs = []
+        for s in subs:
+            if s.id not in seen_ids:
+                seen_ids.add(s.id)
+                unique_subs.append(s)
+        subs = unique_subs
 
         if not subs:
             return {

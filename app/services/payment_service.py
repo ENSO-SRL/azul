@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.domain.entities import (
     IsoCode,
     Payment,
@@ -37,11 +39,39 @@ class PaymentService:
         txn_repo: TransactionRepository,
         gateway: AzulPaymentGateway,
         card_repo: SavedCardRepository | None = None,
+        db_session: AsyncSession | None = None,
     ):
         self._payments = payment_repo
         self._txns     = txn_repo
         self._gw       = gateway
         self._cards    = card_repo
+        self._db       = db_session
+
+    async def _get_search_ids(self, customer_id: str) -> set[str]:
+        search_ids = {customer_id}
+        if self._db:
+            from sqlalchemy import text
+            try:
+                if customer_id.isdigit():
+                    result = await self._db.execute(
+                        text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
+                        {"cid": int(customer_id)},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        search_ids.add(row[0])
+                else:
+                    result = await self._db.execute(
+                        text("SELECT id FROM public.users WHERE email = :email LIMIT 1"),
+                        {"email": customer_id},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        search_ids.add(str(row[0]))
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Error fetching user cross-reference: {e}")
+        return search_ids
 
     # ------------------------------------------------------------------
     # One-time Sale
@@ -264,7 +294,11 @@ class PaymentService:
         if not self._cards:
             raise ValueError("SavedCardRepository is not configured")
             
-        cards = await self._cards.list_by_customer(customer_id)
+        search_ids = await self._get_search_ids(customer_id)
+        cards = []
+        for sid in search_ids:
+            cards.extend(await self._cards.list_by_customer(sid))
+
         if not cards:
             raise ValueError(f"No saved cards found for customer {customer_id}")
             

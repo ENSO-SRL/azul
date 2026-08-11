@@ -190,6 +190,7 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
         txn_repo=SQLTransactionRepository(db),
         gateway=AzulPaymentGateway(),
         card_repo=SQLSavedCardRepository(db),
+        db_session=db,
     )
 
 
