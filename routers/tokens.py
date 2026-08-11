@@ -153,6 +153,9 @@ async def get_user_payment_status(
 
     # ── 1. Datos del usuario desde public.users ──────────────────────────
     user_info = {"customer_id": customer_id, "email": "", "name": "", "found": False}
+    # original_cid preserva el customer_id original (p.ej. "173")
+    # para poder buscar datos guardados tanto con el ID como con el email.
+    original_cid = customer_id
     try:
         query_text = (
             "SELECT email, name, last_name FROM public.users WHERE id = :cid_int LIMIT 1"
@@ -167,20 +170,26 @@ async def get_user_payment_status(
             user_info["email"] = row[0] or ""
             user_info["name"] = f"{row[1] or ''} {row[2] or ''}".strip()
             user_info["found"] = True
-            
-            # Checkout guarda todo usando el email (JWT sub), por lo que debemos
-            # reasignar customer_id al email para que las consultas a pagos.* encuentren los datos.
-            if user_info["email"]:
-                customer_id = user_info["email"]
     except Exception as e:
         import logging
         logging.getLogger(__name__).error("Error fetching user from public.users: %s", e)
         pass  # public.users might not be accessible — continue with pagos data
 
+    # Build list of possible customer_id values to search with (OR condition).
+    # Checkout saves using JWT `sub` (e.g. "173"), but older flows used email.
+    # We search both to find all data regardless of which was used.
+    from sqlalchemy import or_
+    cid_values = {original_cid}
+    if user_info["email"]:
+        cid_values.add(user_info["email"])
+    cid_filter_cards = or_(*[SavedCardModel.customer_id == v for v in cid_values])
+    cid_filter_subs = or_(*[RecurringPaymentModel.customer_id == v for v in cid_values])
+    cid_filter_pays = or_(*[PaymentModel.customer_id == v for v in cid_values])
+
     # ── 2. Tarjetas guardadas ────────────────────────────────────────────
     cards_result = await db.execute(
         select(SavedCardModel)
-        .where(SavedCardModel.customer_id == customer_id)
+        .where(cid_filter_cards)
         .order_by(SavedCardModel.created_at.desc())
     )
     cards_raw = cards_result.scalars().all()
@@ -226,7 +235,7 @@ async def get_user_payment_status(
     # ── 3. Suscripciones ─────────────────────────────────────────────────
     subs_result = await db.execute(
         select(RecurringPaymentModel)
-        .where(RecurringPaymentModel.customer_id == customer_id)
+        .where(cid_filter_subs)
         .order_by(RecurringPaymentModel.created_at.desc())
     )
     subs_raw = subs_result.scalars().all()
@@ -258,7 +267,7 @@ async def get_user_payment_status(
     # ── 4. Últimos 10 pagos ──────────────────────────────────────────────
     payments_result = await db.execute(
         select(PaymentModel)
-        .where(PaymentModel.customer_id == customer_id)
+        .where(cid_filter_pays)
         .order_by(PaymentModel.created_at.desc())
         .limit(10)
     )
