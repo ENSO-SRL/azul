@@ -53,8 +53,8 @@ class BrowserInfoSchema(BaseModel):
 
 class CreateSubscriptionRequest(BaseModel):
     customer_id: str = Field(..., description="ID del cliente")
-    amount: int = Field(..., description="Monto recurrente en centavos")
-    itbis: int = Field(0, description="ITBIS en centavos")
+    amount: int = Field(..., ge=1, description="Monto recurrente en centavos (> 0)")
+    itbis: int = Field(0, ge=0, description="ITBIS en centavos (>= 0)")
     card_number: str = Field(..., description="Número de tarjeta (se tokeniza)")
     expiration: str = Field(..., description="Expiración YYYYMM")
     cvc: str

@@ -131,6 +131,38 @@ async def test_expired_card_pauses_without_charge():
 
 
 @pytest.mark.asyncio
+async def test_already_charged_cycle_does_not_recharge():
+    """Idempotency latch: if this cycle was already APPROVED, do not charge again.
+
+    Simulates a crash after charging but before advancing next_charge_at (sub still
+    "due"). The next run must advance the schedule WITHOUT hitting Azul again.
+    """
+    sub = _make_sub(card_expiration="203012")
+
+    recurring_repo, payment_repo, txn_repo, gateway, session_factory = _build_mocks()
+    recurring_repo.list_due.return_value = [sub]
+    # A payment for this deterministic cycle id already exists and was APPROVED.
+    payment_repo.get_by_id.return_value = _approved_payment()
+
+    with (
+        patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
+        patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
+        patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
+        patch("app.services.scheduler.AzulPaymentGateway",           return_value=gateway),
+    ):
+        await sched_module._charge_due_subscriptions(session_factory)
+
+    # Must NOT re-charge the card
+    gateway.sale_mit.assert_not_awaited()
+    # But must advance the schedule so the sub stops being "due"
+    recurring_repo.update.assert_awaited_once()
+    updated = recurring_repo.update.call_args[0][0]
+    assert updated.failed_attempts == 0
+    assert updated.next_charge_at is not None
+    assert updated.next_charge_at > datetime.now(timezone.utc)
+
+
+@pytest.mark.asyncio
 async def test_valid_card_proceeds_to_charge():
     """Scheduler must proceed to charge if card is not expired."""
     sub = _make_sub(card_expiration="203012")  # valid until Dec 2030
@@ -202,7 +234,7 @@ async def test_integration_error_does_not_pause():
         patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
         patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
         patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
-        patch("app.infrastructure.azul_gateway.AzulPaymentGateway",   return_value=gateway),
+        patch("app.services.scheduler.AzulPaymentGateway",           return_value=gateway),
     ):
         await sched_module._charge_due_subscriptions(session_factory)
 

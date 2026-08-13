@@ -232,6 +232,42 @@ async def test_charge_mit_happy_path():
 
 
 @pytest.mark.asyncio
+async def test_charge_mit_declined_does_not_advance_schedule():
+    """A declined MIT charge must NOT advance next_charge_at nor mark the cycle paid.
+
+    Regression: previously charge() advanced the schedule unconditionally, so a
+    declined card was treated as paid (customer got a free cycle) and no retry
+    was scheduled.
+    """
+    sub = _make_recurring()
+    original_next = sub.next_charge_at
+    original_last = sub.last_charged_at
+
+    declined = Payment(amount=5000, itbis=900, payment_type=PaymentType.RECURRING)
+    declined.status = PaymentStatus.DECLINED
+    declined.iso_code = IsoCode.DECLINED_FUNDS
+    declined.response_message = "Fondos insuficientes"
+    txn = _make_txn(declined.id)
+
+    mit = AsyncMock(return_value=(declined, txn))
+    svc = _make_service(gateway_sale_mit=mit, saved_recurring=sub)
+
+    result = await svc.charge("sub-test-id")
+
+    assert result.status == PaymentStatus.DECLINED
+    # Retry policy applied — attempt bumped, schedule NOT advanced a full cycle
+    assert sub.failed_attempts == 1
+    assert sub.status == SubscriptionStatus.ACTIVE  # not yet exhausted
+    assert sub.last_charged_at == original_last     # unchanged — nothing was paid
+    # next_charge_at moved to the short retry window (~1 day), not +30 days
+    now = datetime.now(timezone.utc)
+    assert sub.next_charge_at > now
+    assert sub.next_charge_at < now + timedelta(days=2)
+    assert sub.next_charge_at != original_next
+    svc._recurring.update.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_charge_raises_if_no_token():
     """Charge should raise ValueError if subscription has no DataVault token."""
     sub = _make_recurring(token="")
