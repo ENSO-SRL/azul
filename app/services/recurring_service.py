@@ -270,6 +270,12 @@ class RecurringService:
         )
 
         await self._recurring.save(recurring)
+
+        # Send the invoice/receipt for the FIRST charge (previously missing for
+        # subscriptions created via the API — only checkout sent a receipt).
+        from app.services.scheduler import notify_charge_outcome
+        await notify_charge_outcome(recurring, payment, invoice_number=payment.id)
+
         return recurring, payment
 
     # ------------------------------------------------------------------
@@ -293,6 +299,7 @@ class RecurringService:
         from app.services.scheduler import (
             build_custom_order_id,
             _handle_failure,
+            notify_charge_outcome,
             verify_prior_charge,
         )
 
@@ -367,6 +374,10 @@ class RecurringService:
             sub = _handle_failure(sub, reason)
 
         await self._recurring.update(sub)
+
+        # Notify the customer (success invoice / decline / pause) — same behaviour
+        # as the scheduler, so manual charges are no longer silent.
+        await notify_charge_outcome(sub, payment, invoice_number=custom_order_id)
 
         return payment
 

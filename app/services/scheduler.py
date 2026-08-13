@@ -101,6 +101,59 @@ async def verify_prior_charge(gateway: AzulPaymentGateway, custom_order_id: str)
     return None
 
 
+async def notify_charge_outcome(sub, payment, invoice_number: str) -> None:
+    """Send the customer email for a subscription charge result.
+
+    Single source of truth for charge notifications, used by the scheduler,
+    the manual charge endpoint, and the first charge at subscription creation
+    so all three behave identically:
+
+    - APPROVED            → billing receipt / invoice (via the user service).
+    - DECLINED + PAUSED   → a single 'subscription_paused' email (SES). The
+      per-attempt failure email is intentionally skipped here so a pause does
+      NOT send two emails for the same event.
+    - DECLINED (retrying) → 'charge failed' billing email (via the user service).
+
+    Never raises — the underlying senders swallow their own errors.
+    """
+    payment_method = f"Tarjeta terminada en {sub.card_last4}" if sub.card_last4 else None
+
+    if payment.status == PaymentStatus.APPROVED:
+        await enviar_correo_pago(
+            to_email=sub.cardholder_email,
+            success=True,
+            invoice_number=invoice_number,
+            total=sub.amount / 100,
+            currency=_currency_str(sub),
+            payment_method=payment_method,
+        )
+        return
+
+    reason = payment.response_message or f"IsoCode={payment.iso_code}"
+
+    if sub.status == SubscriptionStatus.PAUSED:
+        # Retries exhausted — one dedicated "paused" email, not the failure one.
+        await send_notification(
+            "subscription_paused",
+            to_email=sub.cardholder_email,
+            context=ctx_charge(
+                amount=sub.amount,
+                currency=_currency_str(sub),
+                description=sub.description or "Suscripción",
+                card_last4=sub.card_last4,
+                failure_reason=reason,
+            ),
+        )
+    else:
+        await enviar_correo_pago(
+            to_email=sub.cardholder_email,
+            success=False,
+            currency=_currency_str(sub),
+            payment_method=payment_method,
+            failure_reason=reason,
+        )
+
+
 async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None:
     """Job body: charge all subscriptions that are due.
 
@@ -185,6 +238,17 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                             sub.status = SubscriptionStatus.PAUSED
                             sub.last_failure_reason = f"Tarjeta vencida (exp. {sub.card_expiration})"
                             await recurring_repo.update(sub)
+                            # Tell the customer to update their card (was dead code before).
+                            await send_notification(
+                                "card_expired",
+                                to_email=sub.cardholder_email,
+                                context=ctx_charge(
+                                    amount=sub.amount,
+                                    currency=_currency_str(sub),
+                                    description=sub.description or "Suscripción",
+                                    card_last4=sub.card_last4,
+                                ),
+                            )
                             continue
                     except (ValueError, IndexError):
                         # Malformed expiration — log and proceed anyway
@@ -284,45 +348,13 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                         "[scheduler] sub=%s charged OK — iso=%s next=%s",
                         sub.id, payment.iso_code, sub.next_charge_at.date(),
                     )
-                    # Notify customer of successful charge via user service
-                    await enviar_correo_pago(
-                        to_email=sub.cardholder_email,
-                        success=True,
-                        invoice_number=custom_order_id,
-                        total=sub.amount / 100,
-                        currency=_currency_str(sub),
-                        payment_method=(
-                            f"Tarjeta terminada en {sub.card_last4}"
-                            if sub.card_last4 else None
-                        ),
-                    )
                 else:
-                    # Business decline — apply retry policy
+                    # Business decline — apply retry policy (may PAUSE the sub)
                     reason = payment.response_message or f"IsoCode={payment.iso_code}"
                     sub = _handle_failure(sub, reason)
-                    # Notify customer of failed charge via user service
-                    await enviar_correo_pago(
-                        to_email=sub.cardholder_email,
-                        success=False,
-                        currency=_currency_str(sub),
-                        payment_method=(
-                            f"Tarjeta terminada en {sub.card_last4}"
-                            if sub.card_last4 else None
-                        ),
-                        failure_reason=reason,
-                    )
-                    if sub.status == SubscriptionStatus.PAUSED:
-                        await send_notification(
-                            "subscription_paused",
-                            to_email=sub.cardholder_email,
-                            context=ctx_charge(
-                                amount=sub.amount,
-                                currency=_currency_str(sub),
-                                description=sub.description or "Suscripción",
-                                card_last4=sub.card_last4,
-                                failure_reason=reason,
-                            ),
-                        )
+
+                # Single notification path — one email per outcome (no duplicates).
+                await notify_charge_outcome(sub, payment, custom_order_id)
 
             except AzulIntegrationError as exc:
                 # Our bug — log as ERROR, do NOT apply retry (would loop)
