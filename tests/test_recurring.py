@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.domain.entities import (
     ConsentRecord,
+    Currency,
     IsoCode,
     Payment,
     PaymentStatus,
@@ -135,6 +136,82 @@ async def test_create_subscription_happy_path():
     # Repos should have persisted both the payment and the subscription
     svc._payments.save.assert_awaited_once()   # type: ignore[attr-defined]
     svc._recurring.save.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_persists_currency_usd():
+    """currency=USD must reach BOTH the first charge and the saved subscription.
+
+    Regression: the currency field was accepted by the API but silently dropped,
+    so a USD subscription was charged in DOP.
+    """
+    payment = _make_approved_payment("TOKEN-USD")
+    txn     = _make_txn(payment.id)
+
+    cit = AsyncMock(return_value=(payment, txn))
+    svc = _make_service(gateway_sale_recurring_cit=cit)
+
+    recurring, _ = await svc.create_subscription(
+        customer_id="CLI-USD",
+        amount=5000,
+        itbis=0,
+        card_number="4260550061845872",
+        expiration="203012",
+        cvc="123",
+        cardholder_name="Jane Doe",
+        cardholder_email="jane@ejemplo.com",
+        currency="USD",
+    )
+
+    # Subscription stores the currency
+    assert recurring.currency_code == Currency.USD
+    # First charge (Payment passed to the gateway) also carries USD
+    charged_payment = cit.call_args[0][0]
+    assert charged_payment.currency_code == Currency.USD
+    assert charged_payment.currency_code.azul_code == "US$"
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_rejects_unknown_currency():
+    """An unsupported currency must be rejected, not silently coerced to DOP."""
+    svc = _make_service(gateway_sale_recurring_cit=AsyncMock())
+
+    with pytest.raises(ValueError, match="currency"):
+        await svc.create_subscription(
+            customer_id="CLI-X",
+            amount=5000,
+            itbis=0,
+            card_number="4260550061845872",
+            expiration="203012",
+            cvc="123",
+            cardholder_name="X",
+            cardholder_email="x@x.com",
+            currency="EUR",
+        )
+
+
+@pytest.mark.asyncio
+async def test_charge_skips_when_azul_already_charged():
+    """If Azul already has an APPROVED tx for this order, do NOT charge again.
+
+    Covers the crash window where the card was charged at Azul but the local
+    payment row was never saved.
+    """
+    sub = _make_recurring()
+    svc = _make_service(saved_recurring=sub)
+    svc._payments.get_by_id = AsyncMock(return_value=None)          # no local record
+    svc._gw.verify_payment = AsyncMock(return_value={              # but Azul has it
+        "Found": True, "IsoCode": "00", "AzulOrderId": "AZ-EXISTING",
+    })
+    svc._gw.sale_mit = AsyncMock()
+
+    result = await svc.charge("sub-test-id")
+
+    svc._gw.sale_mit.assert_not_awaited()          # must NOT re-charge
+    assert result.status == PaymentStatus.APPROVED
+    assert result.azul_order_id == "AZ-EXISTING"
+    svc._payments.save.assert_awaited()            # audit record persisted
+    svc._recurring.update.assert_awaited_once()    # schedule advanced
 
 
 @pytest.mark.asyncio

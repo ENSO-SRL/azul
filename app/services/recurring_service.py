@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import (
     ConsentRecord,
+    Currency,
     Payment,
     PaymentStatus,
     PaymentType,
@@ -116,6 +117,7 @@ class RecurringService:
         auth_mode: str = "splitit",
         browser_info: dict[str, str] | None = None,
         trial_days: int = 0,
+        currency: str = "DOP",
     ) -> tuple[RecurringPayment, Payment | None]:
         """First charge + tokenise the card via DataVault (CIT STANDING_ORDER).
 
@@ -132,6 +134,13 @@ class RecurringService:
         via /api/v1/3ds/ and then finalise.
         """
         
+        # Resolve currency once — used by the first charge AND persisted on the
+        # subscription so every future MIT charge uses the same currency.
+        try:
+            curr = Currency((currency or "DOP").upper())
+        except ValueError:
+            raise ValueError(f"VALIDATION_ERROR:currency — moneda no soportada: {currency!r} (use DOP o USD)")
+
         # Guard: check if customer already has an active subscription for this plan
         existing_subs = await self._recurring.list_by_customer(customer_id)
         for sub in existing_subs:
@@ -171,6 +180,7 @@ class RecurringService:
                 itbis=itbis,
                 frequency_days=frequency_days,
                 description=description,
+                currency_code=curr,
                 card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
                 card_expiration=expiration,
                 data_vault_token=saved.token,
@@ -186,6 +196,7 @@ class RecurringService:
             itbis=itbis,
             payment_type=PaymentType.RECURRING,
             auth_mode=auth_mode,
+            currency_code=curr,
             cardholder_name=cardholder_name,
             cardholder_email=cardholder_email,
             initiated_by="cardholder",
@@ -208,6 +219,7 @@ class RecurringService:
                 itbis=itbis,
                 frequency_days=frequency_days,
                 description=description,
+                currency_code=curr,
                 card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
                 card_expiration=expiration,
             )
@@ -221,6 +233,7 @@ class RecurringService:
                 itbis=itbis,
                 frequency_days=frequency_days,
                 description=description,
+                currency_code=curr,
                 card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
                 card_expiration=expiration,
             )
@@ -235,6 +248,7 @@ class RecurringService:
             itbis=itbis,
             frequency_days=frequency_days,
             description=description,
+            currency_code=curr,
             data_vault_token=token,
             card_brand=payment.card_number_masked[:4] if payment.card_number_masked else "",
             card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
@@ -265,7 +279,11 @@ class RecurringService:
         if not sub.data_vault_token:
             raise ValueError(f"Subscription {recurring_id} has no DataVault token")
 
-        from app.services.scheduler import build_custom_order_id, _handle_failure
+        from app.services.scheduler import (
+            build_custom_order_id,
+            _handle_failure,
+            verify_prior_charge,
+        )
 
         # Full-date cycle key (YYYYMMDD) so two charges in the same calendar month
         # do not collide on the same CustomOrderId (see scheduler for rationale).
@@ -276,6 +294,37 @@ class RecurringService:
         )
         custom_order_id = build_custom_order_id(sub.id, sub.failed_attempts, cycle)
 
+        # ── Idempotency guard (same two layers as the scheduler) ─────────────
+        # Prevents a double charge if this cycle was already paid (e.g. the
+        # scheduler and a manual charge race, or a retry after a crash).
+        existing = await self._payments.get_by_id(custom_order_id)
+        db_ok = existing is not None and existing.status == PaymentStatus.APPROVED
+        azul_prior = None if db_ok else await verify_prior_charge(self._gw, custom_order_id)
+        if db_ok or azul_prior is not None:
+            now = datetime.now(timezone.utc)
+            sub.failed_attempts = 0
+            sub.last_failure_reason = ""
+            sub.last_charged_at = existing.created_at if existing is not None else now
+            sub.next_charge_at = now + timedelta(days=sub.frequency_days)
+            await self._recurring.update(sub)
+            if existing is not None:
+                return existing
+            recovered = Payment(
+                id=custom_order_id, order_id=f"sub-{sub.id}",
+                amount=sub.amount, itbis=sub.itbis,
+                payment_type=PaymentType.RECURRING, auth_mode="splitit",
+                initiated_by="merchant", currency_code=sub.currency_code,
+            )
+            recovered.status = PaymentStatus.APPROVED
+            recovered.iso_code = "00"
+            recovered.azul_order_id = (
+                azul_prior.get("AzulOrderId") or azul_prior.get("AZULOrderId", "")
+            )
+            recovered.authorization_code = azul_prior.get("AuthorizationCode", "")
+            recovered.response_message = "Recuperado vía verify_payment (idempotencia)"
+            await self._payments.save(recovered)
+            return recovered
+
         payment = Payment(
             id=custom_order_id,
             order_id=f"sub-{sub.id}",
@@ -284,6 +333,7 @@ class RecurringService:
             payment_type=PaymentType.RECURRING,
             auth_mode="splitit",
             initiated_by="merchant",
+            currency_code=sub.currency_code,
         )
 
         # MIT — user not present, use stored token
@@ -388,7 +438,7 @@ class RecurringService:
             to_email=sub.cardholder_email,
             context=ctx_charge(
                 amount=sub.amount,
-                currency=getattr(sub, "currency_code", "DOP"),
+                currency=sub.currency_code.value if hasattr(sub.currency_code, "value") else "DOP",
                 description=sub.description or "Suscripción",
                 card_last4=sub.card_last4,
             ),
