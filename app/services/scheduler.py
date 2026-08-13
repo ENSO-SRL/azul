@@ -88,10 +88,17 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
                 logger.info("[scheduler] Another instance holds the charge lock — skipping this run.")
                 return
         except Exception as e:
-            logger.warning("[scheduler] Redis lock failed (%s) — proceeding without lock.", e)
-            acquired = True  # proceed anyway if Redis is down
+            # FAIL-CLOSED: si el lock no se puede evaluar no cobramos. Perder una
+            # corrida horaria es preferible a un doble cobro cuando hay varias
+            # instancias ECS activas (ej. durante un rolling deploy) y Redis caído.
+            # La siguiente corrida reintentará cuando Redis se recupere.
+            logger.error(
+                "[scheduler] Redis lock unavailable (%s) — SKIPPING this run to avoid "
+                "concurrent double-charging. Will retry next cycle.", e,
+            )
+            return
     else:
-        acquired = True  # no Redis configured, proceed normally
+        acquired = True  # no Redis configured, proceed normally (single instance)
 
     try:
         await _charge_due_subscriptions_inner(session_factory)
@@ -154,9 +161,35 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                             sub.id, sub.card_expiration,
                         )
 
-                # Build idempotent CustomOrderId — same on retry, unique per cycle+attempt
-                cycle = sub.next_charge_at.strftime("%Y%m") if sub.next_charge_at else datetime.now(timezone.utc).strftime("%Y%m")
+                # Build idempotent CustomOrderId — same on retry, unique per billing
+                # date + attempt. IMPORTANT: the cycle key uses the full date
+                # (YYYYMMDD), not the calendar month, so two 30-day charges that fall
+                # in the same month (e.g. Jan 1 + Jan 31) do NOT collide on the same id.
+                cycle = (
+                    sub.next_charge_at.strftime("%Y%m%d")
+                    if sub.next_charge_at
+                    else datetime.now(timezone.utc).strftime("%Y%m%d")
+                )
                 custom_order_id = build_custom_order_id(sub.id, sub.failed_attempts, cycle)
+
+                # ── Idempotency latch ────────────────────────────────────────
+                # If a payment with this deterministic id was already APPROVED
+                # (e.g. the process crashed after charging but before advancing
+                # next_charge_at, leaving the sub "due"), do NOT charge again —
+                # just advance the schedule. Prevents double-charging the client.
+                existing = await payment_repo.get_by_id(custom_order_id)
+                if existing is not None and existing.status == PaymentStatus.APPROVED:
+                    logger.warning(
+                        "[scheduler] sub=%s already charged this cycle (order=%s) — "
+                        "advancing schedule WITHOUT re-charging.",
+                        sub.id, custom_order_id,
+                    )
+                    sub.failed_attempts = 0
+                    sub.last_failure_reason = ""
+                    sub.last_charged_at = existing.created_at or datetime.now(timezone.utc)
+                    sub.next_charge_at = datetime.now(timezone.utc) + timedelta(days=sub.frequency_days)
+                    await recurring_repo.update(sub)
+                    continue
 
                 payment = Payment(
                     id=custom_order_id,  # use as CustomOrderId for Azul idempotency

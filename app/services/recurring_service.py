@@ -265,9 +265,15 @@ class RecurringService:
         if not sub.data_vault_token:
             raise ValueError(f"Subscription {recurring_id} has no DataVault token")
 
-        from app.services.scheduler import build_custom_order_id
-        
-        cycle = sub.next_charge_at.strftime("%Y%m") if sub.next_charge_at else datetime.now(timezone.utc).strftime("%Y%m")
+        from app.services.scheduler import build_custom_order_id, _handle_failure
+
+        # Full-date cycle key (YYYYMMDD) so two charges in the same calendar month
+        # do not collide on the same CustomOrderId (see scheduler for rationale).
+        cycle = (
+            sub.next_charge_at.strftime("%Y%m%d")
+            if sub.next_charge_at
+            else datetime.now(timezone.utc).strftime("%Y%m%d")
+        )
         custom_order_id = build_custom_order_id(sub.id, sub.failed_attempts, cycle)
 
         payment = Payment(
@@ -286,10 +292,19 @@ class RecurringService:
         await self._payments.save(payment)
         await self._txns.save(txn)
 
-        # Update subscription schedule
         now = datetime.now(timezone.utc)
-        sub.last_charged_at = now
-        sub.next_charge_at  = now + timedelta(days=sub.frequency_days)
+        if payment.status == PaymentStatus.APPROVED:
+            # Only advance the billing schedule on a successful charge.
+            sub.failed_attempts = 0
+            sub.last_failure_reason = ""
+            sub.last_charged_at = now
+            sub.next_charge_at  = now + timedelta(days=sub.frequency_days)
+        else:
+            # Declined — apply the same retry/backoff policy as the scheduler.
+            # Do NOT advance next_charge_at or mark the cycle as paid.
+            reason = payment.response_message or f"IsoCode={payment.iso_code}"
+            sub = _handle_failure(sub, reason)
+
         await self._recurring.update(sub)
 
         return payment
