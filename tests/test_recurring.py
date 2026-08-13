@@ -328,6 +328,69 @@ async def test_create_subscription_declined_does_not_save():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_create_subscription_sends_first_charge_receipt():
+    """The first successful charge must send a billing receipt (was missing)."""
+    payment = _make_approved_payment("TOK-RCPT")
+    cit = AsyncMock(return_value=(payment, _make_txn(payment.id)))
+    svc = _make_service(gateway_sale_recurring_cit=cit)
+
+    mock_enviar = AsyncMock(return_value=True)
+    with patch("app.services.scheduler.enviar_correo_pago", mock_enviar):
+        await svc.create_subscription(
+            customer_id="CLI-1", amount=59000, itbis=None,
+            card_number="4260550061845872", expiration="203012", cvc="123",
+            cardholder_name="Ana", cardholder_email="ana@ejemplo.com",
+        )
+
+    mock_enviar.assert_awaited_once()
+    kw = mock_enviar.call_args.kwargs
+    assert kw["success"] is True
+    assert kw["to_email"] == "ana@ejemplo.com"
+    assert kw["total"] == 590.0
+
+
+@pytest.mark.asyncio
+async def test_manual_charge_sends_receipt_on_success():
+    """Manual charge must notify the customer on success (was silent)."""
+    sub = _make_recurring()
+    sub.cardholder_email = "c@e.com"
+    payment = _make_approved_payment()
+    mit = AsyncMock(return_value=(payment, _make_txn(payment.id)))
+    svc = _make_service(gateway_sale_mit=mit, saved_recurring=sub)
+    svc._payments.get_by_id = AsyncMock(return_value=None)
+    svc._gw.verify_payment = AsyncMock(return_value={"Found": False})
+
+    mock_enviar = AsyncMock(return_value=True)
+    with patch("app.services.scheduler.enviar_correo_pago", mock_enviar):
+        await svc.charge("sub-test-id")
+
+    mock_enviar.assert_awaited_once()
+    assert mock_enviar.call_args.kwargs["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_manual_charge_sends_failure_email_on_decline():
+    """Manual charge must notify the customer on decline too (was silent)."""
+    sub = _make_recurring()
+    sub.cardholder_email = "c@e.com"
+    declined = Payment(amount=5000, itbis=900, payment_type=PaymentType.RECURRING)
+    declined.status = PaymentStatus.DECLINED
+    declined.iso_code = IsoCode.DECLINED_FUNDS
+    declined.response_message = "Fondos insuficientes"
+    mit = AsyncMock(return_value=(declined, _make_txn(declined.id)))
+    svc = _make_service(gateway_sale_mit=mit, saved_recurring=sub)
+    svc._payments.get_by_id = AsyncMock(return_value=None)
+    svc._gw.verify_payment = AsyncMock(return_value={"Found": False})
+
+    mock_enviar = AsyncMock(return_value=True)
+    with patch("app.services.scheduler.enviar_correo_pago", mock_enviar):
+        await svc.charge("sub-test-id")
+
+    mock_enviar.assert_awaited_once()
+    assert mock_enviar.call_args.kwargs["success"] is False
+
+
+@pytest.mark.asyncio
 async def test_charge_mit_happy_path():
     """MIT charge should succeed and advance next_charge_at."""
     sub = _make_recurring()
