@@ -172,6 +172,42 @@ async def test_create_subscription_persists_currency_usd():
 
 
 @pytest.mark.asyncio
+async def test_create_subscription_auto_derives_itbis_from_total():
+    """When itbis is omitted, the ITBIS included in the total is derived (18%)."""
+    payment = _make_approved_payment("TOKEN-TAX")
+    cit = AsyncMock(return_value=(payment, _make_txn(payment.id)))
+    svc = _make_service(gateway_sale_recurring_cit=cit)
+
+    recurring, _ = await svc.create_subscription(
+        customer_id="CLI-TAX",
+        amount=59000,          # RD$590 total, ITBIS incluido
+        itbis=None,            # omitido → autocalcular
+        card_number="4260550061845872",
+        expiration="203012",
+        cvc="123",
+        cardholder_name="Ana",
+        cardholder_email="ana@ejemplo.com",
+    )
+
+    assert recurring.amount == 59000          # se cobra el total tal cual
+    assert recurring.itbis == 9000            # RD$90 desglosado del total
+    charged = cit.call_args[0][0]
+    assert charged.amount == 59000 and charged.itbis == 9000
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_rejects_itbis_greater_than_amount():
+    """An explicit ITBIS larger than the total is rejected."""
+    svc = _make_service(gateway_sale_recurring_cit=AsyncMock())
+    with pytest.raises(ValueError, match="itbis"):
+        await svc.create_subscription(
+            customer_id="CLI-Z", amount=5000, itbis=6000,
+            card_number="4260550061845872", expiration="203012", cvc="123",
+            cardholder_name="Z", cardholder_email="z@z.com",
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_subscription_rejects_unknown_currency():
     """An unsupported currency must be rejected, not silently coerced to DOP."""
     svc = _make_service(gateway_sale_recurring_cit=AsyncMock())

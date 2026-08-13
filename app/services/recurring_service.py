@@ -106,7 +106,7 @@ class RecurringService:
         self,
         customer_id: str,
         amount: int,
-        itbis: int,
+        itbis: int | None,
         card_number: str,
         expiration: str,
         cvc: str,
@@ -140,6 +140,17 @@ class RecurringService:
             curr = Currency((currency or "DOP").upper())
         except ValueError:
             raise ValueError(f"VALIDATION_ERROR:currency — moneda no soportada: {currency!r} (use DOP o USD)")
+
+        # ITBIS: 'amount' es el TOTAL a cobrar (impuesto incluido). Si no se
+        # provee itbis explícito, se desglosa automáticamente la porción de ITBIS
+        # contenida en el total. Azul cobra 'amount' — el itbis es informativo.
+        from app.utils.tax import included_itbis
+        if itbis is None:
+            itbis = included_itbis(amount)
+        elif itbis > amount:
+            raise ValueError(
+                f"VALIDATION_ERROR:itbis — el ITBIS ({itbis}) no puede exceder el total ({amount})."
+            )
 
         # Guard: check if customer already has an active subscription for this plan
         existing_subs = await self._recurring.list_by_customer(customer_id)
