@@ -53,8 +53,16 @@ class BrowserInfoSchema(BaseModel):
 
 class CreateSubscriptionRequest(BaseModel):
     customer_id: str = Field(..., description="ID del cliente")
-    amount: int = Field(..., ge=1, description="Monto recurrente en centavos (> 0)")
-    itbis: int = Field(0, ge=0, description="ITBIS en centavos (>= 0)")
+    amount: int = Field(..., ge=1, description="Total a cobrar en centavos, ITBIS incluido (ej. 59000 = RD$590)")
+    itbis: int | None = Field(
+        None,
+        ge=0,
+        description=(
+            "ITBIS en centavos (porción incluida en 'amount'). "
+            "Si se omite, se calcula automáticamente como el 18% incluido en 'amount'. "
+            "Envía 0 explícito para suscripciones exentas."
+        ),
+    )
     card_number: str = Field(..., description="Número de tarjeta (se tokeniza)")
     expiration: str = Field(..., description="Expiración YYYYMM")
     cvc: str
@@ -70,9 +78,9 @@ class CreateSubscriptionRequest(BaseModel):
     )
 
     model_config = {"json_schema_extra": {"examples": [
-        {"customer_id": "CLI-001", "amount": 5000, "itbis": 900,
+        {"customer_id": "CLI-001", "amount": 59000,
          "card_number": "4260550061845872", "expiration": "202812", "cvc": "123",
-         "frequency_days": 30, "description": "Membresía mensual",
+         "frequency_days": 30, "description": "Membresía mensual (RD$590, ITBIS incluido auto)",
          "cardholder_name": "Juan Pérez", "cardholder_email": "juan@ejemplo.com",
          "auth_mode": "splitit", "browser_info": None}
     ]}}
