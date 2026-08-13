@@ -163,6 +163,42 @@ async def test_already_charged_cycle_does_not_recharge():
 
 
 @pytest.mark.asyncio
+async def test_azul_prior_charge_recovers_without_recharge():
+    """No local record but Azul already charged → persist audit + advance, no re-charge.
+
+    Covers the crash window between charging at Azul and saving the local row.
+    """
+    sub = _make_sub(card_expiration="203012")
+
+    recurring_repo, payment_repo, txn_repo, gateway, session_factory = _build_mocks()
+    recurring_repo.list_due.return_value = [sub]
+    payment_repo.get_by_id.return_value = None  # nothing saved locally
+    gateway.verify_payment.return_value = {     # but Azul has an approved tx
+        "Found": True, "IsoCode": "00", "AzulOrderId": "AZ-RECOVER",
+        "AuthorizationCode": "OK123",
+    }
+
+    with (
+        patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
+        patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
+        patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
+        patch("app.services.scheduler.AzulPaymentGateway",           return_value=gateway),
+    ):
+        await sched_module._charge_due_subscriptions(session_factory)
+
+    # Must NOT re-charge, but must persist the recovered audit row and advance
+    gateway.sale_mit.assert_not_awaited()
+    payment_repo.save.assert_awaited_once()
+    saved = payment_repo.save.call_args[0][0]
+    assert saved.status == PaymentStatus.APPROVED
+    assert saved.azul_order_id == "AZ-RECOVER"
+    recurring_repo.update.assert_awaited_once()
+    updated = recurring_repo.update.call_args[0][0]
+    assert updated.failed_attempts == 0
+    assert updated.next_charge_at > datetime.now(timezone.utc)
+
+
+@pytest.mark.asyncio
 async def test_valid_card_proceeds_to_charge():
     """Scheduler must proceed to charge if card is not expired."""
     sub = _make_sub(card_expiration="203012")  # valid until Dec 2030

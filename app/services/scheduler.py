@@ -69,6 +69,38 @@ def build_custom_order_id(sub_id: str, failed_attempts: int, cycle: str) -> str:
     return f"sub-{short_id}-c{cycle}-att{failed_attempts}"
 
 
+def _currency_str(sub) -> str:
+    """Return the subscription currency as a plain ISO string (e.g. 'DOP')."""
+    c = getattr(sub, "currency_code", "DOP")
+    return c.value if hasattr(c, "value") else str(c or "DOP")
+
+
+async def verify_prior_charge(gateway: AzulPaymentGateway, custom_order_id: str) -> dict | None:
+    """Best-effort check: does Azul already have an APPROVED tx for this order?
+
+    Closes the residual double-charge window where the process crashed AFTER
+    Azul charged the card but BEFORE the local payment row was saved (so the
+    DB idempotency latch cannot see it).
+
+    Returns the Azul response dict when the transaction is found + approved,
+    else None. NEVER raises — on any verify error it returns None so a verify
+    outage does not block billing (the DB latch still guards the common case).
+    """
+    try:
+        data = await gateway.verify_payment(custom_order_id)
+    except Exception as e:  # network, integration error, unparseable — do not block
+        logger.warning(
+            "[idempotency] verify_payment(%s) failed: %s — proceeding to charge.",
+            custom_order_id, e,
+        )
+        return None
+    found = data.get("Found") in (True, "true", "True", 1)
+    iso = str(data.get("IsoCode", ""))
+    if found and iso == "00":
+        return data
+    return None
+
+
 async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None:
     """Job body: charge all subscriptions that are due.
 
@@ -172,21 +204,54 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                 )
                 custom_order_id = build_custom_order_id(sub.id, sub.failed_attempts, cycle)
 
-                # ── Idempotency latch ────────────────────────────────────────
-                # If a payment with this deterministic id was already APPROVED
-                # (e.g. the process crashed after charging but before advancing
-                # next_charge_at, leaving the sub "due"), do NOT charge again —
-                # just advance the schedule. Prevents double-charging the client.
+                # ── Idempotency guard (two layers) ───────────────────────────
+                # 1) DB latch: a local payment row for this deterministic id is
+                #    already APPROVED (crash AFTER charging + saving, but before
+                #    advancing next_charge_at).
+                # 2) Azul verify: the card was charged at Azul but the local row
+                #    was never saved (crash BETWEEN charging and saving).
+                # In either case do NOT charge again — advance the schedule.
                 existing = await payment_repo.get_by_id(custom_order_id)
-                if existing is not None and existing.status == PaymentStatus.APPROVED:
+                db_ok = existing is not None and existing.status == PaymentStatus.APPROVED
+
+                azul_prior = None
+                if not db_ok:
+                    azul_prior = await verify_prior_charge(gateway, custom_order_id)
+
+                if db_ok or azul_prior is not None:
                     logger.warning(
-                        "[scheduler] sub=%s already charged this cycle (order=%s) — "
-                        "advancing schedule WITHOUT re-charging.",
-                        sub.id, custom_order_id,
+                        "[scheduler] sub=%s already charged this cycle (order=%s, "
+                        "source=%s) — advancing schedule WITHOUT re-charging.",
+                        sub.id, custom_order_id, "db" if db_ok else "azul",
                     )
+                    # If Azul charged but we have no local record, persist an audit
+                    # row so history/reconciliation stay consistent.
+                    if existing is None and azul_prior is not None:
+                        recovered = Payment(
+                            id=custom_order_id,
+                            amount=sub.amount,
+                            itbis=sub.itbis,
+                            payment_type=PaymentType.RECURRING,
+                            order_id=f"sub-{sub.id}",
+                            auth_mode="splitit",
+                            initiated_by="merchant",
+                            currency_code=sub.currency_code,
+                        )
+                        recovered.status = PaymentStatus.APPROVED
+                        recovered.iso_code = "00"
+                        recovered.azul_order_id = (
+                            azul_prior.get("AzulOrderId") or azul_prior.get("AZULOrderId", "")
+                        )
+                        recovered.authorization_code = azul_prior.get("AuthorizationCode", "")
+                        recovered.rrn = azul_prior.get("RRN", "")
+                        recovered.response_message = "Recuperado vía verify_payment (idempotencia)"
+                        await payment_repo.save(recovered)
+
                     sub.failed_attempts = 0
                     sub.last_failure_reason = ""
-                    sub.last_charged_at = existing.created_at or datetime.now(timezone.utc)
+                    sub.last_charged_at = (
+                        existing.created_at if existing is not None else datetime.now(timezone.utc)
+                    )
                     sub.next_charge_at = datetime.now(timezone.utc) + timedelta(days=sub.frequency_days)
                     await recurring_repo.update(sub)
                     continue
@@ -199,6 +264,7 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                     order_id=f"sub-{sub.id}",
                     auth_mode="splitit",
                     initiated_by="merchant",
+                    currency_code=sub.currency_code,
                 )
 
                 payment, txn = await gateway.sale_mit(payment, sub.data_vault_token)
@@ -224,7 +290,7 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                         success=True,
                         invoice_number=custom_order_id,
                         total=sub.amount / 100,
-                        currency=getattr(sub, "currency_code", "DOP"),
+                        currency=_currency_str(sub),
                         payment_method=(
                             f"Tarjeta terminada en {sub.card_last4}"
                             if sub.card_last4 else None
@@ -238,7 +304,7 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                     await enviar_correo_pago(
                         to_email=sub.cardholder_email,
                         success=False,
-                        currency=getattr(sub, "currency_code", "DOP"),
+                        currency=_currency_str(sub),
                         payment_method=(
                             f"Tarjeta terminada en {sub.card_last4}"
                             if sub.card_last4 else None
@@ -251,7 +317,7 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                             to_email=sub.cardholder_email,
                             context=ctx_charge(
                                 amount=sub.amount,
-                                currency=getattr(sub, "currency_code", "DOP"),
+                                currency=_currency_str(sub),
                                 description=sub.description or "Suscripción",
                                 card_last4=sub.card_last4,
                                 failure_reason=reason,
@@ -356,7 +422,7 @@ async def _send_upcoming_charge_reminders(session_factory: async_sessionmaker) -
                 to_email=sub.cardholder_email or "",
                 context=ctx_charge(
                     amount=sub.amount,
-                    currency=getattr(sub, "currency_code", "DOP"),
+                    currency=_currency_str(sub),
                     description=sub.description or "Suscripción",
                     card_last4=sub.card_last4,
                     next_charge_date=sub.next_charge_at,

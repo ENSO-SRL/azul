@@ -86,6 +86,7 @@ class SubscriptionResponse(BaseModel):
     frequency_days: int
     description: str
     status: str
+    currency: str = "DOP"
     card_brand: str
     card_last4: str
     card_expiration: str
@@ -231,6 +232,7 @@ async def create_subscription(
             auth_mode=body.auth_mode,
             browser_info=browser_info_dict,
             trial_days=body.trial_days,
+            currency=body.currency,
         )
     except AzulIntegrationError as e:
         raise HTTPException(status_code=503, detail=f"Error de integración con Azul: {e}")
@@ -518,6 +520,10 @@ def _to_sub_response(r) -> dict:
         "frequency_days": r.frequency_days,
         "description": r.description,
         "status": r.status.value if hasattr(r.status, "value") else r.status,
+        "currency": (
+            r.currency_code.value if hasattr(getattr(r, "currency_code", None), "value")
+            else getattr(r, "currency_code", None) or "DOP"
+        ),
         "card_brand": getattr(r, "card_brand", ""),
         "card_last4": r.card_last4,
         "card_expiration": getattr(r, "card_expiration", ""),
