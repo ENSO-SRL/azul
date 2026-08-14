@@ -63,8 +63,8 @@ SUBSCRIPTION_FREQUENCY_DAYS = 30
 
 # Monto real de la membresía (centavos) — para el cobro recurrente.
 # El Hold de verificación usa RD$1.00 pero la suscripción debe cobrar el precio real.
-MEMBERSHIP_AMOUNT = int(os.getenv("MEMBERSHIP_AMOUNT", "200"))   # RD$2.00
-MEMBERSHIP_ITBIS  = int(os.getenv("MEMBERSHIP_ITBIS", "36"))     # RD$0.36
+MEMBERSHIP_AMOUNT = int(os.getenv("MEMBERSHIP_AMOUNT", "50000"))   # RD$500.00
+MEMBERSHIP_ITBIS  = int(os.getenv("MEMBERSHIP_ITBIS", "9000"))     # RD$90.00
 
 
 @dataclass

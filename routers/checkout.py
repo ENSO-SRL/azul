@@ -41,8 +41,8 @@ _APP_BASE = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
 # ── Membership pricing (centavos) ────────────────────────────────────────────
 # Centralizado para evitar inconsistencias entre /process y /pay-with-token.
-MEMBERSHIP_AMOUNT = int(os.getenv("MEMBERSHIP_AMOUNT", "200"))   # RD$2.00
-MEMBERSHIP_ITBIS  = int(os.getenv("MEMBERSHIP_ITBIS", "36"))     # RD$0.36
+MEMBERSHIP_AMOUNT = int(os.getenv("MEMBERSHIP_AMOUNT", "50000"))   # RD$500.00
+MEMBERSHIP_ITBIS  = int(os.getenv("MEMBERSHIP_ITBIS", "9000"))     # RD$90.00
 
 # In-memory cache for 3DS challenge forms (keyed by payment_id)
 # The challenge page is fetched within seconds of being stored; no TTL needed.
@@ -263,7 +263,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
     <input type="hidden" name="browser_java" id="browserJava" value="false"/>
 
     <button type="submit" class="signup-btn-filled" id="submitBtn">
-      <span id="btnText">Pagar RD$2.36</span>
+      <span id="btnText">Pagar RD$590.00</span>
       <div class="spinner" id="spinner"></div>
     </button>
   </form>
@@ -282,7 +282,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
     </div>
     <button class="pay-saved-btn" id="paySavedBtn" style="display:none" onclick="payWithSaved()">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
-      Pagar RD$2.36 con tarjeta seleccionada
+      Pagar RD$590.00 con tarjeta seleccionada
     </button>
   </div>
 </div> <!-- Fin checkout-layout -->
