@@ -103,6 +103,7 @@ class RecurringPaymentModel(Base):
     customer_id: Mapped[str] = mapped_column(String(100), nullable=False)
     amount: Mapped[int] = mapped_column(Integer, nullable=False)
     itbis: Mapped[int] = mapped_column(Integer, default=0)
+    currency_code: Mapped[str] = mapped_column(String(3), default="DOP")  # ISO 4217 — DOP | USD
     frequency_days: Mapped[int] = mapped_column(Integer, default=30)
     description: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")

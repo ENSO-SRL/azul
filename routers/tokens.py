@@ -251,6 +251,7 @@ async def get_user_payment_status(
             "status": s.status,
             "amount": s.amount,
             "amount_display": f"RD${s.amount / 100:,.2f}",
+            "currency_code": getattr(s, "currency_code", "DOP"),
             "frequency_days": s.frequency_days,
             "description": s.description or "",
             "card_last4": s.card_last4 or "",
@@ -263,6 +264,7 @@ async def get_user_payment_status(
             "trial_ends_at": sub_trial_ends.isoformat() if sub_trial_ends else None,
             "created_at": s.created_at.isoformat() if s.created_at else "",
         })
+
 
     # ── 4. Últimos 10 pagos ──────────────────────────────────────────────
     payments_result = await db.execute(
