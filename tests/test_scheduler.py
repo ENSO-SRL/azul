@@ -80,6 +80,9 @@ def _build_mocks():
     recurring_repo.update.return_value = None
     payment_repo.save.return_value     = None
     txn_repo.save.return_value         = None
+    # Idempotency preflight defaults: no local row, Azul has no prior charge.
+    payment_repo.get_by_id.return_value = None
+    gateway.verify_payment.return_value = {"Found": False}
 
     session = AsyncMock()
     session_factory = MagicMock()
@@ -128,6 +131,128 @@ async def test_expired_card_pauses_without_charge():
     updated_sub = recurring_repo.update.call_args[0][0]
     assert updated_sub.status == SubscriptionStatus.PAUSED
     assert "vencida" in updated_sub.last_failure_reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_already_charged_cycle_does_not_recharge():
+    """Idempotency latch: if this cycle was already APPROVED, do not charge again.
+
+    Simulates a crash after charging but before advancing next_charge_at (sub still
+    "due"). The next run must advance the schedule WITHOUT hitting Azul again.
+    """
+    sub = _make_sub(card_expiration="203012")
+
+    recurring_repo, payment_repo, txn_repo, gateway, session_factory = _build_mocks()
+    recurring_repo.list_due.return_value = [sub]
+    # A payment for this deterministic cycle id already exists and was APPROVED.
+    payment_repo.get_by_id.return_value = _approved_payment()
+
+    with (
+        patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
+        patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
+        patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
+        patch("app.services.scheduler.AzulPaymentGateway",           return_value=gateway),
+    ):
+        await sched_module._charge_due_subscriptions(session_factory)
+
+    # Must NOT re-charge the card
+    gateway.sale_mit.assert_not_awaited()
+    # But must advance the schedule so the sub stops being "due"
+    recurring_repo.update.assert_awaited_once()
+    updated = recurring_repo.update.call_args[0][0]
+    assert updated.failed_attempts == 0
+    assert updated.next_charge_at is not None
+    assert updated.next_charge_at > datetime.now(timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_expired_card_sends_card_expired_email():
+    """Expiration guard must email the customer to update their card."""
+    sub = _make_sub(card_expiration="202001")  # expired
+    sub.cardholder_email = "c@e.com"
+
+    recurring_repo, payment_repo, txn_repo, gateway, session_factory = _build_mocks()
+    recurring_repo.list_due.return_value = [sub]
+
+    mock_notify = AsyncMock(return_value=True)
+    with (
+        patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
+        patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
+        patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
+        patch("app.services.scheduler.AzulPaymentGateway",           return_value=gateway),
+        patch("app.services.scheduler.send_notification",            mock_notify),
+    ):
+        await sched_module._charge_due_subscriptions(session_factory)
+
+    gateway.sale_mit.assert_not_awaited()
+    mock_notify.assert_awaited_once()
+    assert mock_notify.call_args[0][0] == "card_expired"
+
+
+@pytest.mark.asyncio
+async def test_pause_sends_single_email_not_duplicate():
+    """When retries are exhausted, only ONE email (subscription_paused) is sent."""
+    sub = _make_sub(failed_attempts=3)  # next decline exhausts retries → PAUSED
+    sub.cardholder_email = "c@e.com"
+
+    recurring_repo, payment_repo, txn_repo, gateway, session_factory = _build_mocks()
+    recurring_repo.list_due.return_value = [sub]
+    payment_repo.get_by_id.return_value = None
+    gateway.verify_payment.return_value = {"Found": False}
+    gateway.sale_mit.return_value = (_declined_payment(), MagicMock())
+
+    mock_enviar = AsyncMock(return_value=True)
+    mock_notify = AsyncMock(return_value=True)
+    with (
+        patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
+        patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
+        patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
+        patch("app.services.scheduler.AzulPaymentGateway",           return_value=gateway),
+        patch("app.services.scheduler.enviar_correo_pago",           mock_enviar),
+        patch("app.services.scheduler.send_notification",            mock_notify),
+    ):
+        await sched_module._charge_due_subscriptions(session_factory)
+
+    # Paused → single dedicated email, NOT the per-attempt failure billing email
+    mock_notify.assert_awaited_once()
+    assert mock_notify.call_args[0][0] == "subscription_paused"
+    mock_enviar.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_azul_prior_charge_recovers_without_recharge():
+    """No local record but Azul already charged → persist audit + advance, no re-charge.
+
+    Covers the crash window between charging at Azul and saving the local row.
+    """
+    sub = _make_sub(card_expiration="203012")
+
+    recurring_repo, payment_repo, txn_repo, gateway, session_factory = _build_mocks()
+    recurring_repo.list_due.return_value = [sub]
+    payment_repo.get_by_id.return_value = None  # nothing saved locally
+    gateway.verify_payment.return_value = {     # but Azul has an approved tx
+        "Found": True, "IsoCode": "00", "AzulOrderId": "AZ-RECOVER",
+        "AuthorizationCode": "OK123",
+    }
+
+    with (
+        patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
+        patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
+        patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
+        patch("app.services.scheduler.AzulPaymentGateway",           return_value=gateway),
+    ):
+        await sched_module._charge_due_subscriptions(session_factory)
+
+    # Must NOT re-charge, but must persist the recovered audit row and advance
+    gateway.sale_mit.assert_not_awaited()
+    payment_repo.save.assert_awaited_once()
+    saved = payment_repo.save.call_args[0][0]
+    assert saved.status == PaymentStatus.APPROVED
+    assert saved.azul_order_id == "AZ-RECOVER"
+    recurring_repo.update.assert_awaited_once()
+    updated = recurring_repo.update.call_args[0][0]
+    assert updated.failed_attempts == 0
+    assert updated.next_charge_at > datetime.now(timezone.utc)
 
 
 @pytest.mark.asyncio
@@ -202,7 +327,7 @@ async def test_integration_error_does_not_pause():
         patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
         patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
         patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
-        patch("app.infrastructure.azul_gateway.AzulPaymentGateway",   return_value=gateway),
+        patch("app.services.scheduler.AzulPaymentGateway",           return_value=gateway),
     ):
         await sched_module._charge_due_subscriptions(session_factory)
 

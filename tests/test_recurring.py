@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.domain.entities import (
     ConsentRecord,
+    Currency,
     IsoCode,
     Payment,
     PaymentStatus,
@@ -138,6 +139,118 @@ async def test_create_subscription_happy_path():
 
 
 @pytest.mark.asyncio
+async def test_create_subscription_persists_currency_usd():
+    """currency=USD must reach BOTH the first charge and the saved subscription.
+
+    Regression: the currency field was accepted by the API but silently dropped,
+    so a USD subscription was charged in DOP.
+    """
+    payment = _make_approved_payment("TOKEN-USD")
+    txn     = _make_txn(payment.id)
+
+    cit = AsyncMock(return_value=(payment, txn))
+    svc = _make_service(gateway_sale_recurring_cit=cit)
+
+    recurring, _ = await svc.create_subscription(
+        customer_id="CLI-USD",
+        amount=5000,
+        itbis=0,
+        card_number="4260550061845872",
+        expiration="203012",
+        cvc="123",
+        cardholder_name="Jane Doe",
+        cardholder_email="jane@ejemplo.com",
+        currency="USD",
+    )
+
+    # Subscription stores the currency
+    assert recurring.currency_code == Currency.USD
+    # First charge (Payment passed to the gateway) also carries USD
+    charged_payment = cit.call_args[0][0]
+    assert charged_payment.currency_code == Currency.USD
+    assert charged_payment.currency_code.azul_code == "US$"
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_auto_derives_itbis_from_total():
+    """When itbis is omitted, the ITBIS included in the total is derived (18%)."""
+    payment = _make_approved_payment("TOKEN-TAX")
+    cit = AsyncMock(return_value=(payment, _make_txn(payment.id)))
+    svc = _make_service(gateway_sale_recurring_cit=cit)
+
+    recurring, _ = await svc.create_subscription(
+        customer_id="CLI-TAX",
+        amount=59000,          # RD$590 total, ITBIS incluido
+        itbis=None,            # omitido → autocalcular
+        card_number="4260550061845872",
+        expiration="203012",
+        cvc="123",
+        cardholder_name="Ana",
+        cardholder_email="ana@ejemplo.com",
+    )
+
+    assert recurring.amount == 59000          # se cobra el total tal cual
+    assert recurring.itbis == 9000            # RD$90 desglosado del total
+    charged = cit.call_args[0][0]
+    assert charged.amount == 59000 and charged.itbis == 9000
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_rejects_itbis_greater_than_amount():
+    """An explicit ITBIS larger than the total is rejected."""
+    svc = _make_service(gateway_sale_recurring_cit=AsyncMock())
+    with pytest.raises(ValueError, match="itbis"):
+        await svc.create_subscription(
+            customer_id="CLI-Z", amount=5000, itbis=6000,
+            card_number="4260550061845872", expiration="203012", cvc="123",
+            cardholder_name="Z", cardholder_email="z@z.com",
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_rejects_unknown_currency():
+    """An unsupported currency must be rejected, not silently coerced to DOP."""
+    svc = _make_service(gateway_sale_recurring_cit=AsyncMock())
+
+    with pytest.raises(ValueError, match="currency"):
+        await svc.create_subscription(
+            customer_id="CLI-X",
+            amount=5000,
+            itbis=0,
+            card_number="4260550061845872",
+            expiration="203012",
+            cvc="123",
+            cardholder_name="X",
+            cardholder_email="x@x.com",
+            currency="EUR",
+        )
+
+
+@pytest.mark.asyncio
+async def test_charge_skips_when_azul_already_charged():
+    """If Azul already has an APPROVED tx for this order, do NOT charge again.
+
+    Covers the crash window where the card was charged at Azul but the local
+    payment row was never saved.
+    """
+    sub = _make_recurring()
+    svc = _make_service(saved_recurring=sub)
+    svc._payments.get_by_id = AsyncMock(return_value=None)          # no local record
+    svc._gw.verify_payment = AsyncMock(return_value={              # but Azul has it
+        "Found": True, "IsoCode": "00", "AzulOrderId": "AZ-EXISTING",
+    })
+    svc._gw.sale_mit = AsyncMock()
+
+    result = await svc.charge("sub-test-id")
+
+    svc._gw.sale_mit.assert_not_awaited()          # must NOT re-charge
+    assert result.status == PaymentStatus.APPROVED
+    assert result.azul_order_id == "AZ-EXISTING"
+    svc._payments.save.assert_awaited()            # audit record persisted
+    svc._recurring.update.assert_awaited_once()    # schedule advanced
+
+
+@pytest.mark.asyncio
 async def test_create_subscription_with_trial():
     """If trial_days > 0, it should tokenize without charging and start a trial."""
     from app.domain.entities import SavedCard
@@ -215,6 +328,69 @@ async def test_create_subscription_declined_does_not_save():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_create_subscription_sends_first_charge_receipt():
+    """The first successful charge must send a billing receipt (was missing)."""
+    payment = _make_approved_payment("TOK-RCPT")
+    cit = AsyncMock(return_value=(payment, _make_txn(payment.id)))
+    svc = _make_service(gateway_sale_recurring_cit=cit)
+
+    mock_enviar = AsyncMock(return_value=True)
+    with patch("app.services.scheduler.enviar_correo_pago", mock_enviar):
+        await svc.create_subscription(
+            customer_id="CLI-1", amount=59000, itbis=None,
+            card_number="4260550061845872", expiration="203012", cvc="123",
+            cardholder_name="Ana", cardholder_email="ana@ejemplo.com",
+        )
+
+    mock_enviar.assert_awaited_once()
+    kw = mock_enviar.call_args.kwargs
+    assert kw["success"] is True
+    assert kw["to_email"] == "ana@ejemplo.com"
+    assert kw["total"] == 590.0
+
+
+@pytest.mark.asyncio
+async def test_manual_charge_sends_receipt_on_success():
+    """Manual charge must notify the customer on success (was silent)."""
+    sub = _make_recurring()
+    sub.cardholder_email = "c@e.com"
+    payment = _make_approved_payment()
+    mit = AsyncMock(return_value=(payment, _make_txn(payment.id)))
+    svc = _make_service(gateway_sale_mit=mit, saved_recurring=sub)
+    svc._payments.get_by_id = AsyncMock(return_value=None)
+    svc._gw.verify_payment = AsyncMock(return_value={"Found": False})
+
+    mock_enviar = AsyncMock(return_value=True)
+    with patch("app.services.scheduler.enviar_correo_pago", mock_enviar):
+        await svc.charge("sub-test-id")
+
+    mock_enviar.assert_awaited_once()
+    assert mock_enviar.call_args.kwargs["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_manual_charge_sends_failure_email_on_decline():
+    """Manual charge must notify the customer on decline too (was silent)."""
+    sub = _make_recurring()
+    sub.cardholder_email = "c@e.com"
+    declined = Payment(amount=5000, itbis=900, payment_type=PaymentType.RECURRING)
+    declined.status = PaymentStatus.DECLINED
+    declined.iso_code = IsoCode.DECLINED_FUNDS
+    declined.response_message = "Fondos insuficientes"
+    mit = AsyncMock(return_value=(declined, _make_txn(declined.id)))
+    svc = _make_service(gateway_sale_mit=mit, saved_recurring=sub)
+    svc._payments.get_by_id = AsyncMock(return_value=None)
+    svc._gw.verify_payment = AsyncMock(return_value={"Found": False})
+
+    mock_enviar = AsyncMock(return_value=True)
+    with patch("app.services.scheduler.enviar_correo_pago", mock_enviar):
+        await svc.charge("sub-test-id")
+
+    mock_enviar.assert_awaited_once()
+    assert mock_enviar.call_args.kwargs["success"] is False
+
+
+@pytest.mark.asyncio
 async def test_charge_mit_happy_path():
     """MIT charge should succeed and advance next_charge_at."""
     sub = _make_recurring()
@@ -228,6 +404,42 @@ async def test_charge_mit_happy_path():
 
     mit.assert_awaited_once()
     assert result.status == PaymentStatus.APPROVED
+    svc._recurring.update.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_charge_mit_declined_does_not_advance_schedule():
+    """A declined MIT charge must NOT advance next_charge_at nor mark the cycle paid.
+
+    Regression: previously charge() advanced the schedule unconditionally, so a
+    declined card was treated as paid (customer got a free cycle) and no retry
+    was scheduled.
+    """
+    sub = _make_recurring()
+    original_next = sub.next_charge_at
+    original_last = sub.last_charged_at
+
+    declined = Payment(amount=5000, itbis=900, payment_type=PaymentType.RECURRING)
+    declined.status = PaymentStatus.DECLINED
+    declined.iso_code = IsoCode.DECLINED_FUNDS
+    declined.response_message = "Fondos insuficientes"
+    txn = _make_txn(declined.id)
+
+    mit = AsyncMock(return_value=(declined, txn))
+    svc = _make_service(gateway_sale_mit=mit, saved_recurring=sub)
+
+    result = await svc.charge("sub-test-id")
+
+    assert result.status == PaymentStatus.DECLINED
+    # Retry policy applied — attempt bumped, schedule NOT advanced a full cycle
+    assert sub.failed_attempts == 1
+    assert sub.status == SubscriptionStatus.ACTIVE  # not yet exhausted
+    assert sub.last_charged_at == original_last     # unchanged — nothing was paid
+    # next_charge_at moved to the short retry window (~1 day), not +30 days
+    now = datetime.now(timezone.utc)
+    assert sub.next_charge_at > now
+    assert sub.next_charge_at < now + timedelta(days=2)
+    assert sub.next_charge_at != original_next
     svc._recurring.update.assert_awaited_once()  # type: ignore[attr-defined]
 
 

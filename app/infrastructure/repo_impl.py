@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import (
     ConsentRecord,
+    Currency,
     Payment,
     PaymentStatus,
     PaymentType,
@@ -117,6 +118,7 @@ def _recurring_to_model(r: RecurringPayment) -> RecurringPaymentModel:
         frequency_days=r.frequency_days,
         description=r.description,
         status=r.status.value,
+        currency_code=r.currency_code.value if hasattr(r.currency_code, "value") else str(r.currency_code),
         data_vault_token=r.data_vault_token,
         card_brand=r.card_brand,
         card_last4=r.card_last4,
@@ -140,6 +142,7 @@ def _model_to_recurring(m: RecurringPaymentModel) -> RecurringPayment:
         frequency_days=m.frequency_days,
         description=m.description,
         status=SubscriptionStatus(m.status),
+        currency_code=Currency(getattr(m, "currency_code", None) or "DOP"),
         data_vault_token=m.data_vault_token,
         card_brand=m.card_brand,
         card_last4=m.card_last4,
@@ -292,6 +295,11 @@ class SQLRecurringRepository(RecurringRepository):
             model.itbis                = recurring.itbis
             model.frequency_days       = recurring.frequency_days
             model.description          = recurring.description
+            model.currency_code        = (
+                recurring.currency_code.value
+                if hasattr(recurring.currency_code, "value")
+                else str(recurring.currency_code)
+            )
             model.data_vault_token     = recurring.data_vault_token
             model.card_brand           = recurring.card_brand
             model.card_last4           = recurring.card_last4

@@ -107,6 +107,8 @@ class RecurringPaymentModel(Base):
     frequency_days: Mapped[int] = mapped_column(Integer, default=30)
     description: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    # Moneda ISO del cobro (DOP | USD). Default DOP para filas preexistentes.
+    currency_code: Mapped[str] = mapped_column(String(3), default="DOP", server_default="DOP")
 
     # DataVault token
     data_vault_token: Mapped[str] = mapped_column(String(100), default="")
