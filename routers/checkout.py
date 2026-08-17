@@ -243,6 +243,17 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
       </div>
     </div>
 
+    <div class="form-group">
+      <label>Código de Descuento (opcional)</label>
+      <div class="input-with-icon">
+        <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>
+        <input type="text" name="promo_code"
+               class="signup-input with-icon"
+               placeholder="Ej: ESPACIO30"
+               maxlength="20" autocomplete="off"/>
+      </div>
+    </div>
+
     <div class="checkbox-group">
       <label class="checkbox-label">
         <input type="checkbox" name="save_card" value="1" checked/>
@@ -1558,6 +1569,7 @@ async def process_checkout(
     browser_java: str = Form("false"),
     customer_id: str = Form(""),
     csrf_token: str = Form(""),
+    promo_code: str = Form(None),
     checkout_csrf: str = Cookie(None),
     svc: PaymentService = Depends(_get_service),
     token_svc: TokenService = Depends(_get_token_svc),
@@ -1989,7 +2001,7 @@ async def process_checkout(
             await handle_post_payment_actions(payment)
         except Exception as _pp_exc:
             logger.error("[CHECKOUT] ✗ post-payment actions FAILED | payment_id=%s err=%s", payment.id, _pp_exc)
-        await create_subscription_if_needed(payment, customer_id, db, card_expiration=exp_azul)
+        await create_subscription_if_needed(payment, customer_id, db, card_expiration=exp_azul, promo_code=promo_code)
 
     html = _html_result(
         status=status,

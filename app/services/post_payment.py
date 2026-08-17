@@ -59,6 +59,7 @@ _AUTH_API_BASE = os.getenv("AUTH_API_BASE_URL", "https://api.iamatlas.do")
 
 # Días de gracia para usuarios nuevos
 TRIAL_DAYS = 7
+PROMO_CODE_30_DAYS = "ESPACIO30"
 SUBSCRIPTION_FREQUENCY_DAYS = 30
 
 # Monto real de la membresía (centavos) — para el cobro recurrente.
@@ -226,6 +227,7 @@ async def create_subscription_if_needed(
     customer_id: str,
     db: AsyncSession,
     card_expiration: str = "",
+    promo_code: str | None = None,
 ) -> PostPaymentResult:
     """Create a subscription after a successful checkout payment.
 
@@ -261,12 +263,27 @@ async def create_subscription_if_needed(
                 RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
             )
         )
-        if existing_active.scalar_one_or_none():
-            logger.warning(
-                "[post-payment] ⏭ user already has ACTIVE subscription — skipping | "
-                "customer_id=%s payment_id=%s",
-                customer_id, payment.id,
-            )
+        existing_sub = existing_active.scalar_one_or_none()
+        if existing_sub:
+            if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS:
+                now = datetime.now(timezone.utc)
+                new_trial_end = now + timedelta(days=30)
+                existing_sub.trial_ends_at = new_trial_end
+                existing_sub.next_charge_at = new_trial_end
+                await db.commit()
+                logger.warning(
+                    "[post-payment] ✓ EXISTING subscription updated with promo code %s | "
+                    "customer_id=%s new_trial_ends=%s",
+                    PROMO_CODE_30_DAYS, customer_id, new_trial_end.isoformat(),
+                )
+                result.in_trial = True
+                result.trial_ends_at = new_trial_end.isoformat()
+            else:
+                logger.warning(
+                    "[post-payment] ⏭ user already has ACTIVE subscription — skipping | "
+                    "customer_id=%s payment_id=%s",
+                    customer_id, payment.id,
+                )
             return result
 
         # ── Check for existing active trial ───────────────────────────
@@ -324,7 +341,17 @@ async def create_subscription_if_needed(
             )
         elif is_new_user:
             # Trial: primer cobro real en TRIAL_DAYS días
-            trial_end = now + timedelta(days=TRIAL_DAYS)
+            # Descuento especial de 30 días con código promocional o ID
+            special_30_day_users = [
+                # "ID_DEL_USUARIO_AQUI",
+            ]
+            trial_days_for_user = TRIAL_DAYS
+            if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS:
+                trial_days_for_user = 30
+            elif customer_id in special_30_day_users:
+                trial_days_for_user = 30
+                
+            trial_end = now + timedelta(days=trial_days_for_user)
             recurring = RecurringPayment(
                 customer_id=customer_id,
                 amount=MEMBERSHIP_AMOUNT,
@@ -399,6 +426,7 @@ async def create_trial_subscription(
     itbis: int,        # DEPRECATED — ignored, uses MEMBERSHIP_ITBIS
     cardholder_email: str,
     db: AsyncSession,
+    promo_code: str | None = None,
 ) -> PostPaymentResult:
     """Create a trial subscription from a tokenized card (no charge).
 
@@ -431,16 +459,42 @@ async def create_trial_subscription(
                 RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
             )
         )
-        if existing_active.scalar_one_or_none():
-            logger.warning(
-                "[post-payment] ⏭ user already has ACTIVE subscription — "
-                "skipping trial creation | customer_id=%s",
-                customer_id,
-            )
+        existing_sub = existing_active.scalar_one_or_none()
+        if existing_sub:
+            if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS:
+                now = datetime.now(timezone.utc)
+                new_trial_end = now + timedelta(days=30)
+                existing_sub.trial_ends_at = new_trial_end
+                existing_sub.next_charge_at = new_trial_end
+                await db.commit()
+                logger.warning(
+                    "[post-payment] ✓ EXISTING subscription updated with promo code %s | "
+                    "customer_id=%s new_trial_ends=%s",
+                    PROMO_CODE_30_DAYS, customer_id, new_trial_end.isoformat(),
+                )
+                result.in_trial = True
+                result.trial_ends_at = new_trial_end.isoformat()
+            else:
+                logger.warning(
+                    "[post-payment] ⏭ user already has ACTIVE subscription — "
+                    "skipping trial creation | customer_id=%s",
+                    customer_id,
+                )
             return result
 
         now = datetime.now(timezone.utc)
-        trial_end = now + timedelta(days=TRIAL_DAYS)
+        
+        # Descuento especial de 30 días con código promocional o ID
+        special_30_day_users = [
+            # "ID_DEL_USUARIO_AQUI",
+        ]
+        trial_days_for_user = TRIAL_DAYS
+        if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS:
+            trial_days_for_user = 30
+        elif customer_id in special_30_day_users:
+            trial_days_for_user = 30
+            
+        trial_end = now + timedelta(days=trial_days_for_user)
 
         recurring = RecurringPayment(
             customer_id=customer_id,
