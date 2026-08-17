@@ -630,7 +630,11 @@ class PaymentService:
                     list(challenge_data.keys()),
                 )
 
-                if redirect_post_url and creq:
+                if redirect_post_url and not redirect_post_url.startswith("http"):
+                    logger.error("[SVC] ✗ Invalid 3DS challenge URL returned by Azul: %r", redirect_post_url)
+                    payment.status = PaymentStatus.DECLINED
+                    payment.response_message = "Error en comunicación con el banco (URL inválida)"
+                elif redirect_post_url and creq:
                     # Build auto-submit POST form — browser POSTs directly to ACS (Cardinal/bank).
                     # Form submissions are NOT subject to CORS restrictions, so we submit
                     # immediately on DOMContentLoaded — the industry-standard 3DS approach.
