@@ -1898,12 +1898,19 @@ async def process_checkout(
             payment.id, len(challenge_form), redirect_url[:80] if redirect_url else "",
         )
         if challenge_form:
-            resp = HTMLResponse(challenge_form)
-            resp.headers["X-Frame-Options"] = "SAMEORIGIN"
-            return resp
+            # Store in Redis (survives deploys) + in-memory fallback
+            _challenge_cache[payment.id] = challenge_form
+            try:
+                from app.infrastructure.redis_client import store_challenge_form
+                await store_challenge_form(payment.id, challenge_form)
+            except Exception as e:
+                logger.error("[CHECKOUT] Redis store_challenge_form failed: %s", e)
+            from fastapi.responses import RedirectResponse
+            # Redirect using 303 See Other to turn POST into GET and prevent Safari download bug
+            return RedirectResponse(url=f"/checkout/challenge/{payment.id}", status_code=303)
         if redirect_url:
             from fastapi.responses import RedirectResponse
-            return RedirectResponse(url=redirect_url)
+            return RedirectResponse(url=redirect_url, status_code=303)
         logger.error("[CHECKOUT] ✗ 3DS CHALLENGE | payment_id=%s no challenge_form and no redirect_url", payment.id)
         return HTMLResponse(_html_form("Error 3DS: sin URL de challenge.", theme=theme), status_code=502)
 
