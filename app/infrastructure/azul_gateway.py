@@ -941,6 +941,32 @@ class AzulPaymentGateway:
             challenge_data = data.get("ThreeDSChallenge", {})
             if isinstance(challenge_data, dict):
                 payment.threeds_challenge_form = challenge_data.get("ChallengeForm", "")
+                
+                # Auto-generate ChallengeForm if CReq/PaReq is provided without a pre-rendered form
+                creq = challenge_data.get("CReq") or challenge_data.get("creq")
+                pareq = challenge_data.get("PaReq") or challenge_data.get("pareq")
+                md = challenge_data.get("MD") or challenge_data.get("md")
+                redirect_url = challenge_data.get("RedirectPostUrl") or challenge_data.get("RedirectUrl") or payment.threeds_redirect_url
+                
+                if not payment.threeds_challenge_form and redirect_url and (creq or pareq):
+                    inputs = []
+                    if creq:
+                        inputs.append(f'<input type="hidden" name="creq" value="{creq}" />')
+                    if pareq:
+                        inputs.append(f'<input type="hidden" name="PaReq" value="{pareq}" />')
+                    if md:
+                        inputs.append(f'<input type="hidden" name="MD" value="{md}" />')
+                        
+                    payment.threeds_challenge_form = (
+                        f'<html><head><title>3DS Challenge</title></head>'
+                        f'<body>'
+                        f'<form id="challengeForm" action="{redirect_url}" method="POST">'
+                        + "".join(inputs) +
+                        f'</form>'
+                        f'<script>document.getElementById("challengeForm").submit();</script>'
+                        f'</body></html>'
+                    )
+
                 if not payment.threeds_redirect_url:
                     payment.threeds_redirect_url = challenge_data.get("RedirectUrl") or challenge_data.get("RedirectPostUrl", "")
         else:
