@@ -937,12 +937,12 @@ class AzulPaymentGateway:
                 payment.threeds_method_form = method_data.get("MethodForm", "")
         elif iso_raw == IsoCode.THREE_DS_CHALLENGE:
             payment.status = PaymentStatus.PENDING_3DS_CHALLENGE
-            payment.threeds_redirect_url = data.get("RedirectUrl", "")
+            payment.threeds_redirect_url = data.get("RedirectUrl") or data.get("RedirectPostUrl", "")
             challenge_data = data.get("ThreeDSChallenge", {})
             if isinstance(challenge_data, dict):
                 payment.threeds_challenge_form = challenge_data.get("ChallengeForm", "")
                 if not payment.threeds_redirect_url:
-                    payment.threeds_redirect_url = challenge_data.get("RedirectUrl", "")
+                    payment.threeds_redirect_url = challenge_data.get("RedirectUrl") or challenge_data.get("RedirectPostUrl", "")
         else:
             payment.status = PaymentStatus.DECLINED
 
