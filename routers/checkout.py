@@ -2261,6 +2261,24 @@ async def challenge_page(
             return HTMLResponse(_html_form("Error 3DS: sesión de autenticación expirada. Intenta de nuevo.", theme=theme), status_code=410)
 
     logger.warning("[CHECKOUT] ▶ GET /challenge/%s | serving challenge form (%d bytes)", payment_id, len(form_html))
+
+    # 1. Force explicitly POST method in case Azul omits it (fixes Safari GET bug)
+    if 'method="POST"' not in form_html and "method='POST'" not in form_html:
+        form_html = form_html.replace("<form ", '<form method="POST" ')
+
+    # 2. Add visual fallback button if Safari blocks the auto-submit JS
+    fallback_button = """
+    <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
+        <p>Si no eres redirigido automáticamente a tu banco en unos segundos...</p>
+        <button onclick="document.forms[0].submit()" style="padding: 10px 20px; background: #DA007C; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer;">
+            Haz clic aquí para continuar
+        </button>
+    </div>
+    </body>
+    """
+    if "</body>" in form_html:
+        form_html = form_html.replace("</body>", fallback_button)
+
     resp = HTMLResponse(form_html)
     # Allow the challenge form to auto-submit to CardinalCommerce cross-origin.
     # Do NOT set X-Frame-Options here — Cardinal Commerce needs to load this freely.
