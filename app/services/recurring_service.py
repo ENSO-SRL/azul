@@ -335,10 +335,11 @@ class RecurringService:
             )
             recovered.status = PaymentStatus.APPROVED
             recovered.iso_code = "00"
+            azul_data = azul_prior or {}
             recovered.azul_order_id = (
-                azul_prior.get("AzulOrderId") or azul_prior.get("AZULOrderId", "")
+                azul_data.get("AzulOrderId") or azul_data.get("AZULOrderId", "")
             )
-            recovered.authorization_code = azul_prior.get("AuthorizationCode", "")
+            recovered.authorization_code = azul_data.get("AuthorizationCode", "")
             recovered.response_message = "Recuperado vía verify_payment (idempotencia)"
             await self._payments.save(recovered)
             return recovered

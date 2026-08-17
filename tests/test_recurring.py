@@ -246,8 +246,8 @@ async def test_charge_skips_when_azul_already_charged():
     svc._gw.sale_mit.assert_not_awaited()          # must NOT re-charge
     assert result.status == PaymentStatus.APPROVED
     assert result.azul_order_id == "AZ-EXISTING"
-    svc._payments.save.assert_awaited()            # audit record persisted
-    svc._recurring.update.assert_awaited_once()    # schedule advanced
+    svc._payments.save.assert_awaited()            # type: ignore[attr-defined]
+    svc._recurring.update.assert_awaited_once()    # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -437,6 +437,7 @@ async def test_charge_mit_declined_does_not_advance_schedule():
     assert sub.last_charged_at == original_last     # unchanged — nothing was paid
     # next_charge_at moved to the short retry window (~1 day), not +30 days
     now = datetime.now(timezone.utc)
+    assert sub.next_charge_at is not None
     assert sub.next_charge_at > now
     assert sub.next_charge_at < now + timedelta(days=2)
     assert sub.next_charge_at != original_next
