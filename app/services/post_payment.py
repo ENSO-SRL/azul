@@ -61,18 +61,41 @@ _AUTH_API_BASE = os.getenv("AUTH_API_BASE_URL", "https://api.iamatlas.do")
 TRIAL_DAYS = 7
 PROMO_CODE_30_DAYS = "ESPACIO30"
 PROMO_CODE_TRIAL_DAYS = 60
-# Teléfonos autorizados para usar el código ESPACIO30
-PROMO_ALLOWED_PHONES = {
-    "18092588131",  # 1 - Alejandro Bobadilla
-    "18096976770",  # 2 - Daniel Paulino
-    "18095011783",  # 5 - Juan José Núñez R.
-    "18295991231",  # 6 - Marco Macarrulla
-    "18094812140",  # 7 - Manuel Perello
-    "18092235715",  # 8 - Danilo Bobadilla
-    "18494734745",  # 10 - Fernando Ramos Villanueva
-    "18494041395",  # Zadkiel Duran
+# Nombres autorizados para usar el código ESPACIO30 (normalizados a minúsculas sin tildes)
+PROMO_ALLOWED_NAMES = {
+    "alejandro bobadilla",         # 1
+    "daniel paulino",              # 2
+    "juan jose nunez",             # 5
+    "marco macarrulla",            # 6
+    "manuel perello",              # 7
+    "danilo bobadilla",            # 8
+    "fernando ramos villanueva",   # 10
+    "luis zadkiel duran aracena",  # Zadkiel Duran
 }
 SUBSCRIPTION_FREQUENCY_DAYS = 30
+
+
+def _normalize_name(name: str) -> str:
+    """Normaliza un nombre: minúsculas, sin tildes, sin espacios extra."""
+    import unicodedata
+    name = name.strip().lower()
+    # Remover tildes/acentos
+    name = unicodedata.normalize("NFD", name)
+    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
+    # Colapsar espacios múltiples
+    return " ".join(name.split())
+
+
+def _is_promo_allowed(user_name: str) -> bool:
+    """Verifica si el nombre del usuario está en la lista de permitidos para el promo."""
+    if not user_name:
+        return False
+    normalized = _normalize_name(user_name)
+    # Verificar si el nombre normalizado contiene o es contenido por algún nombre permitido
+    for allowed in PROMO_ALLOWED_NAMES:
+        if allowed in normalized or normalized in allowed:
+            return True
+    return False
 
 # Monto real de la membresía (centavos) — para el cobro recurrente.
 # El Hold de verificación usa RD$1.00 pero la suscripción debe cobrar el precio real.
@@ -240,7 +263,7 @@ async def create_subscription_if_needed(
     db: AsyncSession,
     card_expiration: str = "",
     promo_code: str | None = None,
-    user_phone: str = "",
+    user_name: str = "",
 ) -> PostPaymentResult:
     """Create a subscription after a successful checkout payment.
 
@@ -278,7 +301,7 @@ async def create_subscription_if_needed(
         )
         existing_sub = existing_active.scalar_one_or_none()
         if existing_sub:
-            if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and user_phone in PROMO_ALLOWED_PHONES:
+            if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and _is_promo_allowed(user_name):
                 now = datetime.now(timezone.utc)
                 # Anti-trampa: si ya tiene trial activo, no permitir re-aplicar el promo
                 if existing_sub.trial_ends_at and existing_sub.trial_ends_at > now:
@@ -367,7 +390,7 @@ async def create_subscription_if_needed(
                 # "ID_DEL_USUARIO_AQUI",
             ]
             trial_days_for_user = TRIAL_DAYS
-            if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and user_phone in PROMO_ALLOWED_PHONES:
+            if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and _is_promo_allowed(user_name):
                 # Anti-trampa: verificar si ya usó el promo en alguna suscripción anterior
                 prior_promo = await db.execute(
                     select(RecurringPaymentModel.id).where(
@@ -462,7 +485,7 @@ async def create_trial_subscription(
     cardholder_email: str,
     db: AsyncSession,
     promo_code: str | None = None,
-    user_phone: str = "",
+    user_name: str = "",
 ) -> PostPaymentResult:
     """Create a trial subscription from a tokenized card (no charge).
 
@@ -497,7 +520,7 @@ async def create_trial_subscription(
         )
         existing_sub = existing_active.scalar_one_or_none()
         if existing_sub:
-            if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and user_phone in PROMO_ALLOWED_PHONES:
+            if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and _is_promo_allowed(user_name):
                 now = datetime.now(timezone.utc)
                 # Anti-trampa: si ya tiene trial activo, no permitir re-aplicar el promo
                 if existing_sub.trial_ends_at and existing_sub.trial_ends_at > now:
@@ -533,7 +556,7 @@ async def create_trial_subscription(
             # "ID_DEL_USUARIO_AQUI",
         ]
         trial_days_for_user = TRIAL_DAYS
-        if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and user_phone in PROMO_ALLOWED_PHONES:
+        if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and _is_promo_allowed(user_name):
             # Anti-trampa: verificar si ya usó el promo en alguna suscripción anterior
             prior_promo = await db.execute(
                 select(RecurringPaymentModel.id).where(
