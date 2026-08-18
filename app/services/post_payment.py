@@ -59,9 +59,9 @@ _AUTH_API_BASE = os.getenv("AUTH_API_BASE_URL", "https://api.iamatlas.do")
 
 # Días de gracia para usuarios nuevos
 TRIAL_DAYS = 7
-PROMO_CODE_30_DAYS = "ESPACIO30"
+PROMO_CODE_30_DAYS = "ATLAS2026UP"
 PROMO_CODE_TRIAL_DAYS = 60
-# Nombres autorizados para usar el código ESPACIO30 (normalizados a minúsculas sin tildes)
+# Nombres autorizados para usar el código ATLAS2026UP (normalizados a minúsculas sin tildes)
 PROMO_ALLOWED_NAMES = {
     "alejandro bobadilla",         # 1
     "daniel paulino",              # 2
