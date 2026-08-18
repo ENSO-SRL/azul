@@ -1596,9 +1596,22 @@ async def process_checkout(
         user_info_token = request.cookies.get("access_token")
         user_data = decode_user_info_token(user_info_token)
 
+    user_phone = ""
     if user_data:
         customer_id = user_data.get("sub", "") or user_data.get("email", "")
-    # else: keep the form-provided customer_id as fallback
+        if customer_id:
+            try:
+                from sqlalchemy import text
+                import re
+                result = await db.execute(
+                    text("SELECT phone FROM public.users WHERE uuid = :sub OR email = :sub LIMIT 1"),
+                    {"sub": customer_id}
+                )
+                row = result.fetchone()
+                if row and row[0]:
+                    user_phone = re.sub(r'\D', '', row[0])
+            except Exception as e:
+                logger.error("[CHECKOUT] Error querying public.users for phone: %s", e)
 
     if not customer_id:
         return HTMLResponse(_html_form("Sesión expirada. Inicia sesión nuevamente.", theme=theme), status_code=401)
@@ -1693,6 +1706,8 @@ async def process_checkout(
                     itbis=itbis,
                     cardholder_email=cardholder_email.strip(),
                     db=db,
+                    promo_code=promo_code,
+                    user_phone=user_phone,
                 )
                 logger.warning(
                     "[CHECKOUT] ✓ trial subscription created | customer_id=%s trial_ends=%s",
@@ -1976,6 +1991,8 @@ async def process_checkout(
                     itbis=itbis,
                     cardholder_email=payment.cardholder_email or "",
                     db=db,
+                    promo_code=promo_code,
+                    user_phone=user_phone,
                 )
                 logger.warning(
                     "[CHECKOUT] ✓ trial created (hold-verify) | customer_id=%s",
@@ -2001,7 +2018,7 @@ async def process_checkout(
             await handle_post_payment_actions(payment)
         except Exception as _pp_exc:
             logger.error("[CHECKOUT] ✗ post-payment actions FAILED | payment_id=%s err=%s", payment.id, _pp_exc)
-        await create_subscription_if_needed(payment, customer_id, db, card_expiration=exp_azul, promo_code=promo_code)
+        await create_subscription_if_needed(payment, customer_id, db, card_expiration=exp_azul, promo_code=promo_code, user_phone=user_phone)
 
     html = _html_result(
         status=status,
