@@ -301,6 +301,7 @@ async def create_subscription_if_needed(
         )
         existing_sub = existing_active.scalar_one_or_none()
         if existing_sub:
+            logger.warning("[post-payment] DEBUG PROMO EXISTING | promo_code=%s user_name='%s'", promo_code, user_name)
             if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and _is_promo_allowed(user_name):
                 now = datetime.now(timezone.utc)
                 # Anti-trampa: si ya tiene trial activo, no permitir re-aplicar el promo
@@ -390,6 +391,7 @@ async def create_subscription_if_needed(
                 # "ID_DEL_USUARIO_AQUI",
             ]
             trial_days_for_user = TRIAL_DAYS
+            logger.warning("[post-payment] DEBUG PROMO NEW | promo_code=%s user_name='%s'", promo_code, user_name)
             if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and _is_promo_allowed(user_name):
                 # Anti-trampa: verificar si ya usó el promo en alguna suscripción anterior
                 prior_promo = await db.execute(
@@ -556,6 +558,10 @@ async def create_trial_subscription(
             # "ID_DEL_USUARIO_AQUI",
         ]
         trial_days_for_user = TRIAL_DAYS
+        logger.warning(
+            "[post-payment] DEBUG PROMO INPUTS | promo_code=%s user_name='%s'",
+            promo_code, user_name
+        )
         if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and _is_promo_allowed(user_name):
             # Anti-trampa: verificar si ya usó el promo en alguna suscripción anterior
             prior_promo = await db.execute(
