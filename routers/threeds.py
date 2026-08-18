@@ -224,7 +224,29 @@ async def term_callback(
                             await db.commit()
                             logger.info("[3ds] fixed card_brand → %s | token=%s", detected, payment.data_vault_token[:12])
             
-            await create_subscription_if_needed(payment, payment.customer_id, db, card_expiration=exp_db)
+            # Retrieve promo code and user name from Redis (saved during /checkout/process)
+            promo_code = None
+            user_name = ""
+            if payment.customer_id:
+                try:
+                    from app.infrastructure.redis_client import get_redis
+                    r = get_redis()
+                    if r:
+                        _p = await r.get(f"promo_code_{payment.customer_id}")
+                        if _p:
+                            promo_code = _p.decode('utf-8') if isinstance(_p, bytes) else _p
+                        _u = await r.get(f"user_name_{payment.customer_id}")
+                        if _u:
+                            user_name = _u.decode('utf-8') if isinstance(_u, bytes) else _u
+                except Exception as e:
+                    logger.warning("[3ds] Failed to read promo from redis: %s", e)
+
+            await create_subscription_if_needed(
+                payment, payment.customer_id, db, 
+                card_expiration=exp_db,
+                promo_code=promo_code,
+                user_name=user_name,
+            )
 
     except Exception as exc:
         logger.error("[3ds] term: challenge error | payment_id=%s error=%s", payment_id, exc)

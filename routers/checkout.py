@@ -1660,6 +1660,18 @@ async def process_checkout(
                 exc,
             )
 
+    # --- SAVE PROMO TO REDIS FOR 3DS REDIRECT ---
+    if promo_code and customer_id:
+        try:
+            from app.infrastructure.redis_client import get_redis
+            r = get_redis()
+            if r:
+                # Store for 1 hour to survive the 3DS redirect
+                await r.setex(f"promo_code_{customer_id}", 3600, promo_code)
+                await r.setex(f"user_name_{customer_id}", 3600, user_name)
+        except Exception as e:
+            logger.error("[CHECKOUT] Failed to save promo to redis: %s", e)
+
     # ── Flujo para USUARIO NUEVO: tokenizar sin cobrar ──────────────────────
     # Cadena de fallback: CREATE → Hold+Void → Sale
     # Cada paso intenta la siguiente opción si Azul devuelve VALIDATION_ERROR:TrxType
@@ -2247,7 +2259,28 @@ async def continue_3ds(
                     .where(SavedCardModel.token == payment.data_vault_token)
                 )
                 exp_db = card_query.scalar_one_or_none() or ""
-            await create_subscription_if_needed(payment, payment.customer_id, db, card_expiration=exp_db)
+            # Retrieve promo code and user name from Redis (saved during /checkout/process)
+            promo_code = None
+            user_name = ""
+            try:
+                from app.infrastructure.redis_client import get_redis
+                r = get_redis()
+                if r:
+                    _p = await r.get(f"promo_code_{payment.customer_id}")
+                    if _p:
+                        promo_code = _p.decode('utf-8') if isinstance(_p, bytes) else _p
+                    _u = await r.get(f"user_name_{payment.customer_id}")
+                    if _u:
+                        user_name = _u.decode('utf-8') if isinstance(_u, bytes) else _u
+            except Exception as e:
+                logger.warning("[CHECKOUT] Failed to read promo from redis in 3ds-continue: %s", e)
+
+            await create_subscription_if_needed(
+                payment, payment.customer_id, db, 
+                card_expiration=exp_db,
+                promo_code=promo_code,
+                user_name=user_name,
+            )
 
     return JSONResponse({"status": payment.status.value, "result_url": result_url})
 
