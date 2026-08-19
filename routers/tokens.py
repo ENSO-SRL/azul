@@ -329,12 +329,12 @@ async def get_user_payment_status(
             f"{trial_end_short}. "
             f"Agrega una tarjeta antes de esa fecha para continuar sin interrupciones."
         )
-    elif not has_cards:
-        overall_status = "no_card"
-        status_message = "El usuario no tiene tarjetas guardadas."
-    elif not has_active_card:
-        overall_status = "card_expired"
-        status_message = "Todas las tarjetas del usuario están vencidas."
+    elif active_subs:
+        # ── Suscripción activa (con o sin tarjeta en vault) ──────────────────
+        # Prioridad sobre no_card: si hay suscripción ACTIVE, el usuario está al día
+        # aunque el vault no tenga tarjeta guardada actualmente.
+        overall_status = "active"
+        status_message = f"Todo al día. {len(active_subs)} suscripción(es) activa(s)."
     elif trial_subs:
         # Trial activo CON tarjeta (flujo checkout existente)
         overall_status = "trial"
@@ -354,9 +354,13 @@ async def get_user_payment_status(
             f"Próximo intento más cercano: "
             f"{min(s['next_charge_at'] for s in failing_subs if s['next_charge_at']) or 'N/A'}."
         )
-    elif active_subs:
-        overall_status = "active"
-        status_message = f"Todo al día. {len(active_subs)} suscripción(es) activa(s)."
+    elif not has_cards:
+        # Sin tarjeta y sin suscripción activa
+        overall_status = "no_card"
+        status_message = "El usuario no tiene tarjetas guardadas."
+    elif not has_active_card:
+        overall_status = "card_expired"
+        status_message = "Todas las tarjetas del usuario están vencidas."
     else:
         overall_status = "no_subscription"
         status_message = "El usuario tiene tarjeta(s) pero no tiene suscripciones activas."
