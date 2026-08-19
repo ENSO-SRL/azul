@@ -34,6 +34,7 @@ from routers.tokens import router as tokens_router
 from app.routers.cert import router as cert_router
 from routers.checkout import router as checkout_router
 from routers.tunnel import router as tunnel_router
+from routers.registration import router as registration_router
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,7 @@ app.include_router(clubs_router,          dependencies=_auth)
 app.include_router(tests_router,          dependencies=_auth)
 app.include_router(notifications_router,  dependencies=_auth)
 app.include_router(reconciliation_router, dependencies=_auth)
+app.include_router(registration_router,   dependencies=_auth)
 
 # Tunnel no está protegido globalmente por la API key porque los clientes acceden mediante GET.
 # POST /tunnel/process valida su propio payload o token si es necesario, pero como es de un solo uso lo dejamos público o protegido a nivel endpoint si requiere auth.

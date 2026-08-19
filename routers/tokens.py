@@ -297,13 +297,46 @@ async def get_user_payment_status(
     failing_subs = [s for s in subscriptions if int(s.get("failed_attempts") or 0) > 0]
     trial_subs = [s for s in subscriptions if s.get("in_trial")]
 
-    if not has_cards:
+    # ── Suscripciones sin tarjeta (registro sin pago) ────────────────────
+    # Una suscripción "sin tarjeta" es aquella con data_vault_token vacío,
+    # creada por el endpoint POST /api/v1/registration/trial.
+    cardless_subs = [s for s in subscriptions if not s.get("card_last4")]
+    # Trial sin tarjeta activo: dentro del período de 30 días
+    cardless_trial_active = [s for s in cardless_subs if s.get("in_trial")]
+    # Trial sin tarjeta expirado: suscripción ACTIVE sin tarjeta cuyo trial ya venció
+    cardless_trial_expired = [
+        s for s in cardless_subs
+        if s["status"] == "ACTIVE"
+        and s.get("trial_ends_at")
+        and not s.get("in_trial")  # trial_ends_at < now
+    ]
+
+    if cardless_trial_expired:
+        # Caso prioritario: el trial expiró y el usuario AÚN no registró tarjeta
+        overall_status = "trial_expired_no_card"
+        trial_end = cardless_trial_expired[0].get("trial_ends_at", "")
+        status_message = (
+            "Tu período de prueba gratuito expiró. "
+            "Agrega una tarjeta de crédito para continuar disfrutando de Atlas."
+        )
+    elif cardless_trial_active:
+        # Trial activo sin tarjeta — usuario dentro del período de gracia
+        overall_status = "trial_no_card"
+        _trial_end_raw = cardless_trial_active[0].get("trial_ends_at") or ""
+        trial_end_short = str(_trial_end_raw)[:10] if _trial_end_raw else "N/A"
+        status_message = (
+            f"Período de prueba activo. Tienes acceso gratuito hasta el "
+            f"{trial_end_short}. "
+            f"Agrega una tarjeta antes de esa fecha para continuar sin interrupciones."
+        )
+    elif not has_cards:
         overall_status = "no_card"
         status_message = "El usuario no tiene tarjetas guardadas."
     elif not has_active_card:
         overall_status = "card_expired"
         status_message = "Todas las tarjetas del usuario están vencidas."
     elif trial_subs:
+        # Trial activo CON tarjeta (flujo checkout existente)
         overall_status = "trial"
         trial_end = trial_subs[0].get("trial_ends_at", "")
         status_message = f"Período de gracia activo. Primer cobro programado para {trial_end}."
@@ -328,6 +361,11 @@ async def get_user_payment_status(
         overall_status = "no_subscription"
         status_message = "El usuario tiene tarjeta(s) pero no tiene suscripciones activas."
 
+    # Calcular trial_ends_at para la respuesta — priorizando trial sin tarjeta
+    all_trial_subs = cardless_trial_active or cardless_trial_expired or trial_subs
+    trial_ends_at_display = all_trial_subs[0].get("trial_ends_at") if all_trial_subs else None
+    in_trial_display = bool(trial_subs or cardless_trial_active)
+
     return {
         "user_info": user_info,
         "cards": cards,
@@ -343,8 +381,8 @@ async def get_user_payment_status(
             "active_subscriptions": len(active_subs),
             "paused_subscriptions": len(paused_subs),
             "failing_subscriptions": len(failing_subs),
-            "in_trial": len(trial_subs) > 0,
-            "trial_ends_at": trial_subs[0].get("trial_ends_at") if trial_subs else None,
+            "in_trial": in_trial_display,
+            "trial_ends_at": trial_ends_at_display,
         },
     }
 
