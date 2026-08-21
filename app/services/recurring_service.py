@@ -328,7 +328,7 @@ class RecurringService:
             if existing is not None:
                 return existing
             recovered = Payment(
-                id=custom_order_id, order_id=f"sub-{sub.id}",
+                id=custom_order_id, order_id=f"sub-{sub.id.replace('-', '')[:12]}",
                 amount=sub.amount, itbis=sub.itbis,
                 payment_type=PaymentType.RECURRING, auth_mode="splitit",
                 initiated_by="merchant", currency_code=sub.currency_code,
@@ -346,7 +346,7 @@ class RecurringService:
 
         payment = Payment(
             id=custom_order_id,
-            order_id=f"sub-{sub.id}",
+            order_id=f"sub-{sub.id.replace('-', '')[:12]}",
             amount=sub.amount,
             itbis=sub.itbis,
             payment_type=PaymentType.RECURRING,
