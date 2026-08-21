@@ -28,6 +28,7 @@ the timestamp.  Visa/MC require this evidence for recurring charge disputes.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -328,7 +329,7 @@ class RecurringService:
             if existing is not None:
                 return existing
             recovered = Payment(
-                id=custom_order_id, order_id=f"sub-{sub.id.replace('-', '')[:12]}",
+                id=custom_order_id, order_id=f"REC-{uuid.uuid4().hex[:8].upper()}",
                 amount=sub.amount, itbis=sub.itbis,
                 payment_type=PaymentType.RECURRING, auth_mode="splitit",
                 initiated_by="merchant", currency_code=sub.currency_code,
@@ -346,7 +347,7 @@ class RecurringService:
 
         payment = Payment(
             id=custom_order_id,
-            order_id=f"sub-{sub.id.replace('-', '')[:12]}",
+            order_id=f"REC-{uuid.uuid4().hex[:8].upper()}",
             amount=sub.amount,
             itbis=sub.itbis,
             payment_type=PaymentType.RECURRING,

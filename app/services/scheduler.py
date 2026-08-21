@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+import uuid
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -296,7 +297,7 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                             amount=sub.amount,
                             itbis=sub.itbis,
                             payment_type=PaymentType.RECURRING,
-                            order_id=f"sub-{sub.id.replace('-', '')[:12]}",
+                            order_id=f"REC-{uuid.uuid4().hex[:8].upper()}",
                             auth_mode="splitit",
                             initiated_by="merchant",
                             currency_code=sub.currency_code,
@@ -325,7 +326,7 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                     amount=sub.amount,
                     itbis=sub.itbis,
                     payment_type=PaymentType.RECURRING,
-                    order_id=f"sub-{sub.id.replace('-', '')[:12]}",
+                    order_id=f"REC-{uuid.uuid4().hex[:8].upper()}",
                     auth_mode="splitit",
                     initiated_by="merchant",
                     currency_code=sub.currency_code,
