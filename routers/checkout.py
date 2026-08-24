@@ -436,7 +436,7 @@ def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0
 
   document.getElementById('payForm').addEventListener('submit', function(e) {
     e.preventDefault();
-    const raw = cardInput.value.replace(/\s/g,'');
+    const raw = cardInput.value.replace(/\\s/g,'');
     if(raw.length < 15) { alert('Número de tarjeta inválido.'); return; }
     if(!luhn(raw)) { alert('Número de tarjeta inválido (verificación Luhn fallida).'); return; }
 
