@@ -716,6 +716,161 @@ async def diagnose_mit_3ds(body: MitDiagRequest):
 
 
 # ---------------------------------------------------------------------------
+# Diagnóstico — procedencia del token (¿la CIT que lo creó estableció bien la
+# credencial almacenada?). Read-only: reconstruye la CIT de origen desde la
+# base, sin cobrar ni llamar a AZUL. Cierra el eslabón CIT→MIT.
+# ---------------------------------------------------------------------------
+
+class TokenProvenanceRequest(BaseModel):
+    token: str = Field("", description="DataVaultToken a investigar.")
+    subscription_id: str = Field("", description="Alternativa: id de suscripción (se toma su token).")
+
+    model_config = {"json_schema_extra": {"examples": [
+        {"token": "BA3F81D4-B4AF-40AC-96F6-9B5FB12E07E5"}
+    ]}}
+
+
+def _diag_parse_indicators(request_payload: str) -> dict:
+    """Extrae los indicadores relevantes del request JSON almacenado (enmascarado)."""
+    import json as _json
+    out = {
+        "trx_type": None,
+        "cardholderInitiatedIndicator": None,
+        "merchantInitiatedIndicator": None,
+        "ForceNo3DS": None,
+        "SaveToDataVault": None,
+        "sent_ThreeDSAuth": False,
+    }
+    try:
+        d = _json.loads(request_payload or "{}")
+    except Exception:  # noqa: BLE001
+        return out
+    if isinstance(d, dict):
+        out["trx_type"] = d.get("TrxType")
+        out["cardholderInitiatedIndicator"] = d.get("cardholderInitiatedIndicator")
+        out["merchantInitiatedIndicator"] = d.get("merchantInitiatedIndicator")
+        out["ForceNo3DS"] = d.get("ForceNo3DS")
+        out["SaveToDataVault"] = d.get("SaveToDataVault")
+        out["sent_ThreeDSAuth"] = "ThreeDSAuth" in d
+    return out
+
+
+def _diag_provenance_verdict(creator, cit: dict) -> dict:
+    """Evalúa si el token proviene de una CIT stored-credential válida."""
+    if creator is None:
+        return {
+            "code": "SIN_CIT_EN_BASE",
+            "conclusion": "No hay un Payment en la base que haya creado este token (SaveToDataVault). "
+                          "El token no fue generado por este sistema, o su registro fue purgado.",
+            "recommended_action": "Verificá el origen del token; probá con uno de una suscripción reciente.",
+        }
+    iso = (creator.get("iso_code") or "")
+    chi = (cit.get("cardholderInitiatedIndicator") or "")
+    save = (cit.get("SaveToDataVault") or "")
+    approved = iso == "00"
+    marked = chi == "STANDING_ORDER"
+    saved = save == "1"
+
+    if approved and marked and saved:
+        return {
+            "code": "CIT_OK_STORED_CREDENTIAL",
+            "conclusion": "El token proviene de una CIT APROBADA (IsoCode=00) con "
+                          "cardholderInitiatedIndicator=STANDING_ORDER y SaveToDataVault=1 — "
+                          "es una credencial almacenada correctamente establecida.",
+            "recommended_action": "Si el MIT sobre este token igual devuelve 3D2METHOD, "
+                                  "la falla es de AZUL: el merchant no honra la exención MIT. "
+                                  "Enviar a AZUL los dos AzulOrderId + RRN de la CIT.",
+        }
+    if not approved:
+        return {
+            "code": "CIT_NO_APROBADA",
+            "conclusion": f"La CIT que creó el token NO fue aprobada (IsoCode={iso or '∅'}). "
+                          "La credencial pudo no quedar registrada.",
+            "recommended_action": "El problema está antes del MIT: revisar por qué la CIT no llega a 00.",
+        }
+    return {
+        "code": "CIT_MAL_MARCADA",
+        "conclusion": "El token fue creado por una operación que NO es una CIT recurrente correcta "
+                      f"(cardholderInitiatedIndicator={chi or '∅'}, SaveToDataVault={save or '∅'}). "
+                      "La relación stored-credential pudo no establecerse.",
+        "recommended_action": "Problema del lado de Atlas: asegurar que el alta use sale_recurring_cit "
+                              "(STANDING_ORDER + SaveToDataVault=1) y que la CIT autentique.",
+    }
+
+
+@router.post(
+    "/diagnostics/token-provenance",
+    tags=["Debug"],
+    summary="Diagnóstico read-only: ¿la CIT que creó el token estableció bien la credencial?",
+    description=(
+        "Reconstruye desde la base la transacción CIT que generó un DataVaultToken "
+        "(SaveToDataVault=1) y reporta sus indicadores (cardholderInitiatedIndicator, "
+        "ForceNo3DS), IsoCode, AzulOrderId, RRN y AuthorizationCode.\n\n"
+        "Es de solo lectura: NO cobra ni llama a AZUL. Sirve para separar 'token mal "
+        "establecido' (lado Atlas) de 'AZUL no honra la exención MIT' (lado AZUL)."
+    ),
+)
+async def diagnose_token_provenance(
+    body: TokenProvenanceRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import select
+    from app.infrastructure.models import PaymentModel, TransactionModel
+
+    token = body.token.strip()
+    if not token and body.subscription_id.strip():
+        sub = await SQLRecurringRepository(db).get_by_id(body.subscription_id.strip())
+        token = sub.data_vault_token if sub else ""
+    if not token:
+        raise HTTPException(status_code=400, detail="Falta 'token' o 'subscription_id' con token.")
+
+    # Payment(s) cuyo response trajo este DataVaultToken = la(s) CIT que lo crearon.
+    res = await db.execute(
+        select(PaymentModel)
+        .where(PaymentModel.data_vault_token == token)
+        .order_by(PaymentModel.created_at.asc())
+    )
+    creators = res.scalars().all()
+    creator_model = creators[0] if creators else None
+
+    creator = None
+    cit_indicators: dict = {}
+    if creator_model is not None:
+        creator = {
+            "payment_id": creator_model.id,
+            "iso_code": creator_model.iso_code,
+            "status": creator_model.status,
+            "payment_type": creator_model.payment_type,
+            "initiated_by": creator_model.initiated_by,
+            "azul_order_id": creator_model.azul_order_id,
+            "rrn": getattr(creator_model, "rrn", ""),
+            "authorization_code": getattr(creator_model, "authorization_code", ""),
+            "customer_id": getattr(creator_model, "customer_id", ""),
+            "created_at": creator_model.created_at.isoformat() if creator_model.created_at else None,
+        }
+        # Transacción de auditoría con el request enviado a AZUL (enmascarado).
+        tres = await db.execute(
+            select(TransactionModel)
+            .where(TransactionModel.payment_id == creator_model.id)
+            .order_by(TransactionModel.created_at.asc())
+        )
+        for t in tres.scalars().all():
+            parsed = _diag_parse_indicators(t.request_payload)
+            # Nos quedamos con la que efectivamente tokenizó (SaveToDataVault=1) si existe.
+            if parsed.get("SaveToDataVault") == "1" or not cit_indicators:
+                cit_indicators = parsed
+
+    return {
+        "token_masked": f"{token[:8]}…{token[-4:]}" if len(token) >= 12 else token,
+        "creator_count": len(creators),
+        "creating_cit": creator,
+        "cit_request_indicators": cit_indicators,
+        "verdict": _diag_provenance_verdict(creator, cit_indicators),
+        "note": "Read-only: reconstruido desde pagos/transacciones locales; no se llamó a AZUL.",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
