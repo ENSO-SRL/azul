@@ -18,11 +18,19 @@ DELETE /api/v1/recurring/{id}               Cancel + DataVault DELETE
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
+from app.domain.entities import Currency, Payment, PaymentStatus, PaymentType
+from app.infrastructure.azul_config import load_azul_config
+from app.infrastructure.azul_gateway import (
+    AzulIntegrationError,
+    AzulPaymentGateway,
+    _datavault_fields,
+)
 from app.infrastructure.database import get_db
 from app.infrastructure.repo_impl import (
     SQLConsentRepository,
@@ -509,6 +517,202 @@ async def get_subscription_history(
         }
         for t in all_txns
     ]
+
+
+# ---------------------------------------------------------------------------
+# Diagnóstico — causa raíz de los cobros recurrentes (MIT / 3DS) en producción
+# ---------------------------------------------------------------------------
+
+class MitDiagRequest(BaseModel):
+    """Parámetros del experimento A/B para aislar el 3DS en cobros MIT."""
+    token: str = Field(
+        "",
+        description="DataVaultToken existente (tuyo). Recomendado — NO genera cobro de tokenización.",
+    )
+    card_number: str = Field("", description="PAN para tokenizar (opción 2 — genera 1 cobro real).")
+    expiration: str = Field("", description="Expiración YYYYMM (ej. 203012).")
+    cvc: str = Field("", description="CVC.")
+    amount: int = Field(100, ge=1, description="Monto en centavos (default 100 = RD$1.00).")
+    itbis: int = Field(0, ge=0, description="ITBIS en centavos (default 0).")
+    cardholder_name: str = Field("Diag MIT", description="CardHolderName.")
+    cardholder_email: str = Field("diag@atlas.do", description="CardHolderEmail.")
+    confirm: bool = Field(
+        False,
+        description="Debe ser true para ejecutar transacciones reales (cobra dinero real en producción).",
+    )
+
+    model_config = {"json_schema_extra": {"examples": [
+        {"token": "76212E91-79AC-4E60-81C3-961EA5479B91", "amount": 100, "confirm": True}
+    ]}}
+
+
+def _diag_new_payment(body: MitDiagRequest) -> Payment:
+    """Payment con OrderNumber corto (<=15) y CustomOrderId único por intento."""
+    short = uuid.uuid4().hex[:8].upper()
+    return Payment(
+        id=f"diag-mit-{short}",           # CustomOrderId único (evita idempotencia de AZUL)
+        order_id=f"DIAG{short[:6]}",      # OrderNumber corto y válido
+        amount=body.amount,
+        itbis=body.itbis,
+        payment_type=PaymentType.RECURRING,
+        auth_mode="splitit",
+        initiated_by="merchant",
+        currency_code=Currency.DOP,
+        cardholder_name=body.cardholder_name,
+        cardholder_email=body.cardholder_email,
+    )
+
+
+def _diag_build_mit_payload(gw: AzulPaymentGateway, payment: Payment, token: str, force_no3ds: bool) -> dict:
+    """Replica el payload de sale_mit(), con ForceNo3DS conmutable."""
+    payload = gw._base_payload(payment)
+    payload.update({
+        "CardNumber": "",
+        "Expiration": "",
+        "CVC": "",
+        **_datavault_fields(False, token),
+        "merchantInitiatedIndicator": "STANDING_ORDER",
+    })
+    if force_no3ds:
+        payload["ForceNo3DS"] = "1"
+    return payload
+
+
+async def _diag_attempt(gw: AzulPaymentGateway, payment: Payment, token: str, force_no3ds: bool) -> dict:
+    """Ejecuta un MIT (sin persistir en DB) y devuelve el resultado estructurado."""
+    payload = _diag_build_mit_payload(gw, payment, token, force_no3ds)
+    res: dict = {
+        "force_no3ds_sent": force_no3ds,
+        "custom_order_id": payload.get("CustomOrderId"),
+        "order_number": payload.get("OrderNumber"),
+    }
+    try:
+        p, _txn = await gw._execute(payment, payload)
+        res.update({
+            "response_code": p.response_code,
+            "iso_code": p.iso_code,
+            "response_message": p.response_message,
+            "azul_order_id": p.azul_order_id,
+            "authorization_code": p.authorization_code,
+            "status": p.status.value,
+            "charged": p.status == PaymentStatus.APPROVED,
+            "error": None,
+        })
+    except AzulIntegrationError as e:
+        res.update({
+            "response_code": "Error",
+            "iso_code": "",
+            "response_message": "",
+            "status": "INTEGRATION_ERROR",
+            "charged": False,
+            "error": str(e),
+        })
+    return res
+
+
+def _diag_verdict(a: dict, b: dict) -> dict:
+    """Mapea el resultado A/B a la causa raíz y la acción recomendada."""
+    a_iso = a.get("iso_code") or ""
+    b_err = b.get("error") or ""
+    a_3ds = a_iso in ("3D2METHOD", "3D")
+
+    if a.get("charged"):
+        code = "MIT_OK_SIN_FORCE"
+        conclusion = "El MIT aprueba SIN ForceNo3DS — la causa raíz NO es 3DS en el comercio."
+        action = "Revisar el task/credenciales del proceso que falla (posible deploy viejo con OrderNumber inválido)."
+    elif a_3ds and "ForceNo3DS" in b_err:
+        code = "COMERCIO_SIN_MIT_NO_3DS"
+        conclusion = (
+            "CONFIRMADO: el comercio de producción rechaza ForceNo3DS y fuerza 3DS 2.0 en el MIT, "
+            "que un cobro headless no puede completar."
+        )
+        action = "AZUL/Luis Recio debe habilitar MIT stored-credential sin 3DS en el merchant. Ningún cambio de código lo resuelve solo."
+    elif a_3ds and b.get("charged"):
+        code = "SOLO_STRIP_CODIGO"
+        conclusion = "Con ForceNo3DS=1 el MIT aprueba; el único bloqueante era el strip de _force_no3ds en producción."
+        action = "Revertir el strip de _force_no3ds para producción y redesplegar. No hace falta AZUL."
+    else:
+        code = "NO_CONCLUYENTE"
+        conclusion = "Resultado fuera del árbol esperado."
+        action = "Revisar el detalle de attempt_a / attempt_b (response_code, iso_code, error)."
+
+    return {"code": code, "conclusion": conclusion, "recommended_action": action}
+
+
+@router.post(
+    "/diagnostics/mit-3ds",
+    tags=["Debug"],
+    summary="Diagnóstico causa raíz: MIT con/sin ForceNo3DS (cobra dinero real)",
+    description=(
+        "Dispara el MISMO cobro MIT dos veces contra AZUL — una SIN ForceNo3DS "
+        "(comportamiento actual de prod) y otra CON ForceNo3DS=1 (como se certificó "
+        "en sandbox) — y devuelve un veredicto de causa raíz.\n\n"
+        "⚠️ Ejecuta transacciones REALES. Requiere `confirm=true`. El intento A "
+        "normalmente no cobra (vuelve 3D2METHOD); el intento B cobra sólo si aprueba. "
+        "Usá un `token` propio para no generar cobro de tokenización.\n\n"
+        "No persiste nada en la base — es una sonda pura contra el gateway."
+    ),
+)
+async def diagnose_mit_3ds(body: MitDiagRequest):
+    if not body.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Debe enviar confirm=true — este endpoint ejecuta cobros reales en AZUL.",
+        )
+
+    cfg = load_azul_config()
+    gw = AzulPaymentGateway()
+
+    result: dict = {
+        "env": cfg.env,
+        "merchant_id": cfg.merchant_id,
+        "api_url": cfg.api_url,
+        "note": "Cada intento usa un CustomOrderId distinto; no se persiste en la base.",
+    }
+
+    # Resolver token: usar el provisto, o tokenizar la tarjeta (genera 1 cobro).
+    token = body.token.strip()
+    if not token:
+        if not (body.card_number and body.expiration and body.cvc):
+            raise HTTPException(
+                status_code=400,
+                detail="Falta 'token' (recomendado) o 'card_number'+'expiration'+'cvc' para tokenizar.",
+            )
+        tok_payment = _diag_new_payment(body)
+        tok_payment.payment_type = PaymentType.SALE
+        tok_payment.initiated_by = "cardholder"
+        try:
+            tok_payment, _ = await gw.sale(
+                tok_payment, body.card_number, body.expiration, body.cvc, save_token=True,
+            )
+        except AzulIntegrationError as e:
+            raise HTTPException(status_code=503, detail=f"Tokenización falló (integration error): {e}")
+        token = tok_payment.data_vault_token or ""
+        result["tokenization"] = {
+            "iso_code": tok_payment.iso_code,
+            "status": tok_payment.status.value,
+            "azul_order_id": tok_payment.azul_order_id,
+            "token_obtained": bool(token),
+        }
+        if not token:
+            result["verdict"] = {
+                "code": "TOKENIZACION_FALLIDA",
+                "conclusion": (
+                    "No se pudo tokenizar la tarjeta (iso=%s). Si volvió 3D2METHOD, el comercio "
+                    "fuerza 3DS incluso en CIT con PAN." % (tok_payment.iso_code or "∅")
+                ),
+                "recommended_action": "Reintentá con un 'token' existente para completar el test MIT.",
+            }
+            return result
+
+    # Experimento A/B (dos CustomOrderId distintos).
+    attempt_a = await _diag_attempt(gw, _diag_new_payment(body), token, force_no3ds=False)
+    attempt_b = await _diag_attempt(gw, _diag_new_payment(body), token, force_no3ds=True)
+
+    result["attempt_a_sin_forceno3ds"] = attempt_a
+    result["attempt_b_con_forceno3ds"] = attempt_b
+    result["verdict"] = _diag_verdict(attempt_a, attempt_b)
+    return result
 
 
 # ---------------------------------------------------------------------------
