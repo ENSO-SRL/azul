@@ -516,15 +516,18 @@ class AzulPaymentGateway:
         Requires a DataVault token obtained from a prior CIT.
 
         Uses ``merchantInitiatedIndicator: "STANDING_ORDER"`` per Azul v1.2.
+
+        ``ForceNo3DS: "1"`` is sent unconditionally — AZUL confirmed MIT
+        processing without 3DS is enabled for this merchant in production
+        (verified 2026-09-04: IsoCode=00, AuthorizationCode=937636).
         """
         payload = self._base_payload(payment)
-        cfg = load_azul_config()
         payload.update({
             "CardNumber": "",
             "Expiration": "",
             "CVC": "",
             **_datavault_fields(False, token),
-            **_force_no3ds(cfg),
+            "ForceNo3DS": "1",
             "merchantInitiatedIndicator": "STANDING_ORDER",
         })
 
