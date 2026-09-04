@@ -212,6 +212,7 @@ class RecurringService:
             cardholder_name=cardholder_name,
             cardholder_email=cardholder_email,
             initiated_by="cardholder",
+            customer_id=customer_id,
         )
 
         # Use sale_cit_new — STANDING_ORDER CIT + SaveToDataVault=1
@@ -333,6 +334,7 @@ class RecurringService:
                 amount=sub.amount, itbis=sub.itbis,
                 payment_type=PaymentType.RECURRING, auth_mode="splitit",
                 initiated_by="merchant", currency_code=sub.currency_code,
+                customer_id=sub.customer_id,
             )
             recovered.status = PaymentStatus.APPROVED
             recovered.iso_code = "00"
@@ -354,6 +356,7 @@ class RecurringService:
             auth_mode="splitit",
             initiated_by="merchant",
             currency_code=sub.currency_code,
+            customer_id=sub.customer_id,
         )
 
         # MIT — user not present, use stored token

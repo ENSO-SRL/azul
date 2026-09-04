@@ -301,6 +301,7 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                             auth_mode="splitit",
                             initiated_by="merchant",
                             currency_code=sub.currency_code,
+                            customer_id=sub.customer_id,
                         )
                         recovered.status = PaymentStatus.APPROVED
                         recovered.iso_code = "00"
@@ -330,6 +331,7 @@ async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -
                     auth_mode="splitit",
                     initiated_by="merchant",
                     currency_code=sub.currency_code,
+                    customer_id=sub.customer_id,
                 )
 
                 payment, txn = await gateway.sale_mit(payment, sub.data_vault_token)

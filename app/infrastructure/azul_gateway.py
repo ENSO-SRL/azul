@@ -230,7 +230,9 @@ class AzulPaymentGateway:
             "Plan": "0",
             "AcquirerRefData": "1",
             "RRN": None,   # Requerido por doc AZUL p.27 — puede ser null
-            "OrderNumber": (payment.order_id or "")[:30],
+            # OrderNumber es X(15) en la API de AZUL — truncar para no gatillar
+            # VALIDATION_ERROR:OrderNumber (visto en producción con ids largos).
+            "OrderNumber": (payment.order_id or "")[:15],
             # CustomerServicePhone: configurable via env var (doc AZUL p.19 — requerido)
             "CustomerServicePhone": os.getenv("AZUL_CUSTOMER_SERVICE_PHONE", ""),
             # ECommerceUrl: URL real del comercio (doc AZUL p.19)
