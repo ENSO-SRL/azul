@@ -99,7 +99,7 @@ def _patch_context(recurring_repo, payment_repo, txn_repo, gateway):
         patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
         patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
         patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
-        patch("app.infrastructure.azul_gateway.AzulPaymentGateway",  return_value=gateway),
+        patch("app.services.scheduler.AzulPaymentGateway",  return_value=gateway),
     ]
 
 
@@ -120,7 +120,7 @@ async def test_expired_card_pauses_without_charge():
         patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
         patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
         patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
-        patch("app.infrastructure.azul_gateway.AzulPaymentGateway",   return_value=gateway),
+        patch("app.services.scheduler.AzulPaymentGateway",   return_value=gateway),
     ):
         await sched_module._charge_due_subscriptions(session_factory)
 
@@ -331,9 +331,9 @@ async def test_integration_error_does_not_pause():
     ):
         await sched_module._charge_due_subscriptions(session_factory)
 
-    # update IS called but sub should remain ACTIVE (our bug, not user's fault)
-    recurring_repo.update.assert_awaited_once()
-    updated = recurring_repo.update.call_args[0][0]
+    # Uncertain outcomes do not change the schedule or grant another attempt.
+    recurring_repo.update.assert_not_awaited()
+    updated = sub
     assert updated.status == SubscriptionStatus.ACTIVE
     assert updated.failed_attempts == 0  # not bumped for integration errors
 
@@ -352,7 +352,7 @@ async def test_charge_due_subscriptions_expired_card():
         patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
         patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
         patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
-        patch("app.infrastructure.azul_gateway.AzulPaymentGateway",   return_value=gateway),
+        patch("app.services.scheduler.AzulPaymentGateway",   return_value=gateway),
     ):
         await sched_module._charge_due_subscriptions(session_factory)
         

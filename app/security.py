@@ -57,8 +57,7 @@ async def require_api_key(api_key: str | None = Security(_API_KEY_HEADER)) -> No
     - Si la clave es incorrecta → 401 Unauthorized.
     """
     if not _API_KEY:
-        # Modo dev/sandbox sin autenticación configurada
-        return
+        raise HTTPException(status_code=503, detail="Authentication unavailable")
 
     if not api_key or not secrets.compare_digest(api_key, _API_KEY):
         raise HTTPException(

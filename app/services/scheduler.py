@@ -84,21 +84,21 @@ async def verify_prior_charge(gateway: AzulPaymentGateway, custom_order_id: str)
     DB idempotency latch cannot see it).
 
     Returns the Azul response dict when the transaction is found + approved,
-    else None. NEVER raises — on any verify error it returns None so a verify
-    outage does not block billing (the DB latch still guards the common case).
+    else None only for a definitive not-found result. An unavailable or
+    ambiguous response must be reconciled before submitting a charge.
     """
     try:
         data = await gateway.verify_payment(custom_order_id)
-    except Exception as e:  # network, integration error, unparseable — do not block
-        logger.warning(
-            "[idempotency] verify_payment(%s) failed: %s — proceeding to charge.",
-            custom_order_id, e,
-        )
-        return None
+    except Exception:
+        raise ValueError("CONFLICT: No se pudo conciliar el intento anterior; cobro detenido.") from None
+    if not isinstance(data, dict) or data.get("Found") not in (True, False, "true", "True", "false", "False", 0, 1):
+        raise ValueError("CONFLICT: Resultado de conciliación ambiguo; cobro detenido.")
     found = data.get("Found") in (True, "true", "True", 1)
     iso = str(data.get("IsoCode", ""))
     if found and iso == "00":
         return data
+    if found:
+        raise ValueError("CONFLICT: Existe un resultado previo; se requiere conciliación.")
     return None
 
 
@@ -197,183 +197,19 @@ async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None
 
 
 async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -> None:
-    """Inner charging logic — called under the distributed lock."""
-    from app.infrastructure.repo_impl import (
-        SQLPaymentRepository,
-        SQLRecurringRepository,
-        SQLTransactionRepository,
-    )
-
+    """Use the same durable exclusion for scheduled and manual billing."""
+    from app.infrastructure.repo_impl import SQLPaymentRepository, SQLRecurringRepository, SQLTransactionRepository
+    from app.services.recurring_service import RecurringService
     async with session_factory() as session:
-        recurring_repo = SQLRecurringRepository(session)
-        payment_repo   = SQLPaymentRepository(session)
-        txn_repo       = SQLTransactionRepository(session)
-        gateway        = AzulPaymentGateway()
-
-        due = await recurring_repo.list_due()
-        if not due:
-            return
-
-        logger.info("[scheduler] %d subscription(s) due for charging.", len(due))
-
-        for sub in due:
+        recurring = SQLRecurringRepository(session)
+        service = RecurringService(SQLPaymentRepository(session), recurring,
+            SQLTransactionRepository(session), AzulPaymentGateway(), db_session=session)
+        for sub in await recurring.list_due():
             try:
-                # ----------------------------------------------------------
-                # Expiration guard — skip charge and pause if card has expired
-                # ----------------------------------------------------------
-                if sub.card_expiration:
-                    try:
-                        # card_expiration is YYYYMM, e.g. "202812"
-                        exp_year  = int(sub.card_expiration[:4])
-                        exp_month = int(sub.card_expiration[4:6])
-                        # Card is valid through the last day of expiration month
-                        from calendar import monthrange
-                        last_day   = monthrange(exp_year, exp_month)[1]
-                        exp_cutoff = datetime(exp_year, exp_month, last_day, 23, 59, 59, tzinfo=timezone.utc)
-                        if datetime.now(timezone.utc) > exp_cutoff:
-                            logger.warning(
-                                "[scheduler] sub=%s PAUSED — card expired %s. "
-                                "Customer must update payment method.",
-                                sub.id, sub.card_expiration,
-                            )
-                            sub.status = SubscriptionStatus.PAUSED
-                            sub.last_failure_reason = f"Tarjeta vencida (exp. {sub.card_expiration})"
-                            await recurring_repo.update(sub)
-                            # Tell the customer to update their card (was dead code before).
-                            await send_notification(
-                                "card_expired",
-                                to_email=sub.cardholder_email,
-                                context=ctx_charge(
-                                    amount=sub.amount,
-                                    currency=_currency_str(sub),
-                                    description=sub.description or "Suscripción",
-                                    card_last4=sub.card_last4,
-                                ),
-                            )
-                            continue
-                    except (ValueError, IndexError):
-                        # Malformed expiration — log and proceed anyway
-                        logger.warning(
-                            "[scheduler] sub=%s has invalid card_expiration=%r — skipping expiry check.",
-                            sub.id, sub.card_expiration,
-                        )
-
-                # Build idempotent CustomOrderId — same on retry, unique per billing
-                # date + attempt. IMPORTANT: the cycle key uses the full date
-                # (YYYYMMDD), not the calendar month, so two 30-day charges that fall
-                # in the same month (e.g. Jan 1 + Jan 31) do NOT collide on the same id.
-                cycle = (
-                    sub.next_charge_at.strftime("%Y%m%d")
-                    if sub.next_charge_at
-                    else datetime.now(timezone.utc).strftime("%Y%m%d")
-                )
-                custom_order_id = build_custom_order_id(sub.id, sub.failed_attempts, cycle)
-
-                # ── Idempotency guard (two layers) ───────────────────────────
-                # 1) DB latch: a local payment row for this deterministic id is
-                #    already APPROVED (crash AFTER charging + saving, but before
-                #    advancing next_charge_at).
-                # 2) Azul verify: the card was charged at Azul but the local row
-                #    was never saved (crash BETWEEN charging and saving).
-                # In either case do NOT charge again — advance the schedule.
-                existing = await payment_repo.get_by_id(custom_order_id)
-                db_ok = existing is not None and existing.status == PaymentStatus.APPROVED
-
-                azul_prior = None
-                if not db_ok:
-                    azul_prior = await verify_prior_charge(gateway, custom_order_id)
-
-                if db_ok or azul_prior is not None:
-                    logger.warning(
-                        "[scheduler] sub=%s already charged this cycle (order=%s, "
-                        "source=%s) — advancing schedule WITHOUT re-charging.",
-                        sub.id, custom_order_id, "db" if db_ok else "azul",
-                    )
-                    # If Azul charged but we have no local record, persist an audit
-                    # row so history/reconciliation stay consistent.
-                    if existing is None and azul_prior is not None:
-                        recovered = Payment(
-                            id=custom_order_id,
-                            amount=sub.amount,
-                            itbis=sub.itbis,
-                            payment_type=PaymentType.RECURRING,
-                            order_id=f"REC-{uuid.uuid4().hex[:8].upper()}",
-                            auth_mode="splitit",
-                            initiated_by="merchant",
-                            currency_code=sub.currency_code,
-                            customer_id=sub.customer_id,
-                        )
-                        recovered.status = PaymentStatus.APPROVED
-                        recovered.iso_code = "00"
-                        recovered.azul_order_id = (
-                            azul_prior.get("AzulOrderId") or azul_prior.get("AZULOrderId", "")
-                        )
-                        recovered.authorization_code = azul_prior.get("AuthorizationCode", "")
-                        recovered.rrn = azul_prior.get("RRN", "")
-                        recovered.response_message = "Recuperado vía verify_payment (idempotencia)"
-                        await payment_repo.save(recovered)
-
-                    sub.failed_attempts = 0
-                    sub.last_failure_reason = ""
-                    sub.last_charged_at = (
-                        existing.created_at if existing is not None else datetime.now(timezone.utc)
-                    )
-                    sub.next_charge_at = datetime.now(timezone.utc) + timedelta(days=sub.frequency_days)
-                    await recurring_repo.update(sub)
-                    continue
-
-                payment = Payment(
-                    id=custom_order_id,  # use as CustomOrderId for Azul idempotency
-                    amount=sub.amount,
-                    itbis=sub.itbis,
-                    payment_type=PaymentType.RECURRING,
-                    order_id=f"REC-{uuid.uuid4().hex[:8].upper()}",
-                    auth_mode="splitit",
-                    initiated_by="merchant",
-                    currency_code=sub.currency_code,
-                    customer_id=sub.customer_id,
-                )
-
-                payment, txn = await gateway.sale_mit(payment, sub.data_vault_token)
-
-                await payment_repo.save(payment)
-                await txn_repo.save(txn)
-
-                if payment.status == PaymentStatus.APPROVED:
-                    # Success — reset retry counter, advance schedule
-                    sub.failed_attempts = 0
-                    sub.last_failure_reason = ""
-                    sub.last_charged_at = datetime.now(timezone.utc)
-                    sub.next_charge_at = (
-                        datetime.now(timezone.utc) + timedelta(days=sub.frequency_days)
-                    )
-                    logger.info(
-                        "[scheduler] sub=%s charged OK — iso=%s next=%s",
-                        sub.id, payment.iso_code, sub.next_charge_at.date(),
-                    )
-                else:
-                    # Business decline — apply retry policy (may PAUSE the sub)
-                    reason = payment.response_message or f"IsoCode={payment.iso_code}"
-                    sub = _handle_failure(sub, reason)
-
-                # Single notification path — one email per outcome (no duplicates).
-                await notify_charge_outcome(sub, payment, custom_order_id)
-
-            except AzulIntegrationError as exc:
-                # Our bug — log as ERROR, do NOT apply retry (would loop)
-                # The subscription stays on the same next_charge_at until a human fixes the integration
-                logger.error(
-                    "[scheduler] INTEGRATION ERROR sub=%s: %s — "
-                    "NOT retrying. Fix the integration bug first.",
-                    sub.id, exc,
-                )
-                # Don't modify sub — don't bump failed_attempts for our bugs
-
-            except Exception as exc:
-                logger.exception("[scheduler] sub=%s unexpected error: %s", sub.id, exc)
-                sub = _handle_failure(sub, str(exc))
-
-            await recurring_repo.update(sub)
+                await service.charge(sub.id)
+            except Exception:
+                await session.rollback()
+                logger.exception("[scheduler] Cobro detenido; requiere conciliación o revisión sub=%s", sub.id)
 
 
 def _handle_failure(sub, reason: str):
@@ -572,6 +408,9 @@ def start_scheduler(engine: AsyncEngine) -> None:
         replace_existing=True,
     )
 
+    from app.services.post_payment import retry_subscription_activations
+    _scheduler.add_job(retry_subscription_activations, trigger="interval", minutes=5,
+        kwargs={"session_factory": session_factory}, id="retry_subscription_activations", replace_existing=True)
     _scheduler.start()
     logger.info(
         "[scheduler] Started — "

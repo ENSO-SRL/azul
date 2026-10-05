@@ -123,6 +123,7 @@ def _recurring_to_model(r: RecurringPayment) -> RecurringPaymentModel:
         card_brand=r.card_brand,
         card_last4=r.card_last4,
         card_expiration=r.card_expiration,
+        method_updated_at=datetime.now(timezone.utc) if r.data_vault_token else None,
         cardholder_email=r.cardholder_email,
         next_charge_at=r.next_charge_at,
         last_charged_at=r.last_charged_at,
@@ -328,6 +329,9 @@ class SQLRecurringRepository(RecurringRepository):
             select(RecurringPaymentModel).where(
                 RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
                 RecurringPaymentModel.next_charge_at <= now,
+                RecurringPaymentModel.data_vault_token.is_not(None),
+                RecurringPaymentModel.data_vault_token != "",
+                (RecurringPaymentModel.trial_ends_at.is_(None) | (RecurringPaymentModel.trial_ends_at <= now)),
             )
         )
         return [_model_to_recurring(r) for r in result.scalars().all()]

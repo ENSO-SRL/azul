@@ -8,10 +8,14 @@ from unittest.mock import patch
 
 from app.main import app
 from app.utils.token_utils import require_user_info
+from app.infrastructure.database import get_db
+from test_subscription_identity import storage
 
 @pytest.fixture
-def override_auth():
-    app.dependency_overrides[require_user_info] = lambda: {"sub": "user123", "email": "test@test.com"}
+def override_auth(storage):
+    db = storage()
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[require_user_info] = lambda: {"sub": "228", "email": "account@example.com"}
     yield
     app.dependency_overrides.clear()
 

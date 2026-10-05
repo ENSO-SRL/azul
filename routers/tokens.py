@@ -8,6 +8,7 @@ DELETE /api/v1/tokens/{token}               → Remove a card from DataVault + l
 """
 
 from __future__ import annotations
+from app.services.access_policy import access_decision
 
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
@@ -156,11 +157,12 @@ async def get_user_payment_status(
     # original_cid preserva el customer_id original (p.ej. "173")
     # para poder buscar datos guardados tanto con el ID como con el email.
     original_cid = customer_id
+    account_aliases = set()
     try:
         query_text = (
-            "SELECT email, name, last_name FROM public.users WHERE id = :cid_int LIMIT 1"
+            "SELECT email, name, last_name, id::text, uuid::text FROM public.users WHERE id = :cid_int LIMIT 1"
             if customer_id.isdigit()
-            else "SELECT email, name, last_name FROM public.users WHERE uuid::text = :cid OR email = :cid LIMIT 1"
+            else "SELECT email, name, last_name, id::text, uuid::text FROM public.users WHERE uuid::text = :cid OR lower(trim(email)) = lower(trim(:cid)) LIMIT 1"
         )
         params = {"cid_int": int(customer_id)} if customer_id.isdigit() else {"cid": customer_id}
         
@@ -170,6 +172,7 @@ async def get_user_payment_status(
             user_info["email"] = row[0] or ""
             user_info["name"] = f"{row[1] or ''} {row[2] or ''}".strip()
             user_info["found"] = True
+            account_aliases.update(str(value).strip().lower() for value in (row[3], row[4]) if value)
     except Exception as e:
         import logging
         logging.getLogger(__name__).error("Error fetching user from public.users: %s", e)
@@ -179,7 +182,7 @@ async def get_user_payment_status(
     # Checkout saves using JWT `sub` (e.g. "173"), but older flows used email.
     # We search both to find all data regardless of which was used.
     from sqlalchemy import or_
-    cid_values = {original_cid}
+    cid_values = {original_cid, *account_aliases}
     if user_info["email"]:
         cid_values.add(user_info["email"])
     cid_filter_cards = or_(*[SavedCardModel.customer_id == v for v in cid_values])
@@ -387,6 +390,7 @@ async def get_user_payment_status(
             "failing_subscriptions": len(failing_subs),
             "in_trial": in_trial_display,
             "trial_ends_at": trial_ends_at_display,
+            **access_decision(subs_raw, now=now),
         },
     }
 

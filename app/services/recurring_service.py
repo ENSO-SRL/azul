@@ -51,6 +51,9 @@ from app.domain.repositories import (
 )
 from app.infrastructure.azul_gateway import AzulPaymentGateway
 from app.services.notification_service import ctx_charge, send_notification
+from app.services.billing_attempts import BillingAttempts
+from app.services.access_policy import access_decision, utc
+from app.services.subscription_identity import resolve_customer_identity, find_active_subscription, lock_customer_subscriptions
 
 
 class RecurringService:
@@ -74,30 +77,10 @@ class RecurringService:
         self._db         = db_session
 
     async def _get_search_ids(self, customer_id: str) -> set[str]:
-        search_ids = {customer_id}
-        if self._db:
-            from sqlalchemy import text
-            try:
-                if customer_id.isdigit():
-                    result = await self._db.execute(
-                        text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
-                        {"cid": int(customer_id)},
-                    )
-                    row = result.fetchone()
-                    if row and row[0]:
-                        search_ids.add(row[0])
-                else:
-                    result = await self._db.execute(
-                        text("SELECT id FROM public.users WHERE email = :email LIMIT 1"),
-                        {"email": customer_id},
-                    )
-                    row = result.fetchone()
-                    if row and row[0]:
-                        search_ids.add(str(row[0]))
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(f"Error fetching user cross-reference: {e}")
-        return search_ids
+        if self._db is None:
+            raise ValueError("CONFLICT: La identidad requiere una sesión persistente.")
+        identity = await resolve_customer_identity(self._db, customer_id)
+        return set(identity.aliases)
 
     # ------------------------------------------------------------------
     # Subscription creation (CIT — first charge + tokenise)
@@ -153,11 +136,15 @@ class RecurringService:
                 f"VALIDATION_ERROR:itbis — el ITBIS ({itbis}) no puede exceder el total ({amount})."
             )
 
-        # Guard: check if customer already has an active subscription for this plan
-        existing_subs = await self._recurring.list_by_customer(customer_id)
-        for sub in existing_subs:
-            if sub.status == SubscriptionStatus.ACTIVE and sub.description == description:
-                raise ValueError("CONFLICT: El usuario ya tiene una suscripción activa para este plan.")
+        if self._db is None:
+            raise ValueError("CONFLICT: No se puede crear sin exclusión persistente.")
+        identity = await resolve_customer_identity(self._db, customer_id)
+        customer_id = identity.customer_id
+        if await find_active_subscription(self._db, identity):
+            raise ValueError("CONFLICT: El usuario ya tiene una suscripción activa.")
+        prior = await self.list_subscriptions(customer_id)
+        anchor = max(prior, key=lambda row: row.created_at).id if prior else "initial"
+        await BillingAttempts(self._db).reserve(f"create:{customer_id}:{anchor}", customer_id, "")
 
         if trial_days > 0:
             try:
@@ -295,6 +282,31 @@ class RecurringService:
             raise ValueError(f"Subscription {recurring_id} not found")
         if sub.status != SubscriptionStatus.ACTIVE:
             raise ValueError(f"Subscription {recurring_id} is {sub.status.value}")
+        if not sub.data_vault_token or not sub.data_vault_token.strip():
+            raise ValueError(f"Subscription {recurring_id} has no DataVault token")
+        now = datetime.now(timezone.utc)
+        if sub.trial_ends_at and utc(sub.trial_ends_at) > now:
+            raise ValueError("CONFLICT: La prueba todavía está vigente.")
+        if sub.next_charge_at and utc(sub.next_charge_at) > now:
+            raise ValueError("CONFLICT: El ciclo todavía no está vencido.")
+        from calendar import monthrange
+        try:
+            year, month = int(sub.card_expiration[:4]), int(sub.card_expiration[4:6])
+            cutoff = datetime(year, month, monthrange(year, month)[1], 23, 59, 59, tzinfo=timezone.utc)
+            if now > cutoff:
+                sub.status = SubscriptionStatus.PAUSED
+                sub.last_failure_reason = "Tarjeta vencida"
+                await self._recurring.update(sub)
+                await send_notification("card_expired", to_email=sub.cardholder_email,
+                    context=ctx_charge(amount=sub.amount, currency=getattr(sub.currency_code, "value", sub.currency_code),
+                        description=sub.description or "Suscripción", card_last4=sub.card_last4))
+                raise ValueError("expired")
+        except (ValueError, TypeError, IndexError):
+            raise ValueError("CONFLICT: La tarjeta requiere una fecha de vencimiento válida.") from None
+        identity = await resolve_customer_identity(self._db, sub.customer_id)
+        active = await find_active_subscription(self._db, identity)
+        if active is None or active.id != sub.id:
+            raise ValueError("CONFLICT: Suscripción no identificable o duplicada.")
         if not sub.data_vault_token:
             raise ValueError(f"Subscription {recurring_id} has no DataVault token")
 
@@ -359,11 +371,16 @@ class RecurringService:
             customer_id=sub.customer_id,
         )
 
-        # MIT — user not present, use stored token
-        payment, txn = await self._gw.sale_mit(payment, sub.data_vault_token)
-
-        await self._payments.save(payment)
-        await self._txns.save(txn)
+        # This durable unique reservation survives commits, worker crashes and timeouts.
+        attempts = BillingAttempts(self._db)
+        await attempts.reserve(custom_order_id, sub.id, payment.id)
+        try:
+            payment, txn = await self._gw.sale_mit(payment, sub.data_vault_token)
+            await self._payments.save(payment)
+            await self._txns.save(txn)
+        except Exception:
+            await attempts.uncertain(custom_order_id)
+            raise
 
         now = datetime.now(timezone.utc)
         if payment.status == PaymentStatus.APPROVED:
@@ -382,6 +399,7 @@ class RecurringService:
 
         # Notify the customer (success invoice / decline / pause) — same behaviour
         # as the scheduler, so manual charges are no longer silent.
+        await attempts.finish(custom_order_id, payment.status.value, payment.id)
         await notify_charge_outcome(sub, payment, invoice_number=custom_order_id)
 
         return payment
@@ -427,6 +445,16 @@ class RecurringService:
             raise ValueError(f"Cannot resume a cancelled subscription")
         if sub.status == SubscriptionStatus.ACTIVE:
             raise ValueError(f"Subscription {recurring_id} is already active")
+        if self._db is None:
+            raise ValueError("CONFLICT: Se requiere persistencia para reactivar.")
+        identity = await resolve_customer_identity(self._db, sub.customer_id)
+        await lock_customer_subscriptions(self._db, identity)
+        active = await find_active_subscription(self._db, identity)
+        if active is not None and active.id != sub.id:
+            raise ValueError("CONFLICT: El usuario ya tiene otra suscripción activa.")
+        from sqlalchemy import update
+        from app.infrastructure.models import RecurringPaymentModel
+        await self._db.execute(update(RecurringPaymentModel).where(RecurringPaymentModel.id == recurring_id).values(customer_id=identity.customer_id))
         result = await self._recurring.resume(recurring_id)
         return result  # type: ignore[return-value]
 
@@ -564,6 +592,7 @@ class RecurringService:
                 "paused_count": 0,
                 "cancelled_count": 0,
                 "subscriptions": [],
+                **access_decision([]),
             }
 
         now = datetime.now(timezone.utc)
@@ -633,4 +662,5 @@ class RecurringService:
             "paused_count": len(paused_subs),
             "cancelled_count": len(cancelled_subs),
             "subscriptions": subscription_details,
+            **access_decision(subs, now=now),
         }

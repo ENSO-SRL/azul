@@ -74,6 +74,8 @@ def _make_service(
     txn_repo       = AsyncMock()
     consent_repo   = AsyncMock()
     gateway        = AsyncMock()
+    gateway.verify_payment.return_value = {"Found": False}
+    payment_repo.get_by_id.return_value = None
 
     payment_repo.save.return_value = None
     txn_repo.save.return_value = None

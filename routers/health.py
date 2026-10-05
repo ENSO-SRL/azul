@@ -4,7 +4,9 @@ Health check + smoke test endpoint.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from app.security import require_api_key
+import os
 
 from app.infrastructure.azul_gateway import AzulPaymentGateway
 
@@ -23,7 +25,9 @@ async def health():
 
 
 @router.post("/test/smoke", summary="Smoke test against Azul sandbox")
-async def smoke_test():
+async def smoke_test(_=Depends(require_api_key)):
+    if os.getenv("AZUL_ENV", "production").lower() != "sandbox":
+        raise HTTPException(status_code=404, detail="Not found")
     """Fire a $1.00 test Sale to the Azul sandbox.
 
     Uses test card 4260550061845872 with splitit auth mode.

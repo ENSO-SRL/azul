@@ -16,11 +16,13 @@ Si ninguna está presente, muestra checkout como invitado.
 from __future__ import annotations
 
 import logging
+from html import escape
 import os
 import uuid
 from typing import Dict
 
-from fastapi import APIRouter, Depends, Form, Request, Cookie
+from fastapi import APIRouter, Depends, Form, Request, Cookie, HTTPException
+from app.utils.token_utils import require_user_info
 from fastapi.responses import HTMLResponse
 
 from app.infrastructure.azul_gateway import AzulPaymentGateway
@@ -81,6 +83,10 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
 # ---------------------------------------------------------------------------
 
 def _html_form(error: str = "", saved_cards_html: str = "", cards_count: int = 0, theme: str = "dark", customer_id: str = "", prefill_email: str = "", prefill_name: str = "", csrf_token: str = "", subscription_status_html: str = "") -> str:
+    error = escape(error)
+    prefill_name = escape(prefill_name, quote=True)
+    prefill_email = escape(prefill_email, quote=True)
+    customer_id = escape(customer_id, quote=True)
     error_block = f'<div class="error-msg"> {error}</div>' if error else ""
     theme_class = "theme-dark" if theme == "dark" else "theme-light"
     return """<!DOCTYPE html>
@@ -685,6 +691,9 @@ def _html_result(
     theme: str = "dark", card_last4: str = "", cardholder_name: str = "",
     cardholder_email: str = "", card_saved: bool = False,
 ) -> str:
+    cardholder_name = escape(cardholder_name)
+    cardholder_email = escape(cardholder_email)
+    card_last4 = escape(card_last4)
     ok = status == "APPROVED"
 
     # Human-readable decline reasons
@@ -701,8 +710,9 @@ def _html_result(
     }
 
     if ok:
-        status_title = "¡Pago exitoso!"
-        status_subtitle = "Tu pago ha sido procesado correctamente."
+        pending = "activación pendiente" in message.lower()
+        status_title = "Pago aprobado; activación pendiente" if pending else ("Tarjeta actualizada" if amount == 0 else "Pago aprobado")
+        status_subtitle = escape(message) if message else "Tu pago ha sido procesado correctamente."
         accent = "#10b981"
         accent_light = "rgba(16, 185, 129, 0.08)"
         accent_border = "rgba(16, 185, 129, 0.2)"
@@ -1263,7 +1273,7 @@ def _html_result_trial(
     </div>
 
     <div class="result-status-title">¡Tarjeta guardada!</div>
-    <div class="result-status-subtitle">Tu tarjeta ha sido registrada exitosamente. Tu período de prueba de 7 días ha comenzado — no se realizó ningún cobro.</div>
+    <div class="result-status-subtitle">Tu tarjeta ha sido registrada. Se conserva la vigencia de tu suscripción y no se realizó ningún cobro.</div>
 
     <div class="result-divider"></div>
 
@@ -1280,7 +1290,7 @@ def _html_result_trial(
         <circle cx="12" cy="12" r="10"></circle>
         <polyline points="12 6 12 12 16 14"></polyline>
       </svg>
-      <span>7 días de prueba gratis — primer cobro el {trial_date_display}</span>
+      <span>Se conserva la fecha de cobro: {trial_date_display}</span>
     </div>
 
     <div class="result-saved-badge">
@@ -1627,38 +1637,45 @@ async def process_checkout(
     amount = MEMBERSHIP_AMOUNT
     itbis  = MEMBERSHIP_ITBIS
 
-    # ── Detectar si es usuario nuevo ──────────────────────────────────────
-    is_new_user = False
-    if customer_id:
-        try:
-            from sqlalchemy import select
-            from app.infrastructure.models import RecurringPaymentModel, SavedCardModel
-            from app.domain.entities import SubscriptionStatus
-
-            prior_subs = await db.execute(
-                select(RecurringPaymentModel.id).where(
-                    RecurringPaymentModel.customer_id == customer_id,
-                    RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
-                ).limit(1)
-            )
-            prior_cards = await db.execute(
-                select(SavedCardModel.id).where(
-                    SavedCardModel.customer_id == customer_id,
-                ).limit(1)
-            )
-            is_new_user = (
-                prior_subs.scalar_one_or_none() is None
-                and prior_cards.scalar_one_or_none() is None
-            )
-            logger.warning(
-                "[CHECKOUT] user detection | customer_id=%s is_new_user=%s",
-                customer_id, is_new_user,
-            )
-        except Exception as exc:
-            logger.error(
-                "[CHECKOUT] ✗ user detection FAILED (defaulting to charge) | err=%s",
-                exc,
-            )
+    # Resolve ID/email/UUID before deciding whether a charge is needed.
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from app.infrastructure.models import RecurringPaymentModel, SavedCardModel
+    from app.services.subscription_identity import (
+        CustomerIdentityError, find_active_subscription, resolve_customer_identity,
+    )
+    try:
+        identity = await resolve_customer_identity(db, customer_id)
+        customer_id = identity.customer_id
+        existing_sub = await find_active_subscription(db, identity)
+        prior_subs = await db.execute(
+            select(RecurringPaymentModel.id).where(
+                identity.matches(RecurringPaymentModel.customer_id),
+            ).limit(1)
+        )
+        prior_cards = await db.execute(
+            select(SavedCardModel.id).where(
+                identity.matches(SavedCardModel.customer_id),
+            ).limit(1)
+        )
+        is_new_user = prior_subs.scalar_one_or_none() is None and prior_cards.scalar_one_or_none() is None
+        in_existing_trial = bool(
+            existing_sub and existing_sub.trial_ends_at
+            and existing_sub.trial_ends_at > datetime.now(timezone.utc)
+        )
+        from app.services.access_policy import access_decision
+        in_valid_period = bool(existing_sub and access_decision([existing_sub])["allow_access"])
+        tokenize_only = is_new_user or in_valid_period
+    except CustomerIdentityError as exc:
+        await db.rollback()
+        return HTMLResponse(_html_form(str(exc), theme=theme), status_code=409)
+    except Exception:
+        await db.rollback()
+        logger.exception("[CHECKOUT] No se pudo verificar la suscripción del usuario")
+        return HTMLResponse(
+            _html_form("No se pudo verificar tu suscripción. Intenta de nuevo.", theme=theme),
+            status_code=503,
+        )
 
     # --- SAVE PROMO TO REDIS FOR 3DS REDIRECT ---
     if promo_code and customer_id:
@@ -1676,9 +1693,9 @@ async def process_checkout(
     # Cadena de fallback: CREATE → Hold+Void → Sale
     # Cada paso intenta la siguiente opción si Azul devuelve VALIDATION_ERROR:TrxType
     payment = None  # Se define aquí para que Hold pueda setearla antes del Sale
-    if is_new_user and customer_id:
+    if tokenize_only and customer_id:
         logger.warning(
-            "[CHECKOUT] → NEW USER — tokenize only (no charge) | customer_id=%s card=%s",
+            "[CHECKOUT] → tokenize only (new user or existing trial) | customer_id=%s card=%s",
             customer_id, card_masked,
         )
 
@@ -1722,6 +1739,11 @@ async def process_checkout(
                     customer_id, exc,
                 )
 
+            if not trial_result or trial_result.subscription_error:
+                return HTMLResponse(
+                    _html_form("La tarjeta se guardó, pero no se pudo actualizar tu suscripción. Intenta de nuevo.", theme=theme),
+                    status_code=503,
+                )
             html = _html_result_trial(
                 card_last4=saved_card.card_last4,
                 cardholder_name=cardholder_name.strip(),
@@ -1729,7 +1751,7 @@ async def process_checkout(
                 trial_ends_at=trial_result.trial_ends_at if trial_result else "",
                 theme=theme,
             )
-            resp = HTMLResponse(html)
+            resp = HTMLResponse(html, status_code=202 if "activación pendiente" in html.lower() else 200)
             resp.headers["X-Frame-Options"] = "DENY"
             resp.headers["X-Content-Type-Options"] = "nosniff"
             return resp
@@ -1810,6 +1832,11 @@ async def process_checkout(
             pass  # payment ya está definido, cae al manejo de 3DS abajo
 
     # ── Flujo Sale (usuario existente O fallback final de usuario nuevo) ───
+    if payment is None and in_valid_period:
+        return HTMLResponse(
+            _html_form("No se pudo verificar la tarjeta. Tu prueba sigue vigente; intenta de nuevo más tarde.", theme=theme),
+            status_code=503,
+        )
     if payment is None:
         # IP real del cliente
         client_ip = (
@@ -1844,6 +1871,8 @@ async def process_checkout(
         )
         try:
             # Para suscripciones siempre tokenizamos: save_card=True + STANDING_ORDER indicator
+            from app.services.checkout_attempts import reserve_checkout_charge
+            await reserve_checkout_charge(db, customer_id)
             payment = await svc.process_sale(
                 amount=amount,
                 itbis=itbis,
@@ -1890,10 +1919,10 @@ async def process_checkout(
             html = _html_3ds_method(
                 payment_id=payment.id,
                 method_form=payment.threeds_method_form,
-                amount=payment.amount + payment.itbis,
+                amount=payment.amount,
                 theme=theme,
             )
-            resp = HTMLResponse(html)
+            resp = HTMLResponse(html, status_code=202 if "activación pendiente" in html.lower() else 200)
             resp.headers["X-Frame-Options"] = "SAMEORIGIN"
             resp.headers["X-Content-Type-Options"] = "nosniff"
             return resp
@@ -2004,6 +2033,11 @@ async def process_checkout(
             except Exception as te:
                 logger.error("[CHECKOUT] ✗ trial FAILED (hold-verify) | %s", te)
 
+            if not trial_result or trial_result.subscription_error:
+                return HTMLResponse(
+                    _html_form("La tarjeta se verificó, pero no se pudo actualizar tu suscripción. Intenta de nuevo.", theme=theme),
+                    status_code=503,
+                )
             html = _html_result_trial(
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
                 cardholder_name=payment.cardholder_name or "",
@@ -2011,7 +2045,7 @@ async def process_checkout(
                 trial_ends_at=trial_result.trial_ends_at if trial_result else "",
                 theme=theme,
             )
-            resp = HTMLResponse(html)
+            resp = HTMLResponse(html, status_code=202 if "activación pendiente" in html.lower() else 200)
             resp.headers["X-Frame-Options"] = "DENY"
             resp.headers["X-Content-Type-Options"] = "nosniff"
             return resp
@@ -2021,13 +2055,15 @@ async def process_checkout(
             await handle_post_payment_actions(payment)
         except Exception as _pp_exc:
             logger.error("[CHECKOUT] ✗ post-payment actions FAILED | payment_id=%s err=%s", payment.id, _pp_exc)
-        await create_subscription_if_needed(payment, customer_id, db, card_expiration=exp_azul, promo_code=promo_code, user_name=user_name)
+        activation = await create_subscription_if_needed(payment, customer_id, db, card_expiration=exp_azul, promo_code=promo_code, user_name=user_name)
+        if activation.subscription_error:
+            msg = "Pago aprobado; activación pendiente. No repitas el pago."
 
     html = _html_result(
         status=status,
         message=msg,
         payment_id=payment.id,
-        amount=payment.amount + payment.itbis,
+        amount=payment.amount,
         iso=payment.iso_code,
         theme=theme,
         card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
@@ -2035,7 +2071,7 @@ async def process_checkout(
         cardholder_email=payment.cardholder_email or "",
         card_saved=bool(payment.data_vault_token),
     )
-    resp = HTMLResponse(html)
+    resp = HTMLResponse(html, status_code=202 if "activación pendiente" in html.lower() else 200)
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
@@ -2084,19 +2120,24 @@ async def pay_with_token(
     token = selected_card.token
     expiration = getattr(selected_card, 'expiration', '')
 
-    from sqlalchemy import select
-    from app.infrastructure.models import RecurringPaymentModel
-    from app.domain.entities import SubscriptionStatus
-    
-    existing_active = await db.execute(
-        select(RecurringPaymentModel).where(
-            RecurringPaymentModel.customer_id == customer_id,
-            RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
-        )
+    from app.services.subscription_identity import (
+        CustomerIdentityError, find_active_subscription, resolve_customer_identity,
     )
-    if existing_active.scalar_one_or_none():
-        logger.warning("[CHECKOUT] ⚠ Usuario ya tiene suscripción activa | customer_id=%s", customer_id)
-        return HTMLResponse(_html_result("DECLINED", "El usuario ya tiene una suscripción activa.", "", 0, "", theme=theme, card_last4=""), status_code=409)
+    try:
+        identity = await resolve_customer_identity(db, customer_id)
+        customer_id = identity.customer_id
+        existing_sub = await find_active_subscription(db, identity)
+    except CustomerIdentityError as exc:
+        await db.rollback()
+        return HTMLResponse(_html_form(str(exc), theme=theme), status_code=409)
+    except Exception:
+        await db.rollback()
+        logger.exception("[CHECKOUT] No se pudo verificar la suscripción antes del cobro con token")
+        return HTMLResponse(_html_form("No se pudo verificar tu suscripción. Intenta de nuevo.", theme=theme), status_code=503)
+    from app.services.access_policy import access_decision
+    if existing_sub and access_decision([existing_sub])["allow_access"]:
+        await token_svc.set_default_card(customer_id, selected_card.id)
+        return HTMLResponse(_html_result("APPROVED", "Tarjeta actualizada; se conserva tu período vigente. No se realizó un cobro.", "", 0, "", theme=theme, card_last4=selected_card.card_last4))
 
     amount = MEMBERSHIP_AMOUNT
     itbis = MEMBERSHIP_ITBIS
@@ -2106,6 +2147,7 @@ async def pay_with_token(
     gateway = AzulPaymentGateway()
     
     payment = Payment(
+        customer_id=customer_id,
         amount=amount,
         itbis=itbis,
         payment_type=PaymentType.RECURRING,
@@ -2115,6 +2157,8 @@ async def pay_with_token(
     )
     
     try:
+        from app.services.checkout_attempts import reserve_checkout_charge
+        await reserve_checkout_charge(db, customer_id, payment.id)
         payment, txn = await gateway.sale_cit(payment, token)
         payment.data_vault_token = payment.data_vault_token or token
         payment.card_number_masked = payment.card_number_masked or getattr(selected_card, 'card_last4', "")
@@ -2124,7 +2168,7 @@ async def pay_with_token(
         await SQLTransactionRepository(db).save(txn)
     except Exception as e:
         logger.error("[CHECKOUT] ✗ Error llamando a sale_cit: %s", e)
-        return HTMLResponse(_html_result("DECLINED", "Ocurrió un error al procesar el pago. Por favor, intenta de nuevo más tarde.", "", 0, "", theme=theme, card_last4=""), status_code=502)
+        return HTMLResponse(_html_result("DECLINED", "No se pudo confirmar el resultado. Consulta el estado antes de repetir el pago.", "", 0, "", theme=theme, card_last4=""), status_code=502)
 
     status = payment.status == PaymentStatus.APPROVED
     msg = payment.response_message or "Declinada"
@@ -2136,13 +2180,15 @@ async def pay_with_token(
             await handle_post_payment_actions(payment)
         except Exception as _pp_exc:
             logger.error("[CHECKOUT] post-payment actions FAILED | payment_id=%s err=%s", payment.id, _pp_exc)
-        await create_subscription_if_needed(payment, customer_id, db, card_expiration=expiration)
+        activation = await create_subscription_if_needed(payment, customer_id, db, card_expiration=expiration)
+        if activation.subscription_error:
+            msg = "Pago aprobado; activación pendiente. No repitas el pago."
 
     html = _html_result(
         status="APPROVED" if status else "DECLINED",
         message=msg,
         payment_id=payment.id,
-        amount=payment.amount + payment.itbis,
+        amount=payment.amount,
         iso=payment.iso_code,
         theme=theme,
         card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else selected_card.card_last4,
@@ -2150,7 +2196,7 @@ async def pay_with_token(
         cardholder_email=payment.cardholder_email or "",
         card_saved=True,
     )
-    resp = HTMLResponse(html)
+    resp = HTMLResponse(html, status_code=202 if "activación pendiente" in html.lower() else 200)
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
@@ -2275,14 +2321,15 @@ async def continue_3ds(
             except Exception as e:
                 logger.warning("[CHECKOUT] Failed to read promo from redis in 3ds-continue: %s", e)
 
-            await create_subscription_if_needed(
+            activation = await create_subscription_if_needed(
                 payment, payment.customer_id, db, 
                 card_expiration=exp_db,
                 promo_code=promo_code,
                 user_name=user_name,
             )
 
-    return JSONResponse({"status": payment.status.value, "result_url": result_url})
+    return JSONResponse({"status": payment.status.value, "result_url": result_url,
+        "activation_pending": bool(locals().get("activation") and activation.subscription_error)})
 
 
 @router.get("/challenge/{payment_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -2345,6 +2392,8 @@ async def checkout_result(
     request: Request,
     payment_id: str,
     svc: PaymentService = Depends(_get_service),
+    db: AsyncSession = Depends(get_db),
+    user_data: dict = Depends(require_user_info),
 ):
     """Página de resultado final — usada tras el flujo 3DS."""
     theme = _resolve_theme(request)
@@ -2355,6 +2404,12 @@ async def checkout_result(
         return HTMLResponse(_html_form("Pago no encontrado.", theme=theme), status_code=404)
 
     from app.domain.entities import PaymentStatus
+    from app.services.subscription_identity import resolve_customer_identity
+    from app.infrastructure.models import SubscriptionActivationJobModel
+    identity = await resolve_customer_identity(db, user_data.get("sub") or user_data.get("email", ""))
+    if (payment.customer_id or "").strip().lower() not in identity.aliases:
+        raise HTTPException(status_code=404, detail="Pago no encontrado")
+    activation = await db.get(SubscriptionActivationJobModel, payment.id)
     status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
     msg = payment.response_message or ""
     token_info = f" · Token: {payment.data_vault_token[:12]}…" if payment.data_vault_token else ""
@@ -2364,11 +2419,13 @@ async def checkout_result(
         payment.id, status, payment.iso_code, payment.response_message,
     )
 
+    if payment.status.value == "APPROVED" and (activation is None or activation.status != "DONE"):
+        msg = "Pago aprobado; activación pendiente. No repitas el pago."
     html = _html_result(
         status=status,
         message=msg,
         payment_id=payment.id,
-        amount=0 if (payment.order_id and payment.order_id.startswith("HOLD-")) else (payment.amount + payment.itbis),
+        amount=0 if (payment.order_id and payment.order_id.startswith("HOLD-")) else payment.amount,
         iso=payment.iso_code,
         theme=theme,
         card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
@@ -2376,7 +2433,7 @@ async def checkout_result(
         cardholder_email=payment.cardholder_email or "",
         card_saved=bool(payment.data_vault_token),
     )
-    resp = HTMLResponse(html)
+    resp = HTMLResponse(html, status_code=202 if "activación pendiente" in html.lower() else 200)
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
