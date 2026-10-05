@@ -30,6 +30,11 @@ from app.domain.entities import (
     SubscriptionStatus,
 )
 from app.services.notification_service import send_notification
+from app.services.subscription_identity import (
+    find_active_subscription,
+    lock_customer_subscriptions,
+    resolve_customer_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +115,8 @@ class PostPaymentResult:
     card_saved: bool = False
     confirmation_triggered: bool = False
     subscription_created: bool = False
+    subscription_updated: bool = False
+    subscription_error: str = ""
     in_trial: bool = False
     trial_ends_at: str = ""
     cardholder_email: str = ""
@@ -215,7 +222,7 @@ async def handle_post_payment_actions(payment: Payment) -> PostPaymentResult:
             if payment.card_number_masked
             else "****"
         )
-        total_amount = payment.amount + payment.itbis
+        total_amount = payment.amount
         try:
             result.email_sent = await send_notification(
                 event="checkout_payment_approved",
@@ -257,7 +264,41 @@ async def handle_post_payment_actions(payment: Payment) -> PostPaymentResult:
     return result
 
 
-async def create_subscription_if_needed(
+async def _reuse_active_subscription(
+    db, identity, existing_sub, result, *, token: str, card_brand: str,
+    card_last4: str, card_expiration: str, cardholder_email: str,
+    charged: bool = False, charged_at=None,
+) -> None:
+    """Attach a first card to the existing record without granting another trial."""
+    now = datetime.now(timezone.utc)
+    changed = existing_sub.customer_id != identity.customer_id
+    existing_sub.customer_id = identity.customer_id
+    method_date = charged_at or now
+    previous_method_date = getattr(existing_sub, "method_updated_at", None)
+    if token and (not previous_method_date or method_date >= previous_method_date):
+        existing_sub.method_updated_at = method_date
+        existing_sub.data_vault_token = token
+        existing_sub.card_brand = card_brand
+        existing_sub.card_last4 = card_last4
+        existing_sub.card_expiration = card_expiration
+        existing_sub.cardholder_email = cardholder_email or identity.email
+        changed = True
+    if charged:
+        paid_at = charged_at or now
+        if not existing_sub.last_charged_at or existing_sub.last_charged_at < paid_at:
+            existing_sub.last_charged_at = paid_at
+            existing_sub.next_charge_at = paid_at + timedelta(days=existing_sub.frequency_days)
+            existing_sub.failed_attempts = 0
+            existing_sub.last_failure_reason = ""
+            changed = True
+    result.subscription_updated = changed
+    result.in_trial = bool(existing_sub.trial_ends_at and existing_sub.trial_ends_at > now)
+    result.trial_ends_at = existing_sub.trial_ends_at.isoformat() if existing_sub.trial_ends_at else ""
+    result.card_saved = bool(existing_sub.data_vault_token)
+    await db.commit()
+
+
+async def _activate_subscription(
     payment: Payment,
     customer_id: str,
     db: AsyncSession,
@@ -273,8 +314,8 @@ async def create_subscription_if_needed(
       after the grace period.
     - **Existing user**: creates a subscription charged immediately
       (``last_charged_at = now``, ``next_charge_at = now + 30 days``).
-    - If the user already has an ACTIVE subscription, this is a no-op
-      to avoid duplicate subscriptions.
+    - Reuses an ACTIVE subscription under the Atlas ID or a legacy email.
+      A cardless trial receives the card without changing its expiry.
 
     This function **never raises**.  All errors are caught and logged.
     """
@@ -286,49 +327,33 @@ async def create_subscription_if_needed(
     status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
     if status != "APPROVED" or not payment.data_vault_token or not customer_id:
         return result
+    verification_only = (payment.order_id or "").startswith("HOLD-")
+    if not verification_only and payment.amount < MEMBERSHIP_AMOUNT:
+        result.subscription_error = "El importe aprobado requiere revisión antes de activar la membresía."
+        return result
+    paid_at = payment.created_at
+
 
     try:
         from sqlalchemy import select
         from app.infrastructure.models import RecurringPaymentModel, SavedCardModel
         from app.infrastructure.repo_impl import SQLRecurringRepository
 
-        # ── Check if user already has an ACTIVE subscription ──────────
-        existing_active = await db.execute(
-            select(RecurringPaymentModel).where(
-                RecurringPaymentModel.customer_id == customer_id,
-                RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
-            )
-        )
-        existing_sub = existing_active.scalar_one_or_none()
+        identity = await resolve_customer_identity(db, customer_id)
+        customer_id = identity.customer_id
+        await lock_customer_subscriptions(db, identity)
+        existing_sub = await find_active_subscription(db, identity, for_update=True)
         if existing_sub:
-            logger.warning("[post-payment] DEBUG PROMO EXISTING | promo_code=%s user_name='%s'", promo_code, user_name)
-            if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and _is_promo_allowed(user_name):
-                now = datetime.now(timezone.utc)
-                # Anti-trampa: si ya tiene trial activo, no permitir re-aplicar el promo
-                if existing_sub.trial_ends_at and existing_sub.trial_ends_at > now:
-                    logger.warning(
-                        "[post-payment] ⚠ PROMO REJECTED — user already has active trial | "
-                        "customer_id=%s trial_ends=%s promo=%s",
-                        customer_id, existing_sub.trial_ends_at.isoformat(), PROMO_CODE_30_DAYS,
-                    )
-                else:
-                    new_trial_end = now + timedelta(days=PROMO_CODE_TRIAL_DAYS)
-                    existing_sub.trial_ends_at = new_trial_end
-                    existing_sub.next_charge_at = new_trial_end
-                    await db.commit()
-                    logger.warning(
-                        "[post-payment] ✓ EXISTING subscription updated with promo code %s | "
-                        "customer_id=%s new_trial_ends=%s",
-                        PROMO_CODE_30_DAYS, customer_id, new_trial_end.isoformat(),
-                    )
-                    result.in_trial = True
-                    result.trial_ends_at = new_trial_end.isoformat()
-            else:
-                logger.warning(
-                    "[post-payment] ⏭ user already has ACTIVE subscription — skipping | "
-                    "customer_id=%s payment_id=%s",
-                    customer_id, payment.id,
-                )
+            await _reuse_active_subscription(
+                db, identity, existing_sub, result,
+                token=payment.data_vault_token,
+                card_brand=_detect_brand_from_masked(payment.card_number_masked),
+                card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                card_expiration=card_expiration,
+                cardholder_email=payment.cardholder_email,
+                charged=not (payment.order_id or "").startswith("HOLD-"),
+                charged_at=payment.created_at,
+            )
             return result
 
         # ── Check for existing active trial ───────────────────────────
@@ -336,7 +361,7 @@ async def create_subscription_if_needed(
         
         active_trial_query = await db.execute(
             select(RecurringPaymentModel.trial_ends_at).where(
-                RecurringPaymentModel.customer_id == customer_id,
+                identity.matches(RecurringPaymentModel.customer_id),
                 RecurringPaymentModel.trial_ends_at > now,
             ).order_by(RecurringPaymentModel.trial_ends_at.desc()).limit(1)
         )
@@ -346,12 +371,12 @@ async def create_subscription_if_needed(
         # New = no prior subscriptions (any status) AND no saved cards
         prior_subs = await db.execute(
             select(RecurringPaymentModel.id).where(
-                RecurringPaymentModel.customer_id == customer_id,
+                identity.matches(RecurringPaymentModel.customer_id),
             ).limit(1)
         )
         prior_cards = await db.execute(
             select(SavedCardModel.id).where(
-                SavedCardModel.customer_id == customer_id,
+                identity.matches(SavedCardModel.customer_id),
                 SavedCardModel.token != payment.data_vault_token,
             ).limit(1)
         )
@@ -360,7 +385,7 @@ async def create_subscription_if_needed(
             and prior_cards.scalar_one_or_none() is None
         )
 
-        if remaining_trial_end:
+        if remaining_trial_end and verification_only:
             # Heredar período de gracia restante
             recurring = RecurringPayment(
                 customer_id=customer_id,
@@ -384,7 +409,7 @@ async def create_subscription_if_needed(
                 "customer_id=%s trial_ends=%s next_charge=%s",
                 customer_id, remaining_trial_end.isoformat(), remaining_trial_end.isoformat(),
             )
-        elif is_new_user:
+        elif is_new_user and verification_only:
             # Trial: primer cobro real en TRIAL_DAYS días
             # Descuento especial de 30 días con código promocional o ID
             special_30_day_users = [
@@ -396,7 +421,7 @@ async def create_subscription_if_needed(
                 # Anti-trampa: verificar si ya usó el promo en alguna suscripción anterior
                 prior_promo = await db.execute(
                     select(RecurringPaymentModel.id).where(
-                        RecurringPaymentModel.customer_id == customer_id,
+                        identity.matches(RecurringPaymentModel.customer_id),
                         RecurringPaymentModel.trial_ends_at.isnot(None),
                     ).limit(1)
                 )
@@ -447,8 +472,8 @@ async def create_subscription_if_needed(
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
                 card_expiration=card_expiration,
                 cardholder_email=payment.cardholder_email or "",
-                next_charge_at=now + timedelta(days=SUBSCRIPTION_FREQUENCY_DAYS),
-                last_charged_at=now,
+                next_charge_at=paid_at + timedelta(days=SUBSCRIPTION_FREQUENCY_DAYS),
+                last_charged_at=paid_at,
                 trial_ends_at=None,
             )
             result.in_trial = False
@@ -464,12 +489,16 @@ async def create_subscription_if_needed(
         result.subscription_created = True
 
     except sqlalchemy.exc.IntegrityError as exc:
+        await db.rollback()
+        result.subscription_error = "No se pudo guardar la suscripción. Intenta de nuevo."
         logger.warning(
             "[post-payment] ⚠ colisión al crear suscripción (ya existe una activa) | "
             "customer_id=%s payment_id=%s",
             customer_id, payment.id
         )
     except Exception as exc:
+        await db.rollback()
+        result.subscription_error = "No se pudo verificar o actualizar la suscripción. Intenta de nuevo."
         logger.error(
             "[post-payment] ✗ subscription creation FAILED | "
             "customer_id=%s payment_id=%s err=%s",
@@ -513,42 +542,24 @@ async def create_trial_subscription(
         from app.infrastructure.models import RecurringPaymentModel
         from app.infrastructure.repo_impl import SQLRecurringRepository
 
-        # Guard: don't create duplicate subscriptions
-        existing_active = await db.execute(
-            select(RecurringPaymentModel).where(
-                RecurringPaymentModel.customer_id == customer_id,
-                RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
-            )
-        )
-        existing_sub = existing_active.scalar_one_or_none()
+        if not customer_id or not saved_card.token:
+            result.subscription_error = "Falta el usuario o el token de la tarjeta."
+            return result
+        identity = await resolve_customer_identity(db, customer_id)
+        customer_id = identity.customer_id
+        await lock_customer_subscriptions(db, identity)
+        existing_sub = await find_active_subscription(db, identity, for_update=True)
         if existing_sub:
-            if promo_code and promo_code.strip().upper() == PROMO_CODE_30_DAYS and _is_promo_allowed(user_name):
-                now = datetime.now(timezone.utc)
-                # Anti-trampa: si ya tiene trial activo, no permitir re-aplicar el promo
-                if existing_sub.trial_ends_at and existing_sub.trial_ends_at > now:
-                    logger.warning(
-                        "[post-payment] ⚠ PROMO REJECTED — user already has active trial | "
-                        "customer_id=%s trial_ends=%s promo=%s",
-                        customer_id, existing_sub.trial_ends_at.isoformat(), PROMO_CODE_30_DAYS,
-                    )
-                else:
-                    new_trial_end = now + timedelta(days=PROMO_CODE_TRIAL_DAYS)
-                    existing_sub.trial_ends_at = new_trial_end
-                    existing_sub.next_charge_at = new_trial_end
-                    await db.commit()
-                    logger.warning(
-                        "[post-payment] ✓ EXISTING subscription updated with promo code %s | "
-                        "customer_id=%s new_trial_ends=%s",
-                        PROMO_CODE_30_DAYS, customer_id, new_trial_end.isoformat(),
-                    )
-                    result.in_trial = True
-                    result.trial_ends_at = new_trial_end.isoformat()
-            else:
-                logger.warning(
-                    "[post-payment] ⏭ user already has ACTIVE subscription — "
-                    "skipping trial creation | customer_id=%s",
-                    customer_id,
-                )
+            await _reuse_active_subscription(
+                db, identity, existing_sub, result,
+                token=saved_card.token,
+                card_brand=getattr(saved_card, "card_brand", ""),
+                card_last4=saved_card.card_last4,
+                card_expiration=getattr(saved_card, "expiration", ""),
+                cardholder_email=cardholder_email,
+            )
+            if result.subscription_updated and identity.email:
+                result.confirmation_triggered = await _trigger_confirmation_email(identity.email)
             return result
 
         now = datetime.now(timezone.utc)
@@ -566,7 +577,7 @@ async def create_trial_subscription(
             # Anti-trampa: verificar si ya usó el promo en alguna suscripción anterior
             prior_promo = await db.execute(
                 select(RecurringPaymentModel.id).where(
-                    RecurringPaymentModel.customer_id == customer_id,
+                    identity.matches(RecurringPaymentModel.customer_id),
                     RecurringPaymentModel.trial_ends_at.isnot(None),
                 ).limit(1)
             )
@@ -622,6 +633,8 @@ async def create_trial_subscription(
             )
 
     except Exception as exc:
+        await db.rollback()
+        result.subscription_error = "No se pudo verificar o actualizar la suscripción. Intenta de nuevo."
         logger.error(
             "[post-payment] ✗ trial subscription creation FAILED | "
             "customer_id=%s err=%s",
@@ -629,3 +642,53 @@ async def create_trial_subscription(
         )
 
     return result
+
+
+async def create_subscription_if_needed(payment, customer_id, db, card_expiration="", promo_code=None, user_name=""):
+    """Persist activation work; retrying activation never submits another charge."""
+    from sqlalchemy import select
+    from app.infrastructure.models import SubscriptionActivationJobModel
+    result = PostPaymentResult(payment_id=payment.id)
+    if payment.status != PaymentStatus.APPROVED:
+        return result
+    try:
+        job = await db.get(SubscriptionActivationJobModel, payment.id)
+        if job is None:
+            job = SubscriptionActivationJobModel(payment_id=payment.id, customer_id=customer_id,
+                card_expiration=card_expiration, promo_code=promo_code or "", user_name=user_name)
+            db.add(job)
+            await db.commit()
+        job = (await db.execute(select(SubscriptionActivationJobModel).where(
+            SubscriptionActivationJobModel.payment_id == payment.id).with_for_update())).scalar_one()
+        if job.status == "DONE":
+            result.subscription_updated = True
+            await db.commit()
+            return result
+        if not payment.data_vault_token or not customer_id:
+            result.subscription_error = "Pago aprobado; activación pendiente por falta de método de pago."
+        else:
+            result = await _activate_subscription(payment, job.customer_id, db,
+                card_expiration=job.card_expiration, promo_code=job.promo_code or None, user_name=job.user_name)
+        job.status = "PENDING" if result.subscription_error else "DONE"
+        job.last_error = "Activation requires review" if result.subscription_error else ""
+        await db.commit()
+        return result
+    except Exception:
+        await db.rollback()
+        result.subscription_error = "Pago aprobado; activación pendiente. No repitas el pago."
+        logger.exception("Activation pending payment_id=%s", payment.id)
+        return result
+
+
+async def retry_subscription_activations(session_factory):
+    from sqlalchemy import select
+    from app.infrastructure.models import SubscriptionActivationJobModel
+    from app.infrastructure.repo_impl import SQLPaymentRepository
+    async with session_factory() as db:
+        ids = list((await db.execute(select(SubscriptionActivationJobModel.payment_id).where(
+            SubscriptionActivationJobModel.status == "PENDING").limit(100))).scalars())
+        for payment_id in ids:
+            payment = await SQLPaymentRepository(db).get_by_id(payment_id)
+            if payment is not None:
+                job = await db.get(SubscriptionActivationJobModel, payment_id)
+                await create_subscription_if_needed(payment, job.customer_id, db)

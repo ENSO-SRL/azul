@@ -30,7 +30,7 @@ https://pagos.iamatlas.do/api/v1/registration/trial
 
 | Header | Valor |
 |--------|-------|
-| `X-API-Key` | `atlas-dev-key-2026-colina-del-sol` |
+| `X-API-Key` | `REQUIRED_SECRET_API_KEY` |
 | `Content-Type` | `application/json` |
 
 ---
@@ -121,7 +121,7 @@ Consulta el estado actual del usuario. `customer_id` puede ser el **email** o el
 
 **URL:**
 ```
-https://pagos.iamatlas.do/api/v1/tokens/status/usuario@ejemplo.com?API_KEY=atlas-dev-key-2026-colina-del-sol
+https://pagos.iamatlas.do/api/v1/tokens/status/usuario@ejemplo.com?API_KEY=REQUIRED_SECRET_API_KEY
 ```
 
 ---
@@ -248,7 +248,7 @@ https://pagos.iamatlas.do/api/v1/tokens/status/usuario@ejemplo.com?API_KEY=atlas
 ### Crear trial
 ```bash
 curl -X POST https://pagos.iamatlas.do/api/v1/registration/trial \
-  -H "X-API-Key: atlas-dev-key-2026-colina-del-sol" \
+  -H "X-API-Key: REQUIRED_SECRET_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "email": "juan.perez@ejemplo.com",
@@ -263,7 +263,7 @@ curl -X POST https://pagos.iamatlas.do/api/v1/registration/trial \
 
 ### Verificar estado
 ```bash
-curl "https://pagos.iamatlas.do/api/v1/tokens/status/juan.perez@ejemplo.com?API_KEY=atlas-dev-key-2026-colina-del-sol"
+curl "https://pagos.iamatlas.do/api/v1/tokens/status/juan.perez@ejemplo.com?API_KEY=REQUIRED_SECRET_API_KEY"
 ```
 
 ---

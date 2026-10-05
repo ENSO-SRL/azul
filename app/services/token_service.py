@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.repositories import SavedCardRepository
 from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
-from app.infrastructure.models import RecurringPaymentModel
+from app.infrastructure.models import RecurringPaymentModel, SavedCardModel
+from app.services.subscription_identity import resolve_customer_identity, lock_customer_subscriptions, find_active_subscription
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +65,27 @@ class TokenService:
 
     async def set_default_card(self, customer_id: str, card_id: str) -> None:
         """Set a specific card as the default for a customer."""
-        card = await self._cards.get_by_id(card_id)
-        if not card:
-            raise ValueError(f"Card {card_id!r} not found.")
-        if card.customer_id != customer_id:
-            raise PermissionError(
-                f"Card {card_id!r} does not belong to customer {customer_id!r}."
-            )
-        await self._cards.set_default(customer_id, card_id)
+        if self._db is None:
+            raise ValueError("CONFLICT: Se requiere persistencia para cambiar la tarjeta.")
+        identity = await resolve_customer_identity(self._db, customer_id)
+        await lock_customer_subscriptions(self._db, identity)
+        active = await find_active_subscription(self._db, identity, for_update=True)
+        card = await self._db.get(SavedCardModel, card_id)
+        if not card or card.customer_id.strip().lower() not in identity.aliases:
+            await self._db.rollback()
+            raise PermissionError("La tarjeta no pertenece al usuario.")
+        await self._db.execute(update(SavedCardModel).where(identity.matches(SavedCardModel.customer_id)).values(is_default=False))
+        card.is_default = True
+        card.customer_id = identity.customer_id
+        if active is not None:
+            from datetime import datetime, timezone
+            active.method_updated_at = datetime.now(timezone.utc)
+            active.data_vault_token = card.token
+            active.card_expiration = card.expiration
+            active.card_brand = card.card_brand
+            active.card_last4 = card.card_last4
+            active.customer_id = identity.customer_id
+        await self._db.commit()
 
     async def delete_card(self, customer_id: str, token: str) -> None:
         """Remove a card from DataVault and from local DB.

@@ -6,8 +6,8 @@ POST /api/v1/registration/trial
     automáticamente una suscripción con trial de 30 días sin necesidad
     de tarjeta de crédito.
 
-    El email se usa como customer_id para que sea compatible con el
-    endpoint /status/{customer_id} que ya soporta búsqueda por email.
+    El email se resuelve contra public.users y se guarda el ID del usuario.
+    Las suscripciones antiguas por email se reutilizan sin reiniciar el trial.
 
     Idempotente: si el usuario ya tiene una suscripción ACTIVE,
     retorna 200 con los datos del trial existente en lugar de crear uno nuevo.
@@ -22,12 +22,16 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
 from app.infrastructure.database import get_db
-from app.infrastructure.models import RecurringPaymentModel
-from app.domain.entities import RecurringPayment, SubscriptionStatus
+from app.domain.entities import RecurringPayment
 from app.infrastructure.repo_impl import SQLRecurringRepository
+from app.services.subscription_identity import (
+    CustomerIdentityError,
+    find_active_subscription,
+    lock_customer_subscriptions,
+    resolve_customer_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +73,7 @@ class RegistrationRequest(BaseModel):
 class TrialRegistrationResponse(BaseModel):
     """Respuesta del endpoint de registro con trial."""
     status: str                   # "created" | "already_active"
-    customer_id: str              # email usado como identificador
+    customer_id: str              # ID canónico del usuario en Atlas
     trial_ends_at: str            # ISO 8601 UTC
     next_charge_at: str           # igual a trial_ends_at
     trial_days: int
@@ -100,10 +104,21 @@ async def register_trial(
 ):
     """Crea trial de 30 días para usuario nuevo sin tarjeta.
 
-    El `customer_id` es el email del usuario — compatible con el endpoint
-    `/status/{customer_id}` que ya busca por email y por UUID.
+    Requiere que el usuario ya exista en Atlas. El correo del payload se
+    resuelve al ID canónico; no es necesario cambiar el payload del frontend.
     """
-    customer_id = body.email.lower().strip()
+    try:
+        identity = await resolve_customer_identity(db, body.email)
+        await lock_customer_subscriptions(db, identity)
+        existing_sub = await find_active_subscription(db, identity, for_update=True)
+    except CustomerIdentityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        await db.rollback()
+        logger.exception("[registration] No se pudo verificar la identidad del usuario")
+        raise HTTPException(status_code=503, detail="No se pudo verificar la cuenta. Intenta de nuevo.") from exc
+    customer_id = identity.customer_id
     full_name = f"{body.name.strip()} {body.last_name.strip()}".strip()
 
     logger.warning(
@@ -114,15 +129,9 @@ async def register_trial(
     now = datetime.now(timezone.utc)
 
     # ── Guard: idempotencia — ¿ya tiene suscripción ACTIVE? ──────────────
-    existing = await db.execute(
-        select(RecurringPaymentModel).where(
-            RecurringPaymentModel.customer_id == customer_id,
-            RecurringPaymentModel.status == SubscriptionStatus.ACTIVE.value,
-        ).limit(1)
-    )
-    existing_sub = existing.scalar_one_or_none()
-
     if existing_sub:
+        existing_sub.customer_id = customer_id
+        await db.commit()
         trial_ends = existing_sub.trial_ends_at
         next_charge = existing_sub.next_charge_at
         logger.warning(
@@ -155,7 +164,7 @@ async def register_trial(
         card_brand="",
         card_last4="",
         card_expiration="",
-        cardholder_email=customer_id,
+        cardholder_email=identity.email,
         next_charge_at=trial_end,
         last_charged_at=None,
         trial_ends_at=trial_end,
@@ -169,6 +178,7 @@ async def register_trial(
             customer_id, trial_end.isoformat(),
         )
     except Exception as exc:
+        await db.rollback()
         logger.error(
             "[registration] ✗ error creando trial | customer_id=%s err=%s",
             customer_id, exc,
