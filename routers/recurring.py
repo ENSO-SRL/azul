@@ -174,7 +174,14 @@ class CustomerStatusResponse(BaseModel):
     customer_id: str
     has_subscriptions: bool
     is_active: bool = Field(description="True si tiene al menos una suscripción ACTIVE")
-    is_current: bool = Field(description="True si está al día con TODOS los pagos")
+    is_current: bool = Field(description="True si tiene prueba o período pagado vigente")
+    allow_access: bool = Field(description="Decisión de acceso por prueba o período pagado vigente")
+    needs_payment: bool = Field(description="True cuando no existe vigencia de acceso")
+    valid_until: str | None = Field(None, description="Límite exclusivo de acceso, ISO 8601 con zona horaria")
+    paid_through: str | None = Field(None, description="Fin del período pagado vigente")
+    reason: str = Field(description="trial, paid, trial_expired_no_card, payment_due o no_subscription")
+    overall_status: str = Field(description="Alias de reason para consumidores")
+    requires_review: bool = Field(False, description="Más de una suscripción activa para la identidad")
     has_overdue_payment: bool = Field(description="True si alguna suscripción tiene pago vencido o fallido")
     in_trial: bool = Field(False, description="True si alguna suscripción activa está en período de gracia")
     trial_ends_at: str | None = Field(None, description="Fecha ISO en que termina el período de gracia")
