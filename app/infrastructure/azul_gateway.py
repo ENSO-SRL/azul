@@ -230,7 +230,9 @@ class AzulPaymentGateway:
             "Plan": "0",
             "AcquirerRefData": "1",
             "RRN": None,   # Requerido por doc AZUL p.27 — puede ser null
-            "OrderNumber": payment.order_id or "",
+            # OrderNumber es X(15) en la API de AZUL — truncar para no gatillar
+            # VALIDATION_ERROR:OrderNumber (visto en producción con ids largos).
+            "OrderNumber": (payment.order_id or "")[:15],
             # CustomerServicePhone: configurable via env var (doc AZUL p.19 — requerido)
             "CustomerServicePhone": os.getenv("AZUL_CUSTOMER_SERVICE_PHONE", ""),
             # ECommerceUrl: URL real del comercio (doc AZUL p.19)
@@ -434,6 +436,57 @@ class AzulPaymentGateway:
         })
         return await self._execute(payment, payload)
 
+    async def hold_verify_card(
+        self,
+        payment: Payment,
+        card_number: str,
+        expiration: str,
+        cvc: str,
+        browser_info: dict[str, str] | None = None,
+    ) -> tuple[Payment, Transaction]:
+        """Pre-authorize + tokenize (Hold + SaveToDataVault + 3DS).
+
+        Used to verify a card has funds and tokenize it without charging.
+        After approval, the caller should immediately ``void()`` the hold
+        to release the reserved funds.
+
+        Flow: Hold(RD$1) → 3DS → Approved → Void → net charge = $0
+        """
+        cfg = load_azul_config()
+        payload = self._base_payload(payment)
+        force = _force_no3ds(cfg, "1" if payment.auth_mode == "splitit" else "0")
+        payload.update({
+            "TrxType": "Hold",
+            "CardNumber": card_number,
+            "Expiration": expiration,
+            "CVC": cvc,
+            **_datavault_fields(True),  # save token
+            **force,
+            "cardholderInitiatedIndicator": "STANDING_ORDER",
+        })
+
+        if payment.auth_mode == "3dsecure" and browser_info:
+            payload["ThreeDSAuth"] = {
+                "TermUrl": f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}",
+                "MethodNotificationUrl": (
+                    f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}"
+                ),
+                "RequestorChallengeIndicator": "01",
+            }
+            payload["BrowserInfo"] = {
+                "AcceptHeader": browser_info.get("accept_header", "text/html"),
+                "IPAddress": browser_info.get("ip_address", ""),
+                "Language": browser_info.get("language", "es-DO"),
+                "ColorDepth": browser_info.get("color_depth", "24"),
+                "ScreenWidth": browser_info.get("screen_width", "1920"),
+                "ScreenHeight": browser_info.get("screen_height", "1080"),
+                "TimeZone": browser_info.get("time_zone", "240"),
+                "UserAgent": browser_info.get("user_agent", ""),
+                "JavaScriptEnabled": browser_info.get("javascript_enabled", "true"),
+            }
+
+        return await self._execute(payment, payload)
+
     async def post_capture(
         self,
         payment: Payment,
@@ -465,15 +518,18 @@ class AzulPaymentGateway:
         Requires a DataVault token obtained from a prior CIT.
 
         Uses ``merchantInitiatedIndicator: "STANDING_ORDER"`` per Azul v1.2.
+
+        ``ForceNo3DS: "1"`` is sent unconditionally — AZUL confirmed MIT
+        processing without 3DS is enabled for this merchant in production
+        (verified 2026-09-04: IsoCode=00, AuthorizationCode=937636).
         """
         payload = self._base_payload(payment)
-        cfg = load_azul_config()
         payload.update({
             "CardNumber": "",
             "Expiration": "",
             "CVC": "",
             **_datavault_fields(False, token),
-            **_force_no3ds(cfg),
+            "ForceNo3DS": "1",
             "merchantInitiatedIndicator": "STANDING_ORDER",
         })
 
@@ -588,6 +644,9 @@ class AzulPaymentGateway:
             "AzulOrderId": azul_order_id,
             "OriginalDate": original_date,
             "TrxType": "Void",
+            "CardNumber": "",
+            "Expiration": "",
+            "CVC": "",
         }
 
         async with self._build_client("splitit") as client:
@@ -883,12 +942,38 @@ class AzulPaymentGateway:
                 payment.threeds_method_form = method_data.get("MethodForm", "")
         elif iso_raw == IsoCode.THREE_DS_CHALLENGE:
             payment.status = PaymentStatus.PENDING_3DS_CHALLENGE
-            payment.threeds_redirect_url = data.get("RedirectUrl", "")
+            payment.threeds_redirect_url = data.get("RedirectUrl") or data.get("RedirectPostUrl", "")
             challenge_data = data.get("ThreeDSChallenge", {})
             if isinstance(challenge_data, dict):
                 payment.threeds_challenge_form = challenge_data.get("ChallengeForm", "")
+                
+                # Auto-generate ChallengeForm if CReq/PaReq is provided without a pre-rendered form
+                creq = challenge_data.get("CReq") or challenge_data.get("creq")
+                pareq = challenge_data.get("PaReq") or challenge_data.get("pareq")
+                md = challenge_data.get("MD") or challenge_data.get("md")
+                redirect_url = challenge_data.get("RedirectPostUrl") or challenge_data.get("RedirectUrl") or payment.threeds_redirect_url
+                
+                if not payment.threeds_challenge_form and redirect_url and (creq or pareq):
+                    inputs = []
+                    if creq:
+                        inputs.append(f'<input type="hidden" name="creq" value="{creq}" />')
+                    if pareq:
+                        inputs.append(f'<input type="hidden" name="PaReq" value="{pareq}" />')
+                    if md:
+                        inputs.append(f'<input type="hidden" name="MD" value="{md}" />')
+                        
+                    payment.threeds_challenge_form = (
+                        f'<html><head><title>3DS Challenge</title></head>'
+                        f'<body>'
+                        f'<form id="challengeForm" action="{redirect_url}" method="POST">'
+                        + "".join(inputs) +
+                        f'</form>'
+                        f'<script>document.getElementById("challengeForm").submit();</script>'
+                        f'</body></html>'
+                    )
+
                 if not payment.threeds_redirect_url:
-                    payment.threeds_redirect_url = challenge_data.get("RedirectUrl", "")
+                    payment.threeds_redirect_url = challenge_data.get("RedirectUrl") or challenge_data.get("RedirectPostUrl", "")
         else:
             payment.status = PaymentStatus.DECLINED
 

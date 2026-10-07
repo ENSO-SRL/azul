@@ -160,6 +160,8 @@ class PaymentResponse(BaseModel):
     response_code: str
     response_message: str
     azul_order_id: str
+    authorization_code: str = ""
+    rrn: str = ""
     data_vault_token: str
     threeds_method_form: str = ""
     threeds_redirect_url: str = ""
@@ -190,6 +192,7 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
         txn_repo=SQLTransactionRepository(db),
         gateway=AzulPaymentGateway(),
         card_repo=SQLSavedCardRepository(db),
+        db_session=db,
     )
 
 
@@ -340,6 +343,29 @@ async def create_post(
 
 
 @router.get(
+    "",
+    response_model=list[PaymentResponse],
+    summary="Listar todas las transacciones / pagos",
+    description="Retorna el listado paginado de todas las transacciones registradas en el sistema.",
+)
+async def list_payments(
+    limit: int = 50,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import select
+    from app.infrastructure.models import PaymentModel
+    result = await db.execute(
+        select(PaymentModel)
+        .order_by(PaymentModel.created_at.desc())
+        .limit(min(limit, 200))
+        .offset(offset)
+    )
+    payments = result.scalars().all()
+    return [_to_response(p) for p in payments]
+
+
+@router.get(
     "/{payment_id}",
     response_model=PaymentResponse,
     summary="Consultar pago por ID",
@@ -390,6 +416,8 @@ def _to_response(p) -> dict:
         "response_code": p.response_code,
         "response_message": p.response_message,
         "azul_order_id": p.azul_order_id,
+        "authorization_code": getattr(p, "authorization_code", ""),
+        "rrn": getattr(p, "rrn", ""),
         "data_vault_token": p.data_vault_token,
         "threeds_method_form": getattr(p, "threeds_method_form", ""),
         "threeds_redirect_url": getattr(p, "threeds_redirect_url", ""),

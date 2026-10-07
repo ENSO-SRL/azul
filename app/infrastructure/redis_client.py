@@ -101,3 +101,46 @@ async def get_transaction_summary(ref: str) -> dict[str, Any] | None:
     except Exception as e:
         logger.error("[redis] Error leyendo clave %s%s: %s", _TX_KEY_PREFIX, ref, e)
         return None
+
+
+# ---------------------------------------------------------------------------
+# 3DS Challenge Cache (Redis-backed, survives deploys)
+# ---------------------------------------------------------------------------
+
+_CHALLENGE_KEY_PREFIX = "atlas_3ds_challenge:"
+_CHALLENGE_TTL_SECONDS = 300  # 5 minutos
+
+
+async def store_challenge_form(payment_id: str, form_html: str) -> None:
+    """Store a 3DS challenge form in Redis with a 5 minute TTL.
+
+    Falls back silently if Redis is unavailable (the in-memory fallback
+    in checkout.py still works for single-instance scenarios).
+    """
+    if _pool is None:
+        return
+    try:
+        await _pool.setex(
+            f"{_CHALLENGE_KEY_PREFIX}{payment_id}",
+            _CHALLENGE_TTL_SECONDS,
+            form_html,
+        )
+    except Exception as e:
+        logger.warning("[redis] Failed to store challenge form for %s: %s", payment_id, e)
+
+
+async def get_challenge_form(payment_id: str) -> str | None:
+    """Retrieve and delete a 3DS challenge form from Redis.
+
+    Uses GETDEL for atomic get+delete (one-time retrieval).
+    Returns None if not found or Redis unavailable.
+    """
+    if _pool is None:
+        return None
+    try:
+        result = await _pool.getdel(f"{_CHALLENGE_KEY_PREFIX}{payment_id}")
+        return str(result) if result is not None else None
+    except Exception as e:
+        logger.warning("[redis] Failed to retrieve challenge form for %s: %s", payment_id, e)
+        return None
+

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.domain.entities import (
     IsoCode,
     Payment,
@@ -37,11 +39,39 @@ class PaymentService:
         txn_repo: TransactionRepository,
         gateway: AzulPaymentGateway,
         card_repo: SavedCardRepository | None = None,
+        db_session: AsyncSession | None = None,
     ):
         self._payments = payment_repo
         self._txns     = txn_repo
         self._gw       = gateway
         self._cards    = card_repo
+        self._db       = db_session
+
+    async def _get_search_ids(self, customer_id: str) -> set[str]:
+        search_ids = {customer_id}
+        if self._db:
+            from sqlalchemy import text
+            try:
+                if customer_id.isdigit():
+                    result = await self._db.execute(
+                        text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
+                        {"cid": int(customer_id)},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        search_ids.add(row[0])
+                else:
+                    result = await self._db.execute(
+                        text("SELECT id FROM public.users WHERE email = :email LIMIT 1"),
+                        {"email": customer_id},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        search_ids.add(str(row[0]))
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Error fetching user cross-reference: {e}")
+        return search_ids
 
     # ------------------------------------------------------------------
     # One-time Sale
@@ -264,7 +294,11 @@ class PaymentService:
         if not self._cards:
             raise ValueError("SavedCardRepository is not configured")
             
-        cards = await self._cards.list_by_customer(customer_id)
+        search_ids = await self._get_search_ids(customer_id)
+        cards = []
+        for sid in search_ids:
+            cards.extend(await self._cards.list_by_customer(sid))
+
         if not cards:
             raise ValueError(f"No saved cards found for customer {customer_id}")
             
@@ -330,6 +364,72 @@ class PaymentService:
         payment, txn = await self._gw.hold(payment, card_number, expiration, cvc)
         await self._payments.save(payment)
         await self._txns.save(txn)
+        return payment
+
+    async def process_hold_verify(
+        self,
+        card_number: str,
+        expiration: str,
+        cvc: str,
+        order_id: str = "",
+        cardholder_name: str = "",
+        cardholder_email: str = "",
+        customer_id: str = "",
+        browser_info: dict[str, str] | None = None,
+    ) -> Payment:
+        """Hold + SaveToDataVault + 3DS — verify card and tokenize without charging.
+
+        Uses amount=100 (RD$1.00) / itbis=0 for the hold.
+        The caller should void the hold after 3DS approval completes.
+        The Payment.order_id starts with 'HOLD-' so post-approval handlers
+        can detect it and auto-void.
+        """
+        payment = Payment(
+            amount=100,   # RD$1.00 mínimo
+            itbis=0,
+            payment_type=PaymentType.SALE,
+            order_id=order_id or f"HOLD-{__import__('uuid').uuid4().hex[:8].upper()}",
+            auth_mode="3dsecure",
+            initiated_by="cardholder",
+            cardholder_name=cardholder_name,
+            cardholder_email=cardholder_email,
+            customer_id=customer_id,
+        )
+
+        from app.infrastructure.azul_gateway import AzulIntegrationError
+        payment, txn = await self._gw.hold_verify_card(
+            payment, card_number, expiration, cvc,
+            browser_info=browser_info,
+        )
+
+        # Save card if immediately approved (no 3DS redirect)
+        if (
+            payment.data_vault_token
+            and self._cards
+            and customer_id
+            and payment.status == PaymentStatus.APPROVED
+        ):
+            from app.domain.entities import SavedCard
+            brand = self._detect_card_brand(card_number)
+            card = SavedCard(
+                customer_id=customer_id,
+                token=payment.data_vault_token,
+                card_brand=brand,
+                card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                expiration=expiration,
+            )
+            existing_cards = await self._cards.list_by_customer(customer_id)
+            if not existing_cards:
+                card.is_default = True
+            await self._cards.save_if_not_exists(card)
+            logger.warning(
+                "[SVC] ✓ card saved (hold-verify) | customer=%s brand=%s last4=%s",
+                customer_id, brand, card.card_last4,
+            )
+
+        await self._payments.save(payment)
+        await self._txns.save(txn)
+        logger.warning("[SVC] hold-verify saved | payment_id=%s status=%s", payment.id, payment.status.value)
         return payment
 
     async def process_post(
@@ -482,11 +582,23 @@ class PaymentService:
             if token and self._cards:
                 from app.domain.entities import SavedCard
                 card_customer = payment.customer_id or payment.cardholder_email or payment.id
+                # Try to get brand from Azul response first
+                brand = data.get("DataVaultBrand", "")
+                existing_card = await self._cards.get_by_token(token)
+                if not brand and existing_card:
+                    brand = existing_card.card_brand
+                if not brand and payment.card_number_masked:
+                    from app.services.post_payment import _detect_brand_from_masked
+                    brand = _detect_brand_from_masked(payment.card_number_masked)
+
+                exp = data.get("DataVaultExpiration", "")
+
                 card = SavedCard(
                     customer_id=card_customer,
                     token=token,
-                    card_brand=payment.card_number_masked[:1] if payment.card_number_masked else "",
+                    card_brand=brand,
                     card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                    expiration=exp,
                 )
                 # Auto-mark as default if first card
                 existing_cards = await self._cards.list_by_customer(card_customer)
@@ -494,7 +606,7 @@ class PaymentService:
                     card.is_default = True
                 try:
                     await self._cards.save_if_not_exists(card)
-                    logger.warning("[SVC] ✓ token persisted (method step) | payment_id=%s customer=%s", payment.id, card_customer)
+                    logger.warning("[SVC] ✓ token persisted (method step) | payment_id=%s customer=%s brand=%s", payment.id, card_customer, brand)
                 except Exception as exc:
                     logger.error("[SVC] ✗ card save FAILED (method step) | payment_id=%s err=%s", payment.id, exc)
         elif iso_raw == IsoCode.THREE_DS_CHALLENGE:
@@ -518,7 +630,11 @@ class PaymentService:
                     list(challenge_data.keys()),
                 )
 
-                if redirect_post_url and creq:
+                if redirect_post_url and not redirect_post_url.startswith("http"):
+                    logger.error("[SVC] ✗ Invalid 3DS challenge URL returned by Azul: %r", redirect_post_url)
+                    payment.status = PaymentStatus.DECLINED
+                    payment.response_message = "Error en comunicación con el banco (URL inválida)"
+                elif redirect_post_url and creq:
                     # Build auto-submit POST form — browser POSTs directly to ACS (Cardinal/bank).
                     # Form submissions are NOT subject to CORS restrictions, so we submit
                     # immediately on DOMContentLoaded — the industry-standard 3DS approach.
@@ -529,7 +645,7 @@ class PaymentService:
                         f'<head>'
                         f'<meta charset="UTF-8"/>'
                         f'<meta name="viewport" content="width=device-width,initial-scale=1"/>'
-                        f'<title>Autenticando con tu banco\u2026</title>'
+                        f'<title>Autenticando con tu banco…</title>'
                         f'<meta http-equiv="Content-Security-Policy" '
                         f'content="script-src \'self\' \'unsafe-inline\'; '
                         f'form-action https://authentication.cardinalcommerce.com https://*.cardinalcommerce.com;"/>'
@@ -544,32 +660,34 @@ class PaymentService:
                         f'@keyframes spin{{to{{transform:rotate(360deg)}}}}'
                         f'h2{{font-size:1.1rem;font-weight:600;margin-bottom:.5rem;}}'
                         f'p{{color:#94a3b8;font-size:.88rem;margin-bottom:1.5rem;}}'
+                        f'.btn{{padding:.8rem 1.5rem;font-size:1rem;cursor:pointer;background:#6c63ff;color:#fff;border:none;border-radius:.6rem;display:none;margin:0 auto;}}'
                         f'</style>'
                         f'</head>'
                         f'<body>'
                         f'<div class="box">'
-                        f'  <div class="ring"></div>'
-                        f'  <h2>Autenticando con tu banco\u2026</h2>'
-                        f'  <p>Ser\u00e1s redirigido en un momento.<br/>No cierres esta ventana.</p>'
+                        f'  <div class="ring" id="loader"></div>'
+                        f'  <h2 id="title">Autenticando con tu banco…</h2>'
+                        f'  <p id="desc">Serás redirigido en un momento.<br/>No cierres esta ventana.</p>'
+                        f'  <form id="cform" method="POST" action="{redirect_post_url}">'
+                        f'    <input type="hidden" name="creq" value="{creq}"/>'
+                        f'    <button type="submit" id="btnContinue" class="btn">Continuar con tu banco &rarr;</button>'
+                        f'  </form>'
                         f'</div>'
-                        f'<form id="cform" method="POST" action="{redirect_post_url}" style="display:none;">'
-                        f'  <input type="hidden" name="creq" value="{creq}"/>'
-                        f'</form>'
-                        f'<noscript>'
-                        f'  <div style="margin-top:1.5rem">'
-                        f'    <form method="POST" action="{redirect_post_url}">'
-                        f'      <input type="hidden" name="creq" value="{creq}"/>'
-                        f'      <button type="submit" style="padding:.8rem 1.5rem;font-size:1rem;'
-                        f'cursor:pointer;background:#6c63ff;color:#fff;border:none;border-radius:.6rem;">'
-                        f'Continuar con tu banco &rarr;</button>'
-                        f'    </form>'
-                        f'  </div>'
-                        f'</noscript>'
                         f'<script>'
                         f'(function(){{'
                         f'  function doSubmit(){{'
-                        f'    try{{document.getElementById("cform").submit();}}'
-                        f'    catch(e){{console.error("3DS submit error",e);}}'
+                        f'    var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);'
+                        f'    var isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);'
+                        f'    var form = document.getElementById("cform");'
+                        f'    if (isIOS || isSafari) {{'
+                        f'      document.getElementById("loader").style.display = "none";'
+                        f'      document.getElementById("title").innerText = "Validación requerida";'
+                        f'      document.getElementById("desc").innerHTML = "Tu banco requiere validación adicional.<br/>Presiona el botón para continuar de forma segura.";'
+                        f'      document.getElementById("btnContinue").style.display = "inline-block";'
+                        f'    }} else {{'
+                        f'      try{{form.submit();}}'
+                        f'      catch(e){{console.error("3DS submit error",e);}}'
+                        f'    }}'
                         f'  }}'
                         f'  if(document.readyState==="loading"){{'
                         f'    document.addEventListener("DOMContentLoaded",doSubmit);'
@@ -657,11 +775,23 @@ class PaymentService:
             if token and self._cards:
                 from app.domain.entities import SavedCard
                 card_customer = payment.customer_id or payment.cardholder_email or payment.id
+                # Try to get brand from Azul response first
+                brand = data.get("DataVaultBrand", "")
+                existing_card = await self._cards.get_by_token(token)
+                if not brand and existing_card:
+                    brand = existing_card.card_brand
+                if not brand and payment.card_number_masked:
+                    from app.services.post_payment import _detect_brand_from_masked
+                    brand = _detect_brand_from_masked(payment.card_number_masked)
+                
+                exp = data.get("DataVaultExpiration", "")
+
                 card = SavedCard(
                     customer_id=card_customer,
                     token=token,
-                    card_brand=payment.card_number_masked[:1] if payment.card_number_masked else "",
+                    card_brand=brand,
                     card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
+                    expiration=exp,
                 )
                 # Auto-mark as default if first card
                 existing_cards = await self._cards.list_by_customer(card_customer)
@@ -670,10 +800,8 @@ class PaymentService:
                 try:
                     await self._cards.save_if_not_exists(card)
                     logger.warning(
-                        "[SVC] ✓ DataVaultToken persisted | payment_id=%s customer=%s token=%s",
-                        payment.id,
-                        card_customer,
-                        token[:8] + "…",
+                        "[SVC] ✓ DataVaultToken persisted | payment_id=%s customer=%s token=%s brand=%s",
+                        payment.id, card_customer, token[:8] + "…", brand,
                     )
                 except Exception as exc:
                     logger.error(

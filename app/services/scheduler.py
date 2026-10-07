@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+import uuid
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -58,153 +59,157 @@ _MAX_ATTEMPTS = 3
 _scheduler: AsyncIOScheduler | None = None
 
 
-def _build_custom_order_id(sub_id: str, failed_attempts: int) -> str:
+def build_custom_order_id(sub_id: str, failed_attempts: int, cycle: str) -> str:
     """Deterministic CustomOrderId for idempotent retries.
 
-    Format: sub-{id_prefix}-att{attempt}
+    Format: sub-{id_prefix}-c{cycle}-att{attempt}
     Azul uses this to detect duplicate requests and avoid double-charging.
     """
     # Use first 8 chars of UUID to keep within Azul field length limits
     short_id = sub_id.replace("-", "")[:12]
-    return f"sub-{short_id}-att{failed_attempts}"
+    return f"sub-{short_id}-c{cycle}-att{failed_attempts}"
+
+
+def _currency_str(sub) -> str:
+    """Return the subscription currency as a plain ISO string (e.g. 'DOP')."""
+    c = getattr(sub, "currency_code", "DOP")
+    return c.value if hasattr(c, "value") else str(c or "DOP")
+
+
+async def verify_prior_charge(gateway: AzulPaymentGateway, custom_order_id: str) -> dict | None:
+    """Best-effort check: does Azul already have an APPROVED tx for this order?
+
+    Closes the residual double-charge window where the process crashed AFTER
+    Azul charged the card but BEFORE the local payment row was saved (so the
+    DB idempotency latch cannot see it).
+
+    Returns the Azul response dict when the transaction is found + approved,
+    else None only for a definitive not-found result. An unavailable or
+    ambiguous response must be reconciled before submitting a charge.
+    """
+    try:
+        data = await gateway.verify_payment(custom_order_id)
+    except Exception:
+        raise ValueError("CONFLICT: No se pudo conciliar el intento anterior; cobro detenido.") from None
+    if not isinstance(data, dict) or data.get("Found") not in (True, False, "true", "True", "false", "False", 0, 1):
+        raise ValueError("CONFLICT: Resultado de conciliación ambiguo; cobro detenido.")
+    found = data.get("Found") in (True, "true", "True", 1)
+    iso = str(data.get("IsoCode", ""))
+    if found and iso == "00":
+        return data
+    if found:
+        raise ValueError("CONFLICT: Existe un resultado previo; se requiere conciliación.")
+    return None
+
+
+async def notify_charge_outcome(sub, payment, invoice_number: str) -> None:
+    """Send the customer email for a subscription charge result.
+
+    Single source of truth for charge notifications, used by the scheduler,
+    the manual charge endpoint, and the first charge at subscription creation
+    so all three behave identically:
+
+    - APPROVED            → billing receipt / invoice (via the user service).
+    - DECLINED + PAUSED   → a single 'subscription_paused' email (SES). The
+      per-attempt failure email is intentionally skipped here so a pause does
+      NOT send two emails for the same event.
+    - DECLINED (retrying) → 'charge failed' billing email (via the user service).
+
+    Never raises — the underlying senders swallow their own errors.
+    """
+    payment_method = f"Tarjeta terminada en {sub.card_last4}" if sub.card_last4 else None
+
+    if payment.status == PaymentStatus.APPROVED:
+        await enviar_correo_pago(
+            to_email=sub.cardholder_email,
+            success=True,
+            invoice_number=invoice_number,
+            total=sub.amount / 100,
+            currency=_currency_str(sub),
+            payment_method=payment_method,
+        )
+        return
+
+    reason = payment.response_message or f"IsoCode={payment.iso_code}"
+
+    if sub.status == SubscriptionStatus.PAUSED:
+        # Retries exhausted — one dedicated "paused" email, not the failure one.
+        await send_notification(
+            "subscription_paused",
+            to_email=sub.cardholder_email,
+            context=ctx_charge(
+                amount=sub.amount,
+                currency=_currency_str(sub),
+                description=sub.description or "Suscripción",
+                card_last4=sub.card_last4,
+                failure_reason=reason,
+            ),
+        )
+    else:
+        await enviar_correo_pago(
+            to_email=sub.cardholder_email,
+            success=False,
+            currency=_currency_str(sub),
+            payment_method=payment_method,
+            failure_reason=reason,
+        )
 
 
 async def _charge_due_subscriptions(session_factory: async_sessionmaker) -> None:
-    """Job body: charge all subscriptions that are due."""
-    from app.infrastructure.repo_impl import (
-        SQLPaymentRepository,
-        SQLRecurringRepository,
-        SQLTransactionRepository,
-    )
+    """Job body: charge all subscriptions that are due.
 
-    async with session_factory() as session:
-        recurring_repo = SQLRecurringRepository(session)
-        payment_repo   = SQLPaymentRepository(session)
-        txn_repo       = SQLTransactionRepository(session)
-        gateway        = AzulPaymentGateway()
-
-        due = await recurring_repo.list_due()
-        if not due:
+    Uses a Redis distributed lock to prevent double-charging when
+    multiple ECS tasks run simultaneously (e.g. during rolling deploys).
+    """
+    # ── Distributed lock ─────────────────────────────────────────────────
+    from app.infrastructure.redis_client import get_redis
+    redis = get_redis()
+    lock_key = "atlas:scheduler:charge_lock"
+    lock_ttl = 600  # 10 minutes — enough for the job to complete
+    acquired = False
+    if redis:
+        try:
+            acquired = await redis.set(lock_key, "1", nx=True, ex=lock_ttl)
+            if not acquired:
+                logger.info("[scheduler] Another instance holds the charge lock — skipping this run.")
+                return
+        except Exception as e:
+            # FAIL-CLOSED: si el lock no se puede evaluar no cobramos. Perder una
+            # corrida horaria es preferible a un doble cobro cuando hay varias
+            # instancias ECS activas (ej. durante un rolling deploy) y Redis caído.
+            # La siguiente corrida reintentará cuando Redis se recupere.
+            logger.error(
+                "[scheduler] Redis lock unavailable (%s) — SKIPPING this run to avoid "
+                "concurrent double-charging. Will retry next cycle.", e,
+            )
             return
+    else:
+        acquired = True  # no Redis configured, proceed normally (single instance)
 
-        logger.info("[scheduler] %d subscription(s) due for charging.", len(due))
-
-        for sub in due:
+    try:
+        await _charge_due_subscriptions_inner(session_factory)
+    finally:
+        if redis and acquired:
             try:
-                # ----------------------------------------------------------
-                # Expiration guard — skip charge and pause if card has expired
-                # ----------------------------------------------------------
-                if sub.card_expiration:
-                    try:
-                        # card_expiration is YYYYMM, e.g. "202812"
-                        exp_year  = int(sub.card_expiration[:4])
-                        exp_month = int(sub.card_expiration[4:6])
-                        # Card is valid through the last day of expiration month
-                        from calendar import monthrange
-                        last_day   = monthrange(exp_year, exp_month)[1]
-                        exp_cutoff = datetime(exp_year, exp_month, last_day, 23, 59, 59, tzinfo=timezone.utc)
-                        if datetime.now(timezone.utc) > exp_cutoff:
-                            logger.warning(
-                                "[scheduler] sub=%s PAUSED — card expired %s. "
-                                "Customer must update payment method.",
-                                sub.id, sub.card_expiration,
-                            )
-                            sub.status = SubscriptionStatus.PAUSED
-                            sub.last_failure_reason = f"Tarjeta vencida (exp. {sub.card_expiration})"
-                            await recurring_repo.update(sub)
-                            continue
-                    except (ValueError, IndexError):
-                        # Malformed expiration — log and proceed anyway
-                        logger.warning(
-                            "[scheduler] sub=%s has invalid card_expiration=%r — skipping expiry check.",
-                            sub.id, sub.card_expiration,
-                        )
+                await redis.delete(lock_key)
+            except Exception:
+                pass  # lock will auto-expire via TTL
 
-                # Build idempotent CustomOrderId — same on retry, unique per cycle+attempt
-                custom_order_id = _build_custom_order_id(sub.id, sub.failed_attempts)
 
-                payment = Payment(
-                    id=custom_order_id,  # use as CustomOrderId for Azul idempotency
-                    amount=sub.amount,
-                    itbis=sub.itbis,
-                    payment_type=PaymentType.RECURRING,
-                    order_id=f"sub-{sub.id}",
-                    auth_mode="splitit",
-                    initiated_by="merchant",
-                )
-
-                payment, txn = await gateway.sale_mit(payment, sub.data_vault_token)
-
-                await payment_repo.save(payment)
-                await txn_repo.save(txn)
-
-                if payment.status == PaymentStatus.APPROVED:
-                    # Success — reset retry counter, advance schedule
-                    sub.failed_attempts = 0
-                    sub.last_failure_reason = ""
-                    sub.last_charged_at = datetime.now(timezone.utc)
-                    sub.next_charge_at = (
-                        datetime.now(timezone.utc) + timedelta(days=sub.frequency_days)
-                    )
-                    logger.info(
-                        "[scheduler] sub=%s charged OK — iso=%s next=%s",
-                        sub.id, payment.iso_code, sub.next_charge_at.date(),
-                    )
-                    # Notify customer of successful charge via user service
-                    await enviar_correo_pago(
-                        to_email=sub.cardholder_email,
-                        success=True,
-                        invoice_number=custom_order_id,
-                        total=sub.amount / 100,
-                        currency=getattr(sub, "currency_code", "DOP"),
-                        payment_method=(
-                            f"Tarjeta terminada en {sub.card_last4}"
-                            if sub.card_last4 else None
-                        ),
-                    )
-                else:
-                    # Business decline — apply retry policy
-                    reason = payment.response_message or f"IsoCode={payment.iso_code}"
-                    sub = _handle_failure(sub, reason)
-                    # Notify customer of failed charge via user service
-                    await enviar_correo_pago(
-                        to_email=sub.cardholder_email,
-                        success=False,
-                        currency=getattr(sub, "currency_code", "DOP"),
-                        payment_method=(
-                            f"Tarjeta terminada en {sub.card_last4}"
-                            if sub.card_last4 else None
-                        ),
-                        failure_reason=reason,
-                    )
-                    if sub.status == SubscriptionStatus.PAUSED:
-                        await send_notification(
-                            "subscription_paused",
-                            to_email=sub.cardholder_email,
-                            context=ctx_charge(
-                                amount=sub.amount,
-                                currency=getattr(sub, "currency_code", "DOP"),
-                                description=sub.description or "Suscripción",
-                                card_last4=sub.card_last4,
-                                failure_reason=reason,
-                            ),
-                        )
-
-            except AzulIntegrationError as exc:
-                # Our bug — log as ERROR, do NOT apply retry (would loop)
-                # The subscription stays on the same next_charge_at until a human fixes the integration
-                logger.error(
-                    "[scheduler] INTEGRATION ERROR sub=%s: %s — "
-                    "NOT retrying. Fix the integration bug first.",
-                    sub.id, exc,
-                )
-                # Don't modify sub — don't bump failed_attempts for our bugs
-
-            except Exception as exc:
-                logger.exception("[scheduler] sub=%s unexpected error: %s", sub.id, exc)
-                sub = _handle_failure(sub, str(exc))
-
-            await recurring_repo.update(sub)
+async def _charge_due_subscriptions_inner(session_factory: async_sessionmaker) -> None:
+    """Use the same durable exclusion for scheduled and manual billing."""
+    from app.infrastructure.repo_impl import SQLPaymentRepository, SQLRecurringRepository, SQLTransactionRepository
+    from app.services.recurring_service import RecurringService
+    async with session_factory() as session:
+        recurring = SQLRecurringRepository(session)
+        service = RecurringService(SQLPaymentRepository(session), recurring,
+            SQLTransactionRepository(session), AzulPaymentGateway(), db_session=session)
+        for sub in await recurring.list_due():
+            try:
+                await service.charge(sub.id)
+            except Exception:
+                await session.rollback()
+                logger.exception("[scheduler] Cobro detenido; requiere conciliación o revisión sub=%s", sub.id)
 
 
 def _handle_failure(sub, reason: str):
@@ -288,7 +293,7 @@ async def _send_upcoming_charge_reminders(session_factory: async_sessionmaker) -
                 to_email=sub.cardholder_email or "",
                 context=ctx_charge(
                     amount=sub.amount,
-                    currency=getattr(sub, "currency_code", "DOP"),
+                    currency=_currency_str(sub),
                     description=sub.description or "Suscripción",
                     card_last4=sub.card_last4,
                     next_charge_date=sub.next_charge_at,
@@ -325,15 +330,14 @@ async def _purge_old_transactions(session_factory: async_sessionmaker) -> None:
 
     async with session_factory() as session:
         # 1. Delete transactions linked to old DECLINED payments
+        from sqlalchemy import select
+        declined_ids = select(PaymentModel.id).where(
+            PaymentModel.status == "DECLINED",
+            PaymentModel.created_at < cutoff,
+        )
         del_txns = await session.execute(
             delete(TransactionModel).where(
-                TransactionModel.payment_id.in_(
-                    text(
-                        "SELECT id FROM pagos.payments "
-                        "WHERE status = 'DECLINED' "
-                        f"AND created_at < '{cutoff.isoformat()}'"
-                    )
-                )
+                TransactionModel.payment_id.in_(declined_ids)
             )
         )
         # 2. Delete the old DECLINED payment records
@@ -404,6 +408,9 @@ def start_scheduler(engine: AsyncEngine) -> None:
         replace_existing=True,
     )
 
+    from app.services.post_payment import retry_subscription_activations
+    _scheduler.add_job(retry_subscription_activations, trigger="interval", minutes=5,
+        kwargs={"session_factory": session_factory}, id="retry_subscription_activations", replace_existing=True)
     _scheduler.start()
     logger.info(
         "[scheduler] Started — "

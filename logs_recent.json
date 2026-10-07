@@ -1,0 +1,237 @@
+{
+    "events": [
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088010784,
+            "message": "INFO:     172.31.23.109:63292 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088011088,
+            "eventId": "39853394375842930471875480493280403688971251412036026368"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088011138,
+            "message": "INFO:     172.31.36.183:62806 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088016078,
+            "eventId": "39853394383737394272155321091416385664743760410475298816"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088013512,
+            "message": "INFO:     172.31.23.109:63304 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088016078,
+            "eventId": "39853394436679363373467020429422180844010970625672806401"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088014220,
+            "message": "INFO:     172.31.36.183:6156 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088016078,
+            "eventId": "39853394452468290974026701613629469381046010571906940930"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088040812,
+            "message": "INFO:     172.31.23.109:50282 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088041086,
+            "eventId": "39853395045489707293353032223580141631455800329715777536"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088041165,
+            "message": "INFO:     172.31.36.183:54146 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088046073,
+            "eventId": "39853395053361870348434342198570987428146934390283632640"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088043541,
+            "message": "INFO:     172.31.23.109:50298 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088046073,
+            "eventId": "39853395106348440940143102782859854043959441328493101057"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088044243,
+            "message": "INFO:     172.31.36.183:60520 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088046073,
+            "eventId": "39853395122003564069511600228217928271358591105691353090"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088052433,
+            "message": "INFO:     172.31.23.109:17402 - \"GET /api/v1/recurring/customer-status?customer_id=205 HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088056097,
+            "eventId": "39853395304646667245477403769513687207818056479372607488"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088070833,
+            "message": "INFO:     172.31.23.109:28760 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088071085,
+            "eventId": "39853395714980378898440869591890268864555615263169839104"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088071193,
+            "message": "INFO:     172.31.36.183:32492 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088076073,
+            "eventId": "39853395723008647169911893928873197535389463694970454016"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088073554,
+            "message": "INFO:     172.31.23.109:28770 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088076073,
+            "eventId": "39853395775660706583642695166039028377112245210590216193"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088074244,
+            "message": "INFO:     172.31.36.183:22702 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088076073,
+            "eventId": "39853395791048220770628825133698673985239614649716703234"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088100843,
+            "message": "INFO:     172.31.23.109:61034 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088101085,
+            "eventId": "39853396384225742306344870105645157036600059268731699200"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088101201,
+            "message": "INFO:     172.31.36.183:64034 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088106076,
+            "eventId": "39853396392209409087418833196348356212576712488987590656"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088103580,
+            "message": "INFO:     172.31.23.109:61050 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088106076,
+            "eventId": "39853396445262881914723185650061829983207164511715000321"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088104246,
+            "message": "INFO:     172.31.36.183:9016 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088106076,
+            "eventId": "39853396460115178216944580662324618352790973274697957378"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088130873,
+            "message": "INFO:     172.31.23.109:50032 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088131086,
+            "eventId": "39853397053917120618219483082231960574552441088973340672"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088131231,
+            "message": "INFO:     172.31.36.183:8708 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088136072,
+            "eventId": "39853397061900787399293446172928954482429119457550073856"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088133590,
+            "message": "INFO:     172.31.23.109:50048 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088136072,
+            "eventId": "39853397114508245322627186163811713887606604250157875201"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088134275,
+            "message": "INFO:     172.31.36.183:32822 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088136072,
+            "eventId": "39853397129784255783620663015763680904370731881754460162"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088160886,
+            "message": "INFO:     172.31.23.109:48402 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088161084,
+            "eventId": "39853397723229386261719075465408692627075251824103194624"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088161247,
+            "message": "INFO:     172.31.36.183:9936 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088166074,
+            "eventId": "39853397731279955278388630425535728706604233711902326784"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088163616,
+            "message": "INFO:     172.31.23.109:48418 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088166074,
+            "eventId": "39853397784110420653707676647833845294508202119569932289"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088164300,
+            "message": "INFO:     172.31.36.183:1038 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088166074,
+            "eventId": "39853397799364130369502622876644276592999681389660536834"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088190908,
+            "message": "INFO:     172.31.23.109:13466 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088191083,
+            "eventId": "39853398392742358612005443456860479013321993338286440448"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088191257,
+            "message": "INFO:     172.31.36.183:55536 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088196074,
+            "eventId": "39853398400525318686292630939289911268343767090695045120"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088193627,
+            "message": "INFO:     172.31.23.109:13478 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088196074,
+            "eventId": "39853398453378084806810207784729563574520383859868631041"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088194317,
+            "message": "INFO:     172.31.36.183:45252 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088196074,
+            "eventId": "39853398468765598993796337752389209182647753298995118082"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088220920,
+            "message": "INFO:     172.31.23.109:60930 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088221087,
+            "eventId": "39853399062032323510306505216903193063660721002191978496"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088221277,
+            "message": "INFO:     172.31.36.183:47080 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088226075,
+            "eventId": "39853399069993689546181937684461566050064763437413629952"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088223639,
+            "message": "INFO:     172.31.23.109:60944 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088226075,
+            "eventId": "39853399122668049705111269544768932610060193314539372545"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088224340,
+            "message": "INFO:     172.31.36.183:37498 - \"GET /health HTTP/1.1\" 200 OK",
+            "ingestionTime": 1787088226075,
+            "eventId": "39853399138300872089281236366985471119186694730231644162"
+        },
+        {
+            "logStreamName": "ecs/Main/c252fcb96a7e4d7daa889419697cee34",
+            "timestamp": 1787088225492,
+            "message": 

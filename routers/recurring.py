@@ -18,11 +18,19 @@ DELETE /api/v1/recurring/{id}               Cancel + DataVault DELETE
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
+from app.domain.entities import Currency, Payment, PaymentStatus, PaymentType
+from app.infrastructure.azul_config import load_azul_config
+from app.infrastructure.azul_gateway import (
+    AzulIntegrationError,
+    AzulPaymentGateway,
+    _datavault_fields,
+)
 from app.infrastructure.database import get_db
 from app.infrastructure.repo_impl import (
     SQLConsentRepository,
@@ -31,6 +39,7 @@ from app.infrastructure.repo_impl import (
     SQLTransactionRepository,
 )
 from app.services.recurring_service import RecurringService
+from app.services.subscription_identity import CustomerIdentityError
 
 router = APIRouter(prefix="/api/v1/recurring", tags=["Recurring Payments"])
 
@@ -53,12 +62,21 @@ class BrowserInfoSchema(BaseModel):
 
 class CreateSubscriptionRequest(BaseModel):
     customer_id: str = Field(..., description="ID del cliente")
-    amount: int = Field(..., description="Monto recurrente en centavos")
-    itbis: int = Field(0, description="ITBIS en centavos")
+    amount: int = Field(..., ge=1, description="Total a cobrar en centavos, ITBIS incluido (ej. 59000 = RD$590)")
+    itbis: int | None = Field(
+        None,
+        ge=0,
+        description=(
+            "ITBIS en centavos (porción incluida en 'amount'). "
+            "Si se omite, se calcula automáticamente como el 18% incluido en 'amount'. "
+            "Envía 0 explícito para suscripciones exentas."
+        ),
+    )
     card_number: str = Field(..., description="Número de tarjeta (se tokeniza)")
     expiration: str = Field(..., description="Expiración YYYYMM")
     cvc: str
     frequency_days: int = Field(30, description="Frecuencia de cobro en días")
+    trial_days: int = Field(0, description="Días de prueba gratuita (sin cobro inicial)")
     description: str = Field("", description="Descripción de la suscripción")
     currency: str    = Field("DOP", description="Moneda: DOP (peso dominicano) o USD")
     cardholder_name: str  = Field(..., description="Nombre del tarjetahabiente")
@@ -69,9 +87,9 @@ class CreateSubscriptionRequest(BaseModel):
     )
 
     model_config = {"json_schema_extra": {"examples": [
-        {"customer_id": "CLI-001", "amount": 5000, "itbis": 900,
+        {"customer_id": "CLI-001", "amount": 59000,
          "card_number": "4260550061845872", "expiration": "202812", "cvc": "123",
-         "frequency_days": 30, "description": "Membresía mensual",
+         "frequency_days": 30, "description": "Membresía mensual (RD$590, ITBIS incluido auto)",
          "cardholder_name": "Juan Pérez", "cardholder_email": "juan@ejemplo.com",
          "auth_mode": "splitit", "browser_info": None}
     ]}}
@@ -85,6 +103,7 @@ class SubscriptionResponse(BaseModel):
     frequency_days: int
     description: str
     status: str
+    currency: str = "DOP"
     card_brand: str
     card_last4: str
     card_expiration: str
@@ -156,7 +175,14 @@ class CustomerStatusResponse(BaseModel):
     customer_id: str
     has_subscriptions: bool
     is_active: bool = Field(description="True si tiene al menos una suscripción ACTIVE")
-    is_current: bool = Field(description="True si está al día con TODOS los pagos")
+    is_current: bool = Field(description="True si tiene prueba o período pagado vigente")
+    allow_access: bool = Field(description="Decisión de acceso por prueba o período pagado vigente")
+    needs_payment: bool = Field(description="True cuando no existe vigencia de acceso")
+    valid_until: str | None = Field(None, description="Límite exclusivo de acceso, ISO 8601 con zona horaria")
+    paid_through: str | None = Field(None, description="Fin del período pagado vigente")
+    reason: str = Field(description="trial, paid, trial_expired_no_card, payment_due o no_subscription")
+    overall_status: str = Field(description="Alias de reason para consumidores")
+    requires_review: bool = Field(False, description="Más de una suscripción activa para la identidad")
     has_overdue_payment: bool = Field(description="True si alguna suscripción tiene pago vencido o fallido")
     in_trial: bool = Field(False, description="True si alguna suscripción activa está en período de gracia")
     trial_ends_at: str | None = Field(None, description="Fecha ISO en que termina el período de gracia")
@@ -182,12 +208,15 @@ class TransactionHistoryItem(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _get_service(db: AsyncSession = Depends(get_db)) -> RecurringService:
+    from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
     return RecurringService(
         payment_repo=SQLPaymentRepository(db),
         recurring_repo=SQLRecurringRepository(db),
         txn_repo=SQLTransactionRepository(db),
         gateway=AzulPaymentGateway(),
         consent_repo=SQLConsentRepository(db),
+        card_repo=SQLSavedCardRepository(db),
+        db_session=db,
     )
 
 
@@ -226,17 +255,21 @@ async def create_subscription(
             cardholder_email=body.cardholder_email,
             auth_mode=body.auth_mode,
             browser_info=browser_info_dict,
+            trial_days=body.trial_days,
+            currency=body.currency,
         )
     except AzulIntegrationError as e:
         raise HTTPException(status_code=503, detail=f"Error de integración con Azul: {e}")
     except Exception as e:
+        if str(e).startswith("CONFLICT:"):
+            raise HTTPException(status_code=409, detail=str(e).replace("CONFLICT: ", ""))
         raise HTTPException(status_code=400, detail=str(e))
     resp = _to_sub_response(recurring)
-    resp["initial_payment_id"] = initial_payment.id
+    resp["initial_payment_id"] = initial_payment.id if initial_payment else ""
     resp["initial_payment_status"] = (
         initial_payment.status.value
-        if hasattr(initial_payment.status, "value")
-        else initial_payment.status
+        if initial_payment and hasattr(initial_payment.status, "value")
+        else getattr(initial_payment, "status", "") if initial_payment else ""
     )
     return resp
 
@@ -273,7 +306,10 @@ async def get_customer_status(
 
     Para cada suscripción individual incluye `is_current` e `is_overdue` con el detalle.
     """
-    return await svc.get_customer_status(customer_id)
+    try:
+        return await svc.get_customer_status(customer_id)
+    except CustomerIdentityError as exc:
+        raise HTTPException(status_code=409, detail="No se pudo verificar la identidad de facturación.") from exc
 
 
 @router.get(
@@ -495,6 +531,357 @@ async def get_subscription_history(
 
 
 # ---------------------------------------------------------------------------
+# Diagnóstico — causa raíz de los cobros recurrentes (MIT / 3DS) en producción
+# ---------------------------------------------------------------------------
+
+class MitDiagRequest(BaseModel):
+    """Parámetros del experimento A/B para aislar el 3DS en cobros MIT."""
+    token: str = Field(
+        "",
+        description="DataVaultToken existente (tuyo). Recomendado — NO genera cobro de tokenización.",
+    )
+    card_number: str = Field("", description="PAN para tokenizar (opción 2 — genera 1 cobro real).")
+    expiration: str = Field("", description="Expiración YYYYMM (ej. 203012).")
+    cvc: str = Field("", description="CVC.")
+    amount: int = Field(100, ge=1, description="Monto en centavos (default 100 = RD$1.00).")
+    itbis: int = Field(0, ge=0, description="ITBIS en centavos (default 0).")
+    cardholder_name: str = Field("Diag MIT", description="CardHolderName.")
+    cardholder_email: str = Field("diag@atlas.do", description="CardHolderEmail.")
+    confirm: bool = Field(
+        False,
+        description="Debe ser true para ejecutar transacciones reales (cobra dinero real en producción).",
+    )
+
+    model_config = {"json_schema_extra": {"examples": [
+        {"token": "76212E91-79AC-4E60-81C3-961EA5479B91", "amount": 100, "confirm": True}
+    ]}}
+
+
+def _diag_new_payment(body: MitDiagRequest) -> Payment:
+    """Payment con OrderNumber corto (<=15) y CustomOrderId único por intento."""
+    short = uuid.uuid4().hex[:8].upper()
+    return Payment(
+        id=f"diag-mit-{short}",           # CustomOrderId único (evita idempotencia de AZUL)
+        order_id=f"DIAG{short[:6]}",      # OrderNumber corto y válido
+        amount=body.amount,
+        itbis=body.itbis,
+        payment_type=PaymentType.RECURRING,
+        auth_mode="splitit",
+        initiated_by="merchant",
+        currency_code=Currency.DOP,
+        cardholder_name=body.cardholder_name,
+        cardholder_email=body.cardholder_email,
+    )
+
+
+def _diag_build_mit_payload(gw: AzulPaymentGateway, payment: Payment, token: str, force_no3ds: bool) -> dict:
+    """Replica el payload de sale_mit(), con ForceNo3DS conmutable."""
+    payload = gw._base_payload(payment)
+    payload.update({
+        "CardNumber": "",
+        "Expiration": "",
+        "CVC": "",
+        **_datavault_fields(False, token),
+        "merchantInitiatedIndicator": "STANDING_ORDER",
+    })
+    if force_no3ds:
+        payload["ForceNo3DS"] = "1"
+    return payload
+
+
+async def _diag_attempt(gw: AzulPaymentGateway, payment: Payment, token: str, force_no3ds: bool) -> dict:
+    """Ejecuta un MIT (sin persistir en DB) y devuelve el resultado estructurado."""
+    payload = _diag_build_mit_payload(gw, payment, token, force_no3ds)
+    res: dict = {
+        "force_no3ds_sent": force_no3ds,
+        "custom_order_id": payload.get("CustomOrderId"),
+        "order_number": payload.get("OrderNumber"),
+    }
+    try:
+        p, _txn = await gw._execute(payment, payload)
+        res.update({
+            "response_code": p.response_code,
+            "iso_code": p.iso_code,
+            "response_message": p.response_message,
+            "azul_order_id": p.azul_order_id,
+            "authorization_code": p.authorization_code,
+            "status": p.status.value,
+            "charged": p.status == PaymentStatus.APPROVED,
+            "error": None,
+        })
+    except AzulIntegrationError as e:
+        res.update({
+            "response_code": "Error",
+            "iso_code": "",
+            "response_message": "",
+            "status": "INTEGRATION_ERROR",
+            "charged": False,
+            "error": str(e),
+        })
+    return res
+
+
+def _diag_verdict(a: dict, b: dict) -> dict:
+    """Mapea el resultado A/B a la causa raíz y la acción recomendada."""
+    a_iso = a.get("iso_code") or ""
+    b_err = b.get("error") or ""
+    a_3ds = a_iso in ("3D2METHOD", "3D")
+
+    if a.get("charged"):
+        code = "MIT_OK_SIN_FORCE"
+        conclusion = "El MIT aprueba SIN ForceNo3DS — la causa raíz NO es 3DS en el comercio."
+        action = "Revisar el task/credenciales del proceso que falla (posible deploy viejo con OrderNumber inválido)."
+    elif a_3ds and "ForceNo3DS" in b_err:
+        code = "COMERCIO_SIN_MIT_NO_3DS"
+        conclusion = (
+            "CONFIRMADO: el comercio de producción rechaza ForceNo3DS y fuerza 3DS 2.0 en el MIT, "
+            "que un cobro headless no puede completar."
+        )
+        action = "AZUL/Luis Recio debe habilitar MIT stored-credential sin 3DS en el merchant. Ningún cambio de código lo resuelve solo."
+    elif a_3ds and b.get("charged"):
+        code = "SOLO_STRIP_CODIGO"
+        conclusion = "Con ForceNo3DS=1 el MIT aprueba; el único bloqueante era el strip de _force_no3ds en producción."
+        action = "Revertir el strip de _force_no3ds para producción y redesplegar. No hace falta AZUL."
+    else:
+        code = "NO_CONCLUYENTE"
+        conclusion = "Resultado fuera del árbol esperado."
+        action = "Revisar el detalle de attempt_a / attempt_b (response_code, iso_code, error)."
+
+    return {"code": code, "conclusion": conclusion, "recommended_action": action}
+
+
+@router.post(
+    "/diagnostics/mit-3ds",
+    tags=["Debug"],
+    summary="Diagnóstico causa raíz: MIT con/sin ForceNo3DS (cobra dinero real)",
+    description=(
+        "Dispara el MISMO cobro MIT dos veces contra AZUL — una SIN ForceNo3DS "
+        "(comportamiento actual de prod) y otra CON ForceNo3DS=1 (como se certificó "
+        "en sandbox) — y devuelve un veredicto de causa raíz.\n\n"
+        "⚠️ Ejecuta transacciones REALES. Requiere `confirm=true`. El intento A "
+        "normalmente no cobra (vuelve 3D2METHOD); el intento B cobra sólo si aprueba. "
+        "Usá un `token` propio para no generar cobro de tokenización.\n\n"
+        "No persiste nada en la base — es una sonda pura contra el gateway."
+    ),
+)
+async def diagnose_mit_3ds(body: MitDiagRequest):
+    if not body.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Debe enviar confirm=true — este endpoint ejecuta cobros reales en AZUL.",
+        )
+
+    cfg = load_azul_config()
+    gw = AzulPaymentGateway()
+
+    result: dict = {
+        "env": cfg.env,
+        "merchant_id": cfg.merchant_id,
+        "api_url": cfg.api_url,
+        "note": "Cada intento usa un CustomOrderId distinto; no se persiste en la base.",
+    }
+
+    # Resolver token: usar el provisto, o tokenizar la tarjeta (genera 1 cobro).
+    token = body.token.strip()
+    if not token:
+        if not (body.card_number and body.expiration and body.cvc):
+            raise HTTPException(
+                status_code=400,
+                detail="Falta 'token' (recomendado) o 'card_number'+'expiration'+'cvc' para tokenizar.",
+            )
+        tok_payment = _diag_new_payment(body)
+        tok_payment.payment_type = PaymentType.SALE
+        tok_payment.initiated_by = "cardholder"
+        try:
+            tok_payment, _ = await gw.sale(
+                tok_payment, body.card_number, body.expiration, body.cvc, save_token=True,
+            )
+        except AzulIntegrationError as e:
+            raise HTTPException(status_code=503, detail=f"Tokenización falló (integration error): {e}")
+        token = tok_payment.data_vault_token or ""
+        result["tokenization"] = {
+            "iso_code": tok_payment.iso_code,
+            "status": tok_payment.status.value,
+            "azul_order_id": tok_payment.azul_order_id,
+            "token_obtained": bool(token),
+        }
+        if not token:
+            result["verdict"] = {
+                "code": "TOKENIZACION_FALLIDA",
+                "conclusion": (
+                    "No se pudo tokenizar la tarjeta (iso=%s). Si volvió 3D2METHOD, el comercio "
+                    "fuerza 3DS incluso en CIT con PAN." % (tok_payment.iso_code or "∅")
+                ),
+                "recommended_action": "Reintentá con un 'token' existente para completar el test MIT.",
+            }
+            return result
+
+    # Experimento A/B (dos CustomOrderId distintos).
+    attempt_a = await _diag_attempt(gw, _diag_new_payment(body), token, force_no3ds=False)
+    attempt_b = await _diag_attempt(gw, _diag_new_payment(body), token, force_no3ds=True)
+
+    result["attempt_a_sin_forceno3ds"] = attempt_a
+    result["attempt_b_con_forceno3ds"] = attempt_b
+    result["verdict"] = _diag_verdict(attempt_a, attempt_b)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Diagnóstico — procedencia del token (¿la CIT que lo creó estableció bien la
+# credencial almacenada?). Read-only: reconstruye la CIT de origen desde la
+# base, sin cobrar ni llamar a AZUL. Cierra el eslabón CIT→MIT.
+# ---------------------------------------------------------------------------
+
+class TokenProvenanceRequest(BaseModel):
+    token: str = Field("", description="DataVaultToken a investigar.")
+    subscription_id: str = Field("", description="Alternativa: id de suscripción (se toma su token).")
+
+    model_config = {"json_schema_extra": {"examples": [
+        {"token": "BA3F81D4-B4AF-40AC-96F6-9B5FB12E07E5"}
+    ]}}
+
+
+def _diag_parse_indicators(request_payload: str) -> dict:
+    """Extrae los indicadores relevantes del request JSON almacenado (enmascarado)."""
+    import json as _json
+    out = {
+        "trx_type": None,
+        "cardholderInitiatedIndicator": None,
+        "merchantInitiatedIndicator": None,
+        "ForceNo3DS": None,
+        "SaveToDataVault": None,
+        "sent_ThreeDSAuth": False,
+    }
+    try:
+        d = _json.loads(request_payload or "{}")
+    except Exception:  # noqa: BLE001
+        return out
+    if isinstance(d, dict):
+        out["trx_type"] = d.get("TrxType")
+        out["cardholderInitiatedIndicator"] = d.get("cardholderInitiatedIndicator")
+        out["merchantInitiatedIndicator"] = d.get("merchantInitiatedIndicator")
+        out["ForceNo3DS"] = d.get("ForceNo3DS")
+        out["SaveToDataVault"] = d.get("SaveToDataVault")
+        out["sent_ThreeDSAuth"] = "ThreeDSAuth" in d
+    return out
+
+
+def _diag_provenance_verdict(creator, cit: dict) -> dict:
+    """Evalúa si el token proviene de una CIT stored-credential válida."""
+    if creator is None:
+        return {
+            "code": "SIN_CIT_EN_BASE",
+            "conclusion": "No hay un Payment en la base que haya creado este token (SaveToDataVault). "
+                          "El token no fue generado por este sistema, o su registro fue purgado.",
+            "recommended_action": "Verificá el origen del token; probá con uno de una suscripción reciente.",
+        }
+    iso = (creator.get("iso_code") or "")
+    chi = (cit.get("cardholderInitiatedIndicator") or "")
+    save = (cit.get("SaveToDataVault") or "")
+    approved = iso == "00"
+    marked = chi == "STANDING_ORDER"
+    saved = save == "1"
+
+    if approved and marked and saved:
+        return {
+            "code": "CIT_OK_STORED_CREDENTIAL",
+            "conclusion": "El token proviene de una CIT APROBADA (IsoCode=00) con "
+                          "cardholderInitiatedIndicator=STANDING_ORDER y SaveToDataVault=1 — "
+                          "es una credencial almacenada correctamente establecida.",
+            "recommended_action": "Si el MIT sobre este token igual devuelve 3D2METHOD, "
+                                  "la falla es de AZUL: el merchant no honra la exención MIT. "
+                                  "Enviar a AZUL los dos AzulOrderId + RRN de la CIT.",
+        }
+    if not approved:
+        return {
+            "code": "CIT_NO_APROBADA",
+            "conclusion": f"La CIT que creó el token NO fue aprobada (IsoCode={iso or '∅'}). "
+                          "La credencial pudo no quedar registrada.",
+            "recommended_action": "El problema está antes del MIT: revisar por qué la CIT no llega a 00.",
+        }
+    return {
+        "code": "CIT_MAL_MARCADA",
+        "conclusion": "El token fue creado por una operación que NO es una CIT recurrente correcta "
+                      f"(cardholderInitiatedIndicator={chi or '∅'}, SaveToDataVault={save or '∅'}). "
+                      "La relación stored-credential pudo no establecerse.",
+        "recommended_action": "Problema del lado de Atlas: asegurar que el alta use sale_recurring_cit "
+                              "(STANDING_ORDER + SaveToDataVault=1) y que la CIT autentique.",
+    }
+
+
+@router.post(
+    "/diagnostics/token-provenance",
+    tags=["Debug"],
+    summary="Diagnóstico read-only: ¿la CIT que creó el token estableció bien la credencial?",
+    description=(
+        "Reconstruye desde la base la transacción CIT que generó un DataVaultToken "
+        "(SaveToDataVault=1) y reporta sus indicadores (cardholderInitiatedIndicator, "
+        "ForceNo3DS), IsoCode, AzulOrderId, RRN y AuthorizationCode.\n\n"
+        "Es de solo lectura: NO cobra ni llama a AZUL. Sirve para separar 'token mal "
+        "establecido' (lado Atlas) de 'AZUL no honra la exención MIT' (lado AZUL)."
+    ),
+)
+async def diagnose_token_provenance(
+    body: TokenProvenanceRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import select
+    from app.infrastructure.models import PaymentModel, TransactionModel
+
+    token = body.token.strip()
+    if not token and body.subscription_id.strip():
+        sub = await SQLRecurringRepository(db).get_by_id(body.subscription_id.strip())
+        token = sub.data_vault_token if sub else ""
+    if not token:
+        raise HTTPException(status_code=400, detail="Falta 'token' o 'subscription_id' con token.")
+
+    # Payment(s) cuyo response trajo este DataVaultToken = la(s) CIT que lo crearon.
+    res = await db.execute(
+        select(PaymentModel)
+        .where(PaymentModel.data_vault_token == token)
+        .order_by(PaymentModel.created_at.asc())
+    )
+    creators = res.scalars().all()
+    creator_model = creators[0] if creators else None
+
+    creator = None
+    cit_indicators: dict = {}
+    if creator_model is not None:
+        creator = {
+            "payment_id": creator_model.id,
+            "iso_code": creator_model.iso_code,
+            "status": creator_model.status,
+            "payment_type": creator_model.payment_type,
+            "initiated_by": creator_model.initiated_by,
+            "azul_order_id": creator_model.azul_order_id,
+            "rrn": getattr(creator_model, "rrn", ""),
+            "authorization_code": getattr(creator_model, "authorization_code", ""),
+            "customer_id": getattr(creator_model, "customer_id", ""),
+            "created_at": creator_model.created_at.isoformat() if creator_model.created_at else None,
+        }
+        # Transacción de auditoría con el request enviado a AZUL (enmascarado).
+        tres = await db.execute(
+            select(TransactionModel)
+            .where(TransactionModel.payment_id == creator_model.id)
+            .order_by(TransactionModel.created_at.asc())
+        )
+        for t in tres.scalars().all():
+            parsed = _diag_parse_indicators(t.request_payload)
+            # Nos quedamos con la que efectivamente tokenizó (SaveToDataVault=1) si existe.
+            if parsed.get("SaveToDataVault") == "1" or not cit_indicators:
+                cit_indicators = parsed
+
+    return {
+        "token_masked": f"{token[:8]}…{token[-4:]}" if len(token) >= 12 else token,
+        "creator_count": len(creators),
+        "creating_cit": creator,
+        "cit_request_indicators": cit_indicators,
+        "verdict": _diag_provenance_verdict(creator, cit_indicators),
+        "note": "Read-only: reconstruido desde pagos/transacciones locales; no se llamó a AZUL.",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -511,6 +898,10 @@ def _to_sub_response(r) -> dict:
         "frequency_days": r.frequency_days,
         "description": r.description,
         "status": r.status.value if hasattr(r.status, "value") else r.status,
+        "currency": (
+            r.currency_code.value if hasattr(getattr(r, "currency_code", None), "value")
+            else getattr(r, "currency_code", None) or "DOP"
+        ),
         "card_brand": getattr(r, "card_brand", ""),
         "card_last4": r.card_last4,
         "card_expiration": getattr(r, "card_expiration", ""),

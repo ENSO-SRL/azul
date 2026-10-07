@@ -1019,7 +1019,7 @@ function openChallengeTab() {
     <form id="f" method="POST" action="${challengeUrl}">
       <input type="hidden" name="creq" value="${challengeCreq}">
     </form>
-    <script>document.getElementById('f').submit();<\/script>
+    <script>document.getElementById('f').submit();<\\/script>
   </body></html>`);
   win.document.close();
   document.getElementById('status-text').textContent = '3DS: Completa el challenge en la nueva pestaña';

@@ -28,23 +28,32 @@ the timestamp.  Visa/MC require this evidence for recurring charge disputes.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import uuid
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import (
     ConsentRecord,
+    Currency,
     Payment,
     PaymentStatus,
     PaymentType,
     RecurringPayment,
+    SavedCard,
     SubscriptionStatus,
 )
 from app.domain.repositories import (
     ConsentRepository,
     PaymentRepository,
     RecurringRepository,
+    SavedCardRepository,
     TransactionRepository,
 )
 from app.infrastructure.azul_gateway import AzulPaymentGateway
 from app.services.notification_service import ctx_charge, send_notification
+from app.services.billing_attempts import BillingAttempts
+from app.services.access_policy import access_decision, utc
+from app.services.subscription_identity import resolve_customer_identity, find_active_subscription, lock_customer_subscriptions
 
 
 class RecurringService:
@@ -56,12 +65,22 @@ class RecurringService:
         txn_repo: TransactionRepository,
         gateway: AzulPaymentGateway,
         consent_repo: ConsentRepository | None = None,
+        card_repo: SavedCardRepository | None = None,
+        db_session: AsyncSession | None = None,
     ):
         self._payments   = payment_repo
         self._recurring  = recurring_repo
         self._txns       = txn_repo
         self._gw         = gateway
         self._consents   = consent_repo  # optional — only needed for consent endpoints
+        self._card_repo  = card_repo
+        self._db         = db_session
+
+    async def _get_search_ids(self, customer_id: str) -> set[str]:
+        if self._db is None:
+            raise ValueError("CONFLICT: La identidad requiere una sesión persistente.")
+        identity = await resolve_customer_identity(self._db, customer_id)
+        return set(identity.aliases)
 
     # ------------------------------------------------------------------
     # Subscription creation (CIT — first charge + tokenise)
@@ -71,7 +90,7 @@ class RecurringService:
         self,
         customer_id: str,
         amount: int,
-        itbis: int,
+        itbis: int | None,
         card_number: str,
         expiration: str,
         cvc: str,
@@ -81,7 +100,9 @@ class RecurringService:
         cardholder_email: str = "",
         auth_mode: str = "splitit",
         browser_info: dict[str, str] | None = None,
-    ) -> tuple[RecurringPayment, Payment]:
+        trial_days: int = 0,
+        currency: str = "DOP",
+    ) -> tuple[RecurringPayment, Payment | None]:
         """First charge + tokenise the card via DataVault (CIT STANDING_ORDER).
 
         Returns the new subscription and the initial payment.
@@ -96,15 +117,89 @@ class RecurringService:
         the subscription will NOT be saved yet — the caller must complete 3DS
         via /api/v1/3ds/ and then finalise.
         """
+        
+        # Resolve currency once — used by the first charge AND persisted on the
+        # subscription so every future MIT charge uses the same currency.
+        try:
+            curr = Currency((currency or "DOP").upper())
+        except ValueError:
+            raise ValueError(f"VALIDATION_ERROR:currency — moneda no soportada: {currency!r} (use DOP o USD)")
+
+        # ITBIS: 'amount' es el TOTAL a cobrar (impuesto incluido). Si no se
+        # provee itbis explícito, se desglosa automáticamente la porción de ITBIS
+        # contenida en el total. Azul cobra 'amount' — el itbis es informativo.
+        from app.utils.tax import included_itbis
+        if itbis is None:
+            itbis = included_itbis(amount)
+        elif itbis > amount:
+            raise ValueError(
+                f"VALIDATION_ERROR:itbis — el ITBIS ({itbis}) no puede exceder el total ({amount})."
+            )
+
+        if self._db is None:
+            raise ValueError("CONFLICT: No se puede crear sin exclusión persistente.")
+        identity = await resolve_customer_identity(self._db, customer_id)
+        customer_id = identity.customer_id
+        if await find_active_subscription(self._db, identity):
+            raise ValueError("CONFLICT: El usuario ya tiene una suscripción activa.")
+        prior = await self.list_subscriptions(customer_id)
+        anchor = max(prior, key=lambda row: row.created_at).id if prior else "initial"
+        await BillingAttempts(self._db).reserve(f"create:{customer_id}:{anchor}", customer_id, "")
+
+        if trial_days > 0:
+            try:
+                saved = await self._gw.create_token(
+                    card_number=card_number,
+                    expiration=expiration,
+                    cvc=cvc,
+                    customer_id=customer_id,
+                    cardholder_name=cardholder_name,
+                    cardholder_email=cardholder_email,
+                )
+            except ValueError as exc:
+                if "VALIDATION_ERROR:TrxType" in str(exc):
+                    raise ValueError("DataVault CREATE no está habilitado en sandbox. El trial requiere TrxType=CREATE habilitado en Azul.")
+                raise
+            
+            if self._card_repo:
+                local_card = SavedCard(
+                    customer_id=customer_id,
+                    token=saved.token,
+                    card_brand=saved.card_brand,
+                    card_last4=saved.card_last4,
+                    expiration=expiration,
+                    is_default=True
+                )
+                await self._card_repo.save(local_card)
+
+            now = datetime.now(timezone.utc)
+            recurring = RecurringPayment(
+                customer_id=customer_id,
+                amount=amount,
+                itbis=itbis,
+                frequency_days=frequency_days,
+                description=description,
+                currency_code=curr,
+                card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
+                card_expiration=expiration,
+                data_vault_token=saved.token,
+                next_charge_at=now + timedelta(days=trial_days),
+                trial_ends_at=now + timedelta(days=trial_days),
+                last_charged_at=None,
+            )
+            await self._recurring.save(recurring)
+            return recurring, None
 
         payment = Payment(
             amount=amount,
             itbis=itbis,
             payment_type=PaymentType.RECURRING,
             auth_mode=auth_mode,
+            currency_code=curr,
             cardholder_name=cardholder_name,
             cardholder_email=cardholder_email,
             initiated_by="cardholder",
+            customer_id=customer_id,
         )
 
         # Use sale_cit_new — STANDING_ORDER CIT + SaveToDataVault=1
@@ -124,6 +219,7 @@ class RecurringService:
                 itbis=itbis,
                 frequency_days=frequency_days,
                 description=description,
+                currency_code=curr,
                 card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
                 card_expiration=expiration,
             )
@@ -137,6 +233,7 @@ class RecurringService:
                 itbis=itbis,
                 frequency_days=frequency_days,
                 description=description,
+                currency_code=curr,
                 card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
                 card_expiration=expiration,
             )
@@ -151,6 +248,7 @@ class RecurringService:
             itbis=itbis,
             frequency_days=frequency_days,
             description=description,
+            currency_code=curr,
             data_vault_token=token,
             card_brand=payment.card_number_masked[:4] if payment.card_number_masked else "",
             card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
@@ -161,6 +259,12 @@ class RecurringService:
         )
 
         await self._recurring.save(recurring)
+
+        # Send the invoice/receipt for the FIRST charge (previously missing for
+        # subscriptions created via the API — only checkout sent a receipt).
+        from app.services.scheduler import notify_charge_outcome
+        await notify_charge_outcome(recurring, payment, invoice_number=payment.id)
+
         return recurring, payment
 
     # ------------------------------------------------------------------
@@ -178,28 +282,125 @@ class RecurringService:
             raise ValueError(f"Subscription {recurring_id} not found")
         if sub.status != SubscriptionStatus.ACTIVE:
             raise ValueError(f"Subscription {recurring_id} is {sub.status.value}")
+        if not sub.data_vault_token or not sub.data_vault_token.strip():
+            raise ValueError(f"Subscription {recurring_id} has no DataVault token")
+        now = datetime.now(timezone.utc)
+        if sub.trial_ends_at and utc(sub.trial_ends_at) > now:
+            raise ValueError("CONFLICT: La prueba todavía está vigente.")
+        if sub.next_charge_at and utc(sub.next_charge_at) > now:
+            raise ValueError("CONFLICT: El ciclo todavía no está vencido.")
+        from calendar import monthrange
+        try:
+            year, month = int(sub.card_expiration[:4]), int(sub.card_expiration[4:6])
+            cutoff = datetime(year, month, monthrange(year, month)[1], 23, 59, 59, tzinfo=timezone.utc)
+            if now > cutoff:
+                sub.status = SubscriptionStatus.PAUSED
+                sub.last_failure_reason = "Tarjeta vencida"
+                await self._recurring.update(sub)
+                await send_notification("card_expired", to_email=sub.cardholder_email,
+                    context=ctx_charge(amount=sub.amount, currency=getattr(sub.currency_code, "value", sub.currency_code),
+                        description=sub.description or "Suscripción", card_last4=sub.card_last4))
+                raise ValueError("expired")
+        except (ValueError, TypeError, IndexError):
+            raise ValueError("CONFLICT: La tarjeta requiere una fecha de vencimiento válida.") from None
+        identity = await resolve_customer_identity(self._db, sub.customer_id)
+        active = await find_active_subscription(self._db, identity)
+        if active is None or active.id != sub.id:
+            raise ValueError("CONFLICT: Suscripción no identificable o duplicada.")
         if not sub.data_vault_token:
             raise ValueError(f"Subscription {recurring_id} has no DataVault token")
 
+        from app.services.scheduler import (
+            build_custom_order_id,
+            _handle_failure,
+            notify_charge_outcome,
+            verify_prior_charge,
+        )
+
+        # Full-date cycle key (YYYYMMDD) so two charges in the same calendar month
+        # do not collide on the same CustomOrderId (see scheduler for rationale).
+        cycle = (
+            sub.next_charge_at.strftime("%Y%m%d")
+            if sub.next_charge_at
+            else datetime.now(timezone.utc).strftime("%Y%m%d")
+        )
+        custom_order_id = build_custom_order_id(sub.id, sub.failed_attempts, cycle)
+
+        # ── Idempotency guard (same two layers as the scheduler) ─────────────
+        # Prevents a double charge if this cycle was already paid (e.g. the
+        # scheduler and a manual charge race, or a retry after a crash).
+        existing = await self._payments.get_by_id(custom_order_id)
+        db_ok = existing is not None and existing.status == PaymentStatus.APPROVED
+        azul_prior = None if db_ok else await verify_prior_charge(self._gw, custom_order_id)
+        if db_ok or azul_prior is not None:
+            now = datetime.now(timezone.utc)
+            sub.failed_attempts = 0
+            sub.last_failure_reason = ""
+            sub.last_charged_at = existing.created_at if existing is not None else now
+            sub.next_charge_at = now + timedelta(days=sub.frequency_days)
+            await self._recurring.update(sub)
+            if existing is not None:
+                return existing
+            recovered = Payment(
+                id=custom_order_id, order_id=f"REC-{uuid.uuid4().hex[:8].upper()}",
+                amount=sub.amount, itbis=sub.itbis,
+                payment_type=PaymentType.RECURRING, auth_mode="splitit",
+                initiated_by="merchant", currency_code=sub.currency_code,
+                customer_id=sub.customer_id,
+            )
+            recovered.status = PaymentStatus.APPROVED
+            recovered.iso_code = "00"
+            azul_data = azul_prior or {}
+            recovered.azul_order_id = (
+                azul_data.get("AzulOrderId") or azul_data.get("AZULOrderId", "")
+            )
+            recovered.authorization_code = azul_data.get("AuthorizationCode", "")
+            recovered.response_message = "Recuperado vía verify_payment (idempotencia)"
+            await self._payments.save(recovered)
+            return recovered
+
         payment = Payment(
+            id=custom_order_id,
+            order_id=f"REC-{uuid.uuid4().hex[:8].upper()}",
             amount=sub.amount,
             itbis=sub.itbis,
             payment_type=PaymentType.RECURRING,
             auth_mode="splitit",
             initiated_by="merchant",
+            currency_code=sub.currency_code,
+            customer_id=sub.customer_id,
         )
 
-        # MIT — user not present, use stored token
-        payment, txn = await self._gw.sale_mit(payment, sub.data_vault_token)
+        # This durable unique reservation survives commits, worker crashes and timeouts.
+        attempts = BillingAttempts(self._db)
+        await attempts.reserve(custom_order_id, sub.id, payment.id)
+        try:
+            payment, txn = await self._gw.sale_mit(payment, sub.data_vault_token)
+            await self._payments.save(payment)
+            await self._txns.save(txn)
+        except Exception:
+            await attempts.uncertain(custom_order_id)
+            raise
 
-        await self._payments.save(payment)
-        await self._txns.save(txn)
-
-        # Update subscription schedule
         now = datetime.now(timezone.utc)
-        sub.last_charged_at = now
-        sub.next_charge_at  = now + timedelta(days=sub.frequency_days)
+        if payment.status == PaymentStatus.APPROVED:
+            # Only advance the billing schedule on a successful charge.
+            sub.failed_attempts = 0
+            sub.last_failure_reason = ""
+            sub.last_charged_at = now
+            sub.next_charge_at  = now + timedelta(days=sub.frequency_days)
+        else:
+            # Declined — apply the same retry/backoff policy as the scheduler.
+            # Do NOT advance next_charge_at or mark the cycle as paid.
+            reason = payment.response_message or f"IsoCode={payment.iso_code}"
+            sub = _handle_failure(sub, reason)
+
         await self._recurring.update(sub)
+
+        # Notify the customer (success invoice / decline / pause) — same behaviour
+        # as the scheduler, so manual charges are no longer silent.
+        await attempts.finish(custom_order_id, payment.status.value, payment.id)
+        await notify_charge_outcome(sub, payment, invoice_number=custom_order_id)
 
         return payment
 
@@ -212,7 +413,18 @@ class RecurringService:
 
     async def list_subscriptions(self, customer_id: str) -> list[RecurringPayment]:
         """Return all subscriptions for a customer (any status)."""
-        return await self._recurring.list_by_customer(customer_id)
+        search_ids = await self._get_search_ids(customer_id)
+        subs = []
+        for sid in search_ids:
+            subs.extend(await self._recurring.list_by_customer(sid))
+            
+        seen_ids = set()
+        unique_subs = []
+        for s in subs:
+            if s.id not in seen_ids:
+                seen_ids.add(s.id)
+                unique_subs.append(s)
+        return unique_subs
 
     async def pause_subscription(self, recurring_id: str) -> RecurringPayment:
         """Pause an active subscription (no DataVault DELETE — card kept for resume)."""
@@ -233,6 +445,16 @@ class RecurringService:
             raise ValueError(f"Cannot resume a cancelled subscription")
         if sub.status == SubscriptionStatus.ACTIVE:
             raise ValueError(f"Subscription {recurring_id} is already active")
+        if self._db is None:
+            raise ValueError("CONFLICT: Se requiere persistencia para reactivar.")
+        identity = await resolve_customer_identity(self._db, sub.customer_id)
+        await lock_customer_subscriptions(self._db, identity)
+        active = await find_active_subscription(self._db, identity)
+        if active is not None and active.id != sub.id:
+            raise ValueError("CONFLICT: El usuario ya tiene otra suscripción activa.")
+        from sqlalchemy import update
+        from app.infrastructure.models import RecurringPaymentModel
+        await self._db.execute(update(RecurringPaymentModel).where(RecurringPaymentModel.id == recurring_id).values(customer_id=identity.customer_id))
         result = await self._recurring.resume(recurring_id)
         return result  # type: ignore[return-value]
 
@@ -271,7 +493,7 @@ class RecurringService:
             to_email=sub.cardholder_email,
             context=ctx_charge(
                 amount=sub.amount,
-                currency=getattr(sub, "currency_code", "DOP"),
+                currency=sub.currency_code.value if hasattr(sub.currency_code, "value") else "DOP",
                 description=sub.description or "Suscripción",
                 card_last4=sub.card_last4,
             ),
@@ -343,7 +565,18 @@ class RecurringService:
         Trial (grace period):
         - trial_ends_at is set and in the future → in_trial = True
         """
-        subs = await self._recurring.list_by_customer(customer_id)
+        search_ids = await self._get_search_ids(customer_id)
+        subs = []
+        for sid in search_ids:
+            subs.extend(await self._recurring.list_by_customer(sid))
+            
+        seen_ids = set()
+        unique_subs = []
+        for s in subs:
+            if s.id not in seen_ids:
+                seen_ids.add(s.id)
+                unique_subs.append(s)
+        subs = unique_subs
 
         if not subs:
             return {
@@ -359,6 +592,7 @@ class RecurringService:
                 "paused_count": 0,
                 "cancelled_count": 0,
                 "subscriptions": [],
+                **access_decision([]),
             }
 
         now = datetime.now(timezone.utc)
@@ -428,4 +662,5 @@ class RecurringService:
             "paused_count": len(paused_subs),
             "cancelled_count": len(cancelled_subs),
             "subscriptions": subscription_details,
+            **access_decision(subs, now=now),
         }

@@ -131,6 +131,7 @@ async def term_callback(
     request: Request,
     payment_id: str = Query(..., description="ID del pago"),
     svc: PaymentService = Depends(_get_service),
+    db: AsyncSession = Depends(get_db),
 ):
     """ACS redirects here after the cardholder completes the challenge.
 
@@ -169,9 +170,83 @@ async def term_callback(
 
         # ── Post-payment actions (email + card check) ─────────────────────
         if status == "APPROVED":
-            import asyncio
-            from app.services.post_payment import handle_post_payment_actions
-            asyncio.create_task(handle_post_payment_actions(payment))
+            from app.services.post_payment import handle_post_payment_actions, create_subscription_if_needed
+            try:
+                await handle_post_payment_actions(payment)
+            except Exception as _pp_exc:
+                logger.error("[3ds] post-payment actions FAILED | payment_id=%s err=%s", payment_id, _pp_exc)
+            
+            # ── Auto-void del Hold (liberar fondos retenidos) ─────────────
+            if payment.order_id and payment.order_id.startswith("HOLD-") and payment.azul_order_id:
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    from app.infrastructure.azul_gateway import AzulPaymentGateway
+                    _gw = AzulPaymentGateway()
+                    original_date = _dt.now(_tz.utc).strftime("%Y%m%d")
+                    await _gw.void(
+                        azul_order_id=payment.azul_order_id,
+                        original_date=original_date,
+                    )
+                    logger.warning(
+                        "[3ds] ✓ Hold auto-voided (term callback) | payment_id=%s azul_order=%s",
+                        payment_id, payment.azul_order_id,
+                    )
+                except Exception as void_exc:
+                    logger.error(
+                        "[3ds] ✗ Hold auto-void FAILED (term callback) | payment_id=%s err=%s",
+                        payment_id, void_exc,
+                    )
+
+            # Recuperar expiración y marca si la tarjeta fue guardada en el flujo 3DS
+            exp_db = ""
+            if payment.customer_id and payment.data_vault_token:
+                from sqlalchemy import select
+                from app.infrastructure.models import SavedCardModel
+                card_query = await db.execute(
+                    select(SavedCardModel.expiration, SavedCardModel.card_brand)
+                    .where(SavedCardModel.token == payment.data_vault_token)
+                )
+                card_row = card_query.first()
+                if card_row:
+                    exp_db = card_row[0] or ""
+                    # Fix card_brand si fue guardado como "*" o vacío
+                    saved_brand = card_row[1] or ""
+                    if saved_brand in ("", "*") and payment.card_number_masked:
+                        from app.services.post_payment import _detect_brand_from_masked
+                        detected = _detect_brand_from_masked(payment.card_number_masked)
+                        if detected:
+                            from sqlalchemy import update as _update
+                            await db.execute(
+                                _update(SavedCardModel)
+                                .where(SavedCardModel.token == payment.data_vault_token)
+                                .values(card_brand=detected)
+                            )
+                            await db.commit()
+                            logger.info("[3ds] fixed card_brand → %s | token=%s", detected, payment.data_vault_token[:12])
+            
+            # Retrieve promo code and user name from Redis (saved during /checkout/process)
+            promo_code = None
+            user_name = ""
+            if payment.customer_id:
+                try:
+                    from app.infrastructure.redis_client import get_redis
+                    r = get_redis()
+                    if r:
+                        _p = await r.get(f"promo_code_{payment.customer_id}")
+                        if _p:
+                            promo_code = _p.decode('utf-8') if isinstance(_p, bytes) else _p
+                        _u = await r.get(f"user_name_{payment.customer_id}")
+                        if _u:
+                            user_name = _u.decode('utf-8') if isinstance(_u, bytes) else _u
+                except Exception as e:
+                    logger.warning("[3ds] Failed to read promo from redis: %s", e)
+
+            await create_subscription_if_needed(
+                payment, payment.customer_id, db, 
+                card_expiration=exp_db,
+                promo_code=promo_code,
+                user_name=user_name,
+            )
 
     except Exception as exc:
         logger.error("[3ds] term: challenge error | payment_id=%s error=%s", payment_id, exc)

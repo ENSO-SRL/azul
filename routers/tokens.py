@@ -8,15 +8,19 @@ DELETE /api/v1/tokens/{token}               → Remove a card from DataVault + l
 """
 
 from __future__ import annotations
+from app.services.access_policy import access_decision
 
+from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.utils.token_utils import require_user_info
 
 from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
 from app.infrastructure.database import get_db
 from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
 from app.services.token_service import TokenService
+from app.services.subscription_identity import CustomerIdentityError, resolve_customer_identity
 
 router = APIRouter(prefix="/api/v1/tokens", tags=["Tokens / DataVault"])
 
@@ -79,6 +83,7 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> TokenService:
     return TokenService(
         card_repo=SQLSavedCardRepository(db),
         gateway=AzulPaymentGateway(),
+        db_session=db,
     )
 
 
@@ -87,6 +92,27 @@ def _get_service(db: AsyncSession = Depends(get_db)) -> TokenService:
 # NOTA: /status/{customer_id} y /by-email/{email} deben ir ANTES de
 # /{customer_id} para que FastAPI no interprete esos prefijos como customer_id.
 # ---------------------------------------------------------------------------
+
+@router.get(
+    "/",
+    response_model=list[SavedCardSafeResponse],
+    summary="Listar tarjetas del usuario logueado",
+    description="Devuelve las tarjetas guardadas del usuario autenticado vía cookie de sesión.",
+)
+@router.get(
+    "",
+    response_model=list[SavedCardSafeResponse],
+    include_in_schema=False,
+)
+async def get_my_cards(
+    user_data: dict[str, Any] = Depends(require_user_info),
+    svc: TokenService = Depends(_get_service),
+):
+    """Devuelve las tarjetas usando el email de la cookie de sesión."""
+    email = user_data["email"]
+    cards = await svc.list_cards(customer_id=email)
+    return [_to_safe_response(c) for c in cards]
+
 
 @router.get(
     "/status/{customer_id}",
@@ -127,28 +153,27 @@ async def get_user_payment_status(
 
     now = datetime.now(timezone.utc)
 
-    # ── 1. Datos del usuario desde public.users ──────────────────────────
-    user_info = {"customer_id": customer_id, "email": "", "name": "", "found": False}
+    # Use the same verified identities as customer-status and billing writers.
     try:
-        result = await db.execute(
-            text(
-                "SELECT email, name, last_name FROM public.users "
-                "WHERE uuid::text = :cid OR email = :cid LIMIT 1"
-            ),
-            {"cid": customer_id},
-        )
-        row = result.fetchone()
-        if row:
-            user_info["email"] = row[0] or ""
-            user_info["name"] = f"{row[1] or ''} {row[2] or ''}".strip()
-            user_info["found"] = True
-    except Exception:
-        pass  # public.users might not be accessible — continue with pagos data
+        identity = await resolve_customer_identity(db, customer_id)
+    except CustomerIdentityError as exc:
+        raise HTTPException(status_code=409, detail="No se pudo verificar la identidad de facturación.") from exc
+    row = (await db.execute(
+        text("SELECT email, name, last_name FROM public.users WHERE id = :user_id"),
+        {"user_id": int(identity.customer_id)},
+    )).one()
+    user_info = {
+        "customer_id": identity.customer_id, "email": row[0] or "",
+        "name": f"{row[1] or ''} {row[2] or ''}".strip(), "found": True,
+    }
+    cid_filter_cards = identity.matches(SavedCardModel.customer_id)
+    cid_filter_subs = identity.matches(RecurringPaymentModel.customer_id)
+    cid_filter_pays = identity.matches(PaymentModel.customer_id)
 
     # ── 2. Tarjetas guardadas ────────────────────────────────────────────
     cards_result = await db.execute(
         select(SavedCardModel)
-        .where(SavedCardModel.customer_id == customer_id)
+        .where(cid_filter_cards)
         .order_by(SavedCardModel.created_at.desc())
     )
     cards_raw = cards_result.scalars().all()
@@ -194,7 +219,7 @@ async def get_user_payment_status(
     # ── 3. Suscripciones ─────────────────────────────────────────────────
     subs_result = await db.execute(
         select(RecurringPaymentModel)
-        .where(RecurringPaymentModel.customer_id == customer_id)
+        .where(cid_filter_subs)
         .order_by(RecurringPaymentModel.created_at.desc())
     )
     subs_raw = subs_result.scalars().all()
@@ -210,6 +235,7 @@ async def get_user_payment_status(
             "status": s.status,
             "amount": s.amount,
             "amount_display": f"RD${s.amount / 100:,.2f}",
+            "currency_code": getattr(s, "currency_code", "DOP"),
             "frequency_days": s.frequency_days,
             "description": s.description or "",
             "card_last4": s.card_last4 or "",
@@ -223,10 +249,11 @@ async def get_user_payment_status(
             "created_at": s.created_at.isoformat() if s.created_at else "",
         })
 
+
     # ── 4. Últimos 10 pagos ──────────────────────────────────────────────
     payments_result = await db.execute(
         select(PaymentModel)
-        .where(PaymentModel.customer_id == customer_id)
+        .where(cid_filter_pays)
         .order_by(PaymentModel.created_at.desc())
         .limit(10)
     )
@@ -254,13 +281,46 @@ async def get_user_payment_status(
     failing_subs = [s for s in subscriptions if int(s.get("failed_attempts") or 0) > 0]
     trial_subs = [s for s in subscriptions if s.get("in_trial")]
 
-    if not has_cards:
-        overall_status = "no_card"
-        status_message = "El usuario no tiene tarjetas guardadas."
-    elif not has_active_card:
-        overall_status = "card_expired"
-        status_message = "Todas las tarjetas del usuario están vencidas."
+    # ── Suscripciones sin tarjeta (registro sin pago) ────────────────────
+    # Una suscripción "sin tarjeta" es aquella con data_vault_token vacío,
+    # creada por el endpoint POST /api/v1/registration/trial.
+    cardless_subs = [s for s in subscriptions if not s.get("card_last4")]
+    # Trial sin tarjeta activo: dentro del período de 30 días
+    cardless_trial_active = [s for s in cardless_subs if s.get("in_trial")]
+    # Trial sin tarjeta expirado: suscripción ACTIVE sin tarjeta cuyo trial ya venció
+    cardless_trial_expired = [
+        s for s in cardless_subs
+        if s["status"] == "ACTIVE"
+        and s.get("trial_ends_at")
+        and not s.get("in_trial")  # trial_ends_at < now
+    ]
+
+    if cardless_trial_expired:
+        # Caso prioritario: el trial expiró y el usuario AÚN no registró tarjeta
+        overall_status = "trial_expired_no_card"
+        trial_end = cardless_trial_expired[0].get("trial_ends_at", "")
+        status_message = (
+            "Tu período de prueba gratuito expiró. "
+            "Agrega una tarjeta de crédito para continuar disfrutando de Atlas."
+        )
+    elif cardless_trial_active:
+        # Trial activo sin tarjeta — usuario dentro del período de gracia
+        overall_status = "trial_no_card"
+        _trial_end_raw = cardless_trial_active[0].get("trial_ends_at") or ""
+        trial_end_short = str(_trial_end_raw)[:10] if _trial_end_raw else "N/A"
+        status_message = (
+            f"Período de prueba activo. Tienes acceso gratuito hasta el "
+            f"{trial_end_short}. "
+            f"Agrega una tarjeta antes de esa fecha para continuar sin interrupciones."
+        )
+    elif active_subs:
+        # ── Suscripción activa (con o sin tarjeta en vault) ──────────────────
+        # Prioridad sobre no_card: si hay suscripción ACTIVE, el usuario está al día
+        # aunque el vault no tenga tarjeta guardada actualmente.
+        overall_status = "active"
+        status_message = f"Todo al día. {len(active_subs)} suscripción(es) activa(s)."
     elif trial_subs:
+        # Trial activo CON tarjeta (flujo checkout existente)
         overall_status = "trial"
         trial_end = trial_subs[0].get("trial_ends_at", "")
         status_message = f"Período de gracia activo. Primer cobro programado para {trial_end}."
@@ -278,12 +338,21 @@ async def get_user_payment_status(
             f"Próximo intento más cercano: "
             f"{min(s['next_charge_at'] for s in failing_subs if s['next_charge_at']) or 'N/A'}."
         )
-    elif active_subs:
-        overall_status = "active"
-        status_message = f"Todo al día. {len(active_subs)} suscripción(es) activa(s)."
+    elif not has_cards:
+        # Sin tarjeta y sin suscripción activa
+        overall_status = "no_card"
+        status_message = "El usuario no tiene tarjetas guardadas."
+    elif not has_active_card:
+        overall_status = "card_expired"
+        status_message = "Todas las tarjetas del usuario están vencidas."
     else:
         overall_status = "no_subscription"
         status_message = "El usuario tiene tarjeta(s) pero no tiene suscripciones activas."
+
+    # Calcular trial_ends_at para la respuesta — priorizando trial sin tarjeta
+    all_trial_subs = cardless_trial_active or cardless_trial_expired or trial_subs
+    trial_ends_at_display = all_trial_subs[0].get("trial_ends_at") if all_trial_subs else None
+    in_trial_display = bool(trial_subs or cardless_trial_active)
 
     return {
         "user_info": user_info,
@@ -300,8 +369,9 @@ async def get_user_payment_status(
             "active_subscriptions": len(active_subs),
             "paused_subscriptions": len(paused_subs),
             "failing_subscriptions": len(failing_subs),
-            "in_trial": len(trial_subs) > 0,
-            "trial_ends_at": trial_subs[0].get("trial_ends_at") if trial_subs else None,
+            "in_trial": in_trial_display,
+            "trial_ends_at": trial_ends_at_display,
+            **access_decision(subs_raw, now=now),
         },
     }
 

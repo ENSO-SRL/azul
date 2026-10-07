@@ -9,8 +9,13 @@ from __future__ import annotations
 from app.domain.entities import SavedCard
 import logging
 
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.domain.repositories import SavedCardRepository
 from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGateway
+from app.infrastructure.models import RecurringPaymentModel, SavedCardModel
+from app.services.subscription_identity import resolve_customer_identity, lock_customer_subscriptions, find_active_subscription
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +26,11 @@ class TokenService:
         self,
         card_repo: SavedCardRepository,
         gateway: AzulPaymentGateway,
+        db_session: AsyncSession | None = None,
     ):
         self._cards = card_repo
         self._gw    = gateway
+        self._db    = db_session
 
     async def register_card(
         self,
@@ -58,14 +65,27 @@ class TokenService:
 
     async def set_default_card(self, customer_id: str, card_id: str) -> None:
         """Set a specific card as the default for a customer."""
-        card = await self._cards.get_by_id(card_id)
-        if not card:
-            raise ValueError(f"Card {card_id!r} not found.")
-        if card.customer_id != customer_id:
-            raise PermissionError(
-                f"Card {card_id!r} does not belong to customer {customer_id!r}."
-            )
-        await self._cards.set_default(customer_id, card_id)
+        if self._db is None:
+            raise ValueError("CONFLICT: Se requiere persistencia para cambiar la tarjeta.")
+        identity = await resolve_customer_identity(self._db, customer_id)
+        await lock_customer_subscriptions(self._db, identity)
+        active = await find_active_subscription(self._db, identity, for_update=True)
+        card = await self._db.get(SavedCardModel, card_id)
+        if not card or card.customer_id.strip().lower() not in identity.aliases:
+            await self._db.rollback()
+            raise PermissionError("La tarjeta no pertenece al usuario.")
+        await self._db.execute(update(SavedCardModel).where(identity.matches(SavedCardModel.customer_id)).values(is_default=False))
+        card.is_default = True
+        card.customer_id = identity.customer_id
+        if active is not None:
+            from datetime import datetime, timezone
+            active.method_updated_at = datetime.now(timezone.utc)
+            active.data_vault_token = card.token
+            active.card_expiration = card.expiration
+            active.card_brand = card.card_brand
+            active.card_last4 = card.card_last4
+            active.customer_id = identity.customer_id
+        await self._db.commit()
 
     async def delete_card(self, customer_id: str, token: str) -> None:
         """Remove a card from DataVault and from local DB.
@@ -91,15 +111,47 @@ class TokenService:
 
         await self._cards.delete(token)
 
+        # Cancel any ACTIVE recurring payments that used this token
+        await self._cancel_subscriptions_for_token(token, customer_id)
+
     async def list_cards(self, customer_id: str) -> list[SavedCard]:
         """Return all saved cards for a customer, deduplicated by token.
 
         If duplicate tokens exist (legacy bug), only the first occurrence
         (most recent) is kept.
         """
-        cards = await self._cards.list_by_customer(customer_id)
+        search_ids = {customer_id}
+        if self._db:
+            from sqlalchemy import text
+            try:
+                if customer_id.isdigit():
+                    result = await self._db.execute(
+                        text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
+                        {"cid": int(customer_id)},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        search_ids.add(row[0])
+                else:
+                    result = await self._db.execute(
+                        text("SELECT id FROM public.users WHERE email = :email LIMIT 1"),
+                        {"email": customer_id},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        search_ids.add(str(row[0]))
+            except Exception as e:
+                logger.warning(f"Error fetching user cross-reference in list_cards: {e}")
+
+        cards = []
+        for sid in search_ids:
+            cards.extend(await self._cards.list_by_customer(sid))
+            
+        # Deduplicate
         seen_tokens: set[str] = set()
         unique: list[SavedCard] = []
+        # Sort cards by created_at desc to maintain the expected order
+        cards.sort(key=lambda c: c.created_at, reverse=True)
         for c in cards:
             if c.token not in seen_tokens:
                 seen_tokens.add(c.token)
@@ -107,17 +159,55 @@ class TokenService:
         return unique
 
     async def delete_card_by_id(self, card_id: str, customer_email: str) -> None:
-        """Remove a card by its DB id. Verifies ownership by email.
+        """Remove a card by its DB id. Verifies ownership by customer_id or email.
 
-        Raises ValueError if card not found, PermissionError if email doesn't match.
+        The checkout passes the JWT `sub` (numeric ID like '173') as customer_email,
+        while the card may have been saved with the same ID or the user's email.
+        We accept both as valid ownership proof.
+
+        Raises ValueError if card not found, PermissionError if ownership doesn't match.
         """
         card = await self._cards.get_by_id(card_id)
         if not card:
             raise ValueError(f"Tarjeta con id {card_id!r} no encontrada.")
+        # Accept ownership if the caller's ID matches the card's customer_id
+        # (could be numeric ID like "173" or email — both are valid)
         if card.customer_id != customer_email:
-            raise PermissionError(
-                f"La tarjeta no pertenece al correo {customer_email!r}."
-            )
+            # Also check if the caller's email matches (for cross-format lookups)
+            # e.g., card saved with "173" but caller sends email, or vice versa
+            if self._db:
+                from sqlalchemy import text
+                try:
+                    if customer_email.isdigit():
+                        result = await self._db.execute(
+                            text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
+                            {"cid": int(customer_email)},
+                        )
+                        row = result.fetchone()
+                        cross_id = row[0] if row else None
+                    else:
+                        result = await self._db.execute(
+                            text("SELECT id FROM public.users WHERE email = :email LIMIT 1"),
+                            {"email": customer_email},
+                        )
+                        row = result.fetchone()
+                        cross_id = str(row[0]) if row else None
+                        
+                    if not (cross_id and card.customer_id == cross_id):
+                        raise PermissionError(
+                            f"La tarjeta no pertenece al usuario {customer_email!r}."
+                        )
+                except PermissionError:
+                    raise
+                except Exception:
+                    # DB lookup failed — fall back to strict check
+                    raise PermissionError(
+                        f"La tarjeta no pertenece al usuario {customer_email!r}."
+                    )
+            else:
+                raise PermissionError(
+                    f"La tarjeta no pertenece al usuario {customer_email!r}."
+                )
 
         try:
             await self._gw.delete_token(card.token)
@@ -127,3 +217,48 @@ class TokenService:
             logger.warning(f"Error de red o inesperado al borrar token por ID en Azul: {e}")
 
         await self._cards.delete(card.token)
+
+        # Cancel any ACTIVE recurring payments that used this token
+        await self._cancel_subscriptions_for_token(card.token, card.customer_id)
+
+    # -----------------------------------------------------------------------
+    # Internal helpers
+    # -----------------------------------------------------------------------
+
+    async def _cancel_subscriptions_for_token(
+        self, token: str, customer_id: str,
+    ) -> None:
+        """Cancel ACTIVE recurring payments tied to a deleted DataVault token."""
+        if not self._db:
+            logger.warning(
+                "[token-svc] No DB session — skipping subscription cancellation "
+                "for token=%s customer=%s",
+                token[:12] + "…" if token else "(none)", customer_id,
+            )
+            return
+
+        try:
+            result = await self._db.execute(
+                update(RecurringPaymentModel)
+                .where(
+                    RecurringPaymentModel.customer_id == customer_id,
+                    RecurringPaymentModel.data_vault_token == token,
+                    RecurringPaymentModel.status == "ACTIVE",
+                )
+                .values(status="CANCELLED")
+            )
+            await self._db.commit()
+
+            rows_affected = getattr(result, "rowcount", 0) or 0
+            if rows_affected > 0:
+                logger.warning(
+                    "[token-svc] ✓ cancelled %d subscription(s) for deleted token | "
+                    "customer_id=%s token=%s",
+                    rows_affected, customer_id, token[:12] + "…",
+                )
+        except Exception as exc:
+            logger.error(
+                "[token-svc] ✗ failed to cancel subscriptions | "
+                "customer_id=%s token=%s err=%s",
+                customer_id, token[:12] + "…" if token else "(none)", exc,
+            )

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database import Base
@@ -89,21 +89,33 @@ class SavedCardModel(Base):
 
 class RecurringPaymentModel(Base):
     __tablename__ = "recurring_payments"
-    __table_args__ = {"schema": "pagos"}
+    __table_args__ = (
+        Index(
+            "uq_active_sub_per_customer",
+            "customer_id",
+            unique=True,
+            postgresql_where=text("status = 'ACTIVE'")
+        ),
+        {"schema": "pagos"}
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     customer_id: Mapped[str] = mapped_column(String(100), nullable=False)
     amount: Mapped[int] = mapped_column(Integer, nullable=False)
     itbis: Mapped[int] = mapped_column(Integer, default=0)
+    currency_code: Mapped[str] = mapped_column(String(3), default="DOP")  # ISO 4217 — DOP | USD
     frequency_days: Mapped[int] = mapped_column(Integer, default=30)
     description: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    # Moneda ISO del cobro (DOP | USD). Default DOP para filas preexistentes.
+    currency_code: Mapped[str] = mapped_column(String(3), default="DOP", server_default="DOP")
 
     # DataVault token
     data_vault_token: Mapped[str] = mapped_column(String(100), default="")
     card_brand: Mapped[str] = mapped_column(String(20), default="")
     card_last4: Mapped[str] = mapped_column(String(4), default="")
     card_expiration: Mapped[str] = mapped_column(String(6), default="")  # YYYYMM
+    method_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Email del tarjetahabiente — para notificaciones de cobro recurrente
     cardholder_email: Mapped[str] = mapped_column(String(255), default="")
@@ -155,6 +167,31 @@ class TransactionModel(Base):
     response_code: Mapped[str] = mapped_column(String(20), default="")
     response_message: Mapped[str] = mapped_column(String(255), default="")
 
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class BillingAttemptModel(Base):
+    """A durable latch survives gateway timeouts, process crashes and DB commits."""
+    __tablename__ = 'billing_attempts'
+    __table_args__ = {'schema': 'pagos'}
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    subscription_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    payment_id: Mapped[str] = mapped_column(String(36), default='')
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default='RESERVED')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class SubscriptionActivationJobModel(Base):
+    __tablename__ = 'subscription_activation_jobs'
+    __table_args__ = {'schema': 'pagos'}
+    payment_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    customer_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    card_expiration: Mapped[str] = mapped_column(String(6), default='')
+    promo_code: Mapped[str] = mapped_column(String(100), default='')
+    user_name: Mapped[str] = mapped_column(String(255), default='')
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default='PENDING')
+    last_error: Mapped[str] = mapped_column(String(255), default='')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

@@ -179,6 +179,10 @@ class RecurringPayment:
     description: str = ""
     status: SubscriptionStatus = SubscriptionStatus.ACTIVE
 
+    # Moneda del cobro recurrente — se propaga a cada cargo MIT y a los correos.
+    # Persistida para que un USD no termine cobrándose en DOP.
+    currency_code: Currency = Currency.DOP
+
     # Token de DataVault (se obtiene en el primer cobro o vía POST /tokens)
     data_vault_token: str = ""
     card_brand: str = ""

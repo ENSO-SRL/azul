@@ -552,7 +552,13 @@ POST /api/v1/payments
 Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
 ```
 
-El scheduler usa un `CustomOrderId` determinístico: `sha256(sub_id + attempt)[:20]` — mismo ID en reintento, evita cobros dobles si el job corre dos veces.
+El scheduler usa un `CustomOrderId` determinístico: `sub-{id[:12]}-c{YYYYMMDD}-att{intento}`
+(derivado del ID de suscripción, la **fecha de cobro completa** y el número de intento).
+La fecha completa —no el mes— evita colisiones cuando dos cobros de 30 días caen en el
+mismo mes calendario (ej. 1 y 31 de enero). Además, antes de cobrar el scheduler consulta
+si ya existe un pago APROBADO con ese ID (idempotency latch): si el proceso murió después
+de cobrar pero antes de avanzar `next_charge_at`, la siguiente corrida **avanza el ciclo
+sin volver a cobrar**, evitando el doble cobro.
 
 ---
 
