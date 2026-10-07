@@ -58,14 +58,14 @@ class TestDB:
     async def execute(self, statement, params=None):
         await asyncio.sleep(0)
         if isinstance(statement, TextClause):
-            sql = str(statement)
+            sql = statement.text
             if "pg_advisory_xact_lock" in sql:
                 lock = self.locks.setdefault(params["lock_id"], asyncio.Lock())
                 await lock.acquire()
                 self.held_lock = lock
                 return None
             if "public.users" in sql:
-                statement = text(re.sub(r"\b(\w+)::text", r"CAST(\1 AS TEXT)", sql))
+                statement = text(re.sub(r"\b(\w+)::text", r"CAST(\1 AS TEXT)", sql)).bindparams(*statement._bindparams.values())
         return self.session.execute(statement, params or {})
 
     async def get(self, model, key):
@@ -96,6 +96,7 @@ def storage():
         conn.execute(text("ATTACH DATABASE ':memory:' AS public"))
         conn.execute(text("ATTACH DATABASE ':memory:' AS pagos"))
         conn.execute(text("CREATE TABLE public.users (id INTEGER PRIMARY KEY, email TEXT, uuid TEXT, name TEXT, last_name TEXT)"))
+        conn.execute(text("CREATE TABLE pagos.customer_identity_aliases (alias TEXT PRIMARY KEY, atlas_user_id INTEGER NOT NULL, evidence_ref TEXT NOT NULL, verified_by TEXT NOT NULL)"))
         conn.execute(text("INSERT INTO public.users (id, email, uuid) VALUES (228, :email, :uuid)"), {"email": EMAIL, "uuid": UUID})
         # Create the PostgreSQL model with the same partial uniqueness rule.
         conn.execute(CreateTable(RecurringPaymentModel.__table__))

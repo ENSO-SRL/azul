@@ -20,6 +20,7 @@ from app.infrastructure.azul_gateway import AzulIntegrationError, AzulPaymentGat
 from app.infrastructure.database import get_db
 from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
 from app.services.token_service import TokenService
+from app.services.subscription_identity import CustomerIdentityError, resolve_customer_identity
 
 router = APIRouter(prefix="/api/v1/tokens", tags=["Tokens / DataVault"])
 
@@ -152,42 +153,22 @@ async def get_user_payment_status(
 
     now = datetime.now(timezone.utc)
 
-    # ── 1. Datos del usuario desde public.users ──────────────────────────
-    user_info = {"customer_id": customer_id, "email": "", "name": "", "found": False}
-    # original_cid preserva el customer_id original (p.ej. "173")
-    # para poder buscar datos guardados tanto con el ID como con el email.
-    original_cid = customer_id
-    account_aliases = set()
+    # Use the same verified identities as customer-status and billing writers.
     try:
-        query_text = (
-            "SELECT email, name, last_name, id::text, uuid::text FROM public.users WHERE id = :cid_int LIMIT 1"
-            if customer_id.isdigit()
-            else "SELECT email, name, last_name, id::text, uuid::text FROM public.users WHERE uuid::text = :cid OR lower(trim(email)) = lower(trim(:cid)) LIMIT 1"
-        )
-        params = {"cid_int": int(customer_id)} if customer_id.isdigit() else {"cid": customer_id}
-        
-        result = await db.execute(text(query_text), params)
-        row = result.fetchone()
-        if row:
-            user_info["email"] = row[0] or ""
-            user_info["name"] = f"{row[1] or ''} {row[2] or ''}".strip()
-            user_info["found"] = True
-            account_aliases.update(str(value).strip().lower() for value in (row[3], row[4]) if value)
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error("Error fetching user from public.users: %s", e)
-        pass  # public.users might not be accessible — continue with pagos data
-
-    # Build list of possible customer_id values to search with (OR condition).
-    # Checkout saves using JWT `sub` (e.g. "173"), but older flows used email.
-    # We search both to find all data regardless of which was used.
-    from sqlalchemy import or_
-    cid_values = {original_cid, *account_aliases}
-    if user_info["email"]:
-        cid_values.add(user_info["email"])
-    cid_filter_cards = or_(*[SavedCardModel.customer_id == v for v in cid_values])
-    cid_filter_subs = or_(*[RecurringPaymentModel.customer_id == v for v in cid_values])
-    cid_filter_pays = or_(*[PaymentModel.customer_id == v for v in cid_values])
+        identity = await resolve_customer_identity(db, customer_id)
+    except CustomerIdentityError as exc:
+        raise HTTPException(status_code=409, detail="No se pudo verificar la identidad de facturación.") from exc
+    row = (await db.execute(
+        text("SELECT email, name, last_name FROM public.users WHERE id = :user_id"),
+        {"user_id": int(identity.customer_id)},
+    )).one()
+    user_info = {
+        "customer_id": identity.customer_id, "email": row[0] or "",
+        "name": f"{row[1] or ''} {row[2] or ''}".strip(), "found": True,
+    }
+    cid_filter_cards = identity.matches(SavedCardModel.customer_id)
+    cid_filter_subs = identity.matches(RecurringPaymentModel.customer_id)
+    cid_filter_pays = identity.matches(PaymentModel.customer_id)
 
     # ── 2. Tarjetas guardadas ────────────────────────────────────────────
     cards_result = await db.execute(

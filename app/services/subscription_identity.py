@@ -1,6 +1,6 @@
 """Resolve Atlas identities before reading or creating subscriptions.
 
-Only public.users defines the relationship between an ID and a legacy email.
+public.users and explicitly reviewed historical IDs define account ownership.
 The email supplied by a cardholder must never establish account ownership.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from sqlalchemy import func, select, text
+from sqlalchemy import bindparam, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import SubscriptionStatus
@@ -41,7 +41,9 @@ async def resolve_customer_identity(
         text(
             "SELECT id::text, lower(trim(email)), uuid::text FROM public.users "
             "WHERE id::text = :identifier OR uuid::text = :identifier "
-            "OR lower(trim(email)) = :identifier LIMIT 2"
+            "OR lower(trim(email)) = :identifier "
+            "OR id IN (SELECT atlas_user_id FROM pagos.customer_identity_aliases "
+            "WHERE alias = :identifier) LIMIT 2"
         ),
         {"identifier": identifier},
     )
@@ -52,10 +54,26 @@ async def resolve_customer_identity(
             "Completa el registro del usuario antes de crear la suscripción."
         )
     canonical_id, email, user_uuid = rows[0]
+    historical = (await db.execute(
+        text("SELECT alias FROM pagos.customer_identity_aliases WHERE atlas_user_id = :user_id"),
+        {"user_id": int(canonical_id)},
+    )).all()
     aliases = tuple(sorted({
         str(value).strip().lower()
-        for value in (canonical_id, email, user_uuid, identifier) if value
+        for value in (canonical_id, email, user_uuid, identifier, *(row[0] for row in historical)) if value
     }))
+    # A historical ID must never steal a different live account's identity.
+    # Check all aliases even when the caller supplied the canonical ID.
+    collisions = await db.execute(
+        text(
+            "SELECT id FROM public.users WHERE id::text <> :canonical "
+            "AND (id::text IN :aliases OR uuid::text IN :aliases "
+            "OR lower(trim(email)) IN :aliases) LIMIT 1"
+        ).bindparams(bindparam("aliases", expanding=True)),
+        {"canonical": str(canonical_id), "aliases": aliases},
+    )
+    if collisions.first() is not None:
+        raise CustomerIdentityError("La identidad histórica entra en conflicto con otra cuenta de Atlas.")
     return CustomerIdentity(str(canonical_id), email or "", aliases)
 
 
