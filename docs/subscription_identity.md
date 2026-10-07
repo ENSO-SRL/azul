@@ -7,6 +7,12 @@ misma cuenta, incluyendo correos antiguos con espacios o mayúsculas.
 El correo escrito para la tarjeta sirve para notificaciones; no se usa para
 relacionar la cuenta con una suscripción.
 
+Los IDs numéricos de cuentas antiguas eliminadas solo se reconocen mediante
+`pagos.customer_identity_aliases`. Cada vínculo requiere una cuenta actual,
+evidencia revisada, responsable y fecha; no se deduce del correo de la tarjeta.
+El mismo resolvedor se usa en `customer-status`, el resumen web, checkout y
+cobros. Un alias que colisiona con otra cuenta impide resolver la identidad.
+
 ## Comportamiento
 
 1. `POST /api/v1/registration/trial` mantiene su payload actual por correo.
@@ -62,10 +68,26 @@ No realizan cobros ni consultan servicios de producción.
 python -m pytest tests/test_subscription_identity.py -q
 ```
 
-No se requiere cambiar el esquema de base de datos. La protección de unicidad
-por `customer_id` sigue definida en el modelo y el código unifica la identidad
-antes de usarla. Se requiere que el servicio tenga acceso a `public.users`,
-como ya lo usa el endpoint de estado.
+Antes de desplegar la resolución histórica, aplicar
+`migrations/20261007_customer_identity_aliases.sql` en el entorno autorizado.
+La aplicación no crea asociaciones automáticamente y debe tener permiso de
+lectura sobre esa tabla. Una tabla ausente es un fallo operativo, nunca prueba
+de deuda. La migración conserva las filas históricas y amplía la restricción de
+suscripciones activas para reconocer los alias revisados.
+
+Los procedimientos específicos de reconciliación están en `operations/`;
+terminan en `ROLLBACK` y no se ejecutan desde el despliegue. Revisar las
+condiciones y autorizar el entorno antes de confirmar cada operación. Una
+asociación puede descubrir duplicados: el período ya pagado sigue válido,
+`requires_review=true` hace visible el conflicto y se bloquean nuevos cobros
+hasta revisar las suscripciones. Pausar una duplicada es una operación separada;
+nunca debe hacerse cancelando o eliminando su token de tarjeta automáticamente.
+
+La suite sin red se ejecuta con `python scripts/run_offline_tests.py`. Excluye
+`test_gateway.py` y `test_sandbox_integration.py`, que llaman al procesador real.
+`tests/check_postgresql_identity_migration.py` comprueba además la migración y
+los procedimientos sobre una base desechable PostgreSQL local, con identidades
+y tarjetas ficticias y un reloj fijo para el caso reproducido.
 
 Los cambios locales deben revisarse y publicarse mediante el flujo existente
 del repositorio. El workflow `.github/workflows/deploy-ecr.yml` se ejecuta al

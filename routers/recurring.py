@@ -39,6 +39,7 @@ from app.infrastructure.repo_impl import (
     SQLTransactionRepository,
 )
 from app.services.recurring_service import RecurringService
+from app.services.subscription_identity import CustomerIdentityError
 
 router = APIRouter(prefix="/api/v1/recurring", tags=["Recurring Payments"])
 
@@ -305,7 +306,10 @@ async def get_customer_status(
 
     Para cada suscripción individual incluye `is_current` e `is_overdue` con el detalle.
     """
-    return await svc.get_customer_status(customer_id)
+    try:
+        return await svc.get_customer_status(customer_id)
+    except CustomerIdentityError as exc:
+        raise HTTPException(status_code=409, detail="No se pudo verificar la identidad de facturación.") from exc
 
 
 @router.get(
