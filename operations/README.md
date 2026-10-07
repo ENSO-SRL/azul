@@ -15,6 +15,13 @@ de revisión; no se incluyen secretos ni tokens en estos procedimientos.
 
 ## Secuencia para el entorno expresamente autorizado
 
+Comprobación de ECS del 7 de octubre de 2026: `Atlas-Prueba/pago-azul-qa-svc`
+y `default/pago-azul-svc` apuntan a la misma base `Atlas_User_Service`; ambos
+tienen `AZUL_ENV=production`. Una modificación de datos desde QA también
+afecta producción. Revalidar esta configuración antes de intervenir. No probar
+cobros en QA suponiendo que usa el sandbox de Azul. La autorización debe cubrir
+la base compartida y cada servicio que se despliegue; no equivale a aprobar cargos.
+
 1. Confirmar el destino: QA y producción requieren autorizaciones distintas.
    Verificar si comparten base antes de ejecutar cambios de datos.
 2. Guardar las filas implicadas en una copia restringida y verificar que no haya
@@ -26,7 +33,8 @@ de revisión; no se incluyen secretos ni tokens en estos procedimientos.
    `ROLLBACK` por `COMMIT` en la copia de ejecución. El vínculo conserva las
    suscripciones, los pagos y las referencias del procesador tal como están.
 5. Desplegar la versión revisada del servicio de pagos mediante el mecanismo
-   autorizado y esperar que todas las instancias sirvan esa revisión. Consultar
+   autorizado y esperar que todas las instancias que usan la base compartida
+   sirvan esa revisión, incluidos ambos servicios. Consultar
    el estado: debe reconocer el pago y marcar `requires_review=true`. Con ambos
    registros activos, esta versión bloquea nuevos cobros por duplicidad. Antes
    de intervenir, comprobar que no queden cobros en vuelo de la revisión anterior;
