@@ -30,6 +30,7 @@ from app.infrastructure.database import get_db
 from app.infrastructure.repo_impl import SQLPaymentRepository, SQLTransactionRepository
 from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
 from app.services.payment_service import PaymentService
+from app.services.payment_authorization import require_payment_access
 from app.services.token_service import TokenService
 from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
 from routers.tokens import _to_response
@@ -696,6 +697,7 @@ def _html_result(
     cardholder_email = escape(cardholder_email)
     card_last4 = escape(card_last4)
     ok = status == "APPROVED"
+    uncertain = status == "UNCERTAIN"
 
     # Human-readable decline reasons
     decline_messages = {
@@ -721,6 +723,13 @@ def _html_result(
             <circle cx="28" cy="28" r="26" stroke="#10b981" stroke-width="2.5" fill="rgba(16,185,129,0.06)"/>
             <path d="M18 29 L24 35 L38 21" stroke="#10b981" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="check-anim"/>
         </svg>'''
+    elif uncertain:
+        status_title = "Pago pendiente de verificación"
+        status_subtitle = "No pudimos confirmar el resultado. Consulta tu estado de pago antes de volver a intentar."
+        accent = "#b45309"
+        accent_light = "rgba(180, 83, 9, 0.06)"
+        accent_border = "rgba(180, 83, 9, 0.2)"
+        icon_svg = '<svg width="56" height="56" viewBox="0 0 56 56" fill="none"><circle cx="28" cy="28" r="26" stroke="#b45309" stroke-width="2.5"/><path d="M28 14V28L38 34" stroke="#b45309" stroke-width="3"/></svg>'
     else:
         raw_msg = message.strip().upper()
         status_title = "Pago no procesado"
@@ -764,7 +773,7 @@ def _html_result(
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>{"Pago Exitoso" if ok else "Pago Rechazado"} — Atlas</title>
+<title>{"Pago Exitoso" if ok else ("Pago por verificar" if uncertain else "Pago Rechazado")} — Atlas</title>
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
@@ -1027,7 +1036,7 @@ def _html_result(
     {"<div class='result-row'><span class='result-label'>Titular</span><span class='result-value'>" + cardholder_name + "</span></div>" if cardholder_name else ""}
     <div class="result-row">
       <span class="result-label">Estado</span>
-      <span class="result-value {"status-ok" if ok else "status-fail"}">{"Aprobado" if ok else "Rechazado"}</span>
+      <span class="result-value {"status-ok" if ok else "status-fail"}">{"Aprobado" if ok else ("Por verificar" if uncertain else "Rechazado")}</span>
     </div>
 
     {card_saved_badge}
@@ -1035,9 +1044,9 @@ def _html_result(
 
     <div class="result-actions">
       <a href="https://www.iamatlas.do/profile" class="result-btn-solid">
-        {"Ir a mi perfil" if ok else "Intentar de nuevo"}
+        {"Ir a mi perfil" if ok or uncertain else "Intentar de nuevo"}
       </a>
-      {"" if ok else '<a href="/checkout" class="result-btn-outline">Usar otra tarjeta</a>'}
+      {"" if ok or uncertain else '<a href="/checkout" class="result-btn-outline">Usar otra tarjeta</a>'}
     </div>
 
     <div class="result-footer-ref">Ref: {ref_short} · Atlas Payments</div>
@@ -1685,7 +1694,8 @@ async def process_checkout(
             and existing_sub.trial_ends_at > datetime.now(timezone.utc)
         )
         from app.services.access_policy import access_decision
-        in_valid_period = bool(existing_sub and access_decision([existing_sub])["allow_access"])
+        from app.services.payment_lifecycle import subscription_history
+        in_valid_period = access_decision(await subscription_history(db, identity))["allow_access"]
         tokenize_only = is_new_user or in_valid_period
     except CustomerIdentityError as exc:
         await db.rollback()
@@ -1711,8 +1721,7 @@ async def process_checkout(
             logger.error("[CHECKOUT] Failed to save promo to redis: %s", e)
 
     # ── Flujo para USUARIO NUEVO: tokenizar sin cobrar ──────────────────────
-    # Cadena de fallback: CREATE → Hold+Void → Sale
-    # Cada paso intenta la siguiente opción si Azul devuelve VALIDATION_ERROR:TrxType
+    # Saving a card cannot silently become a membership charge.
     payment = None  # Se define aquí para que Hold pueda setearla antes del Sale
     if tokenize_only and customer_id:
         logger.warning(
@@ -1779,82 +1788,14 @@ async def process_checkout(
             resp.headers["X-Content-Type-Options"] = "nosniff"
             return resp
 
-        except Exception as exc:
-            err_msg = str(exc)
-            if "VALIDATION_ERROR:TrxType" not in err_msg:
-                logger.error(
-                    "[CHECKOUT] ✗ tokenize EXCEPTION | type=%s msg=%s",
-                    type(exc).__name__, err_msg[:400],
-                )
-                return HTMLResponse(
-                    _html_form(f"Error al guardar tarjeta: {exc}", theme=theme, customer_id=customer_id),
-                    status_code=422,
-                )
-            logger.warning(
-                "[CHECKOUT] ⚠ CREATE not enabled — trying Hold+Void | customer_id=%s",
-                customer_id,
-            )
+        except Exception:
+            await db.rollback()
+            logger.exception('[CHECKOUT] Card tokenization failed; no charge fallback')
+            return HTMLResponse(
+                _html_form('No se pudo guardar la tarjeta. No se realizó un cobro; intenta más tarde.',
+                           theme=theme,customer_id=customer_id),status_code=503)
 
-        # ── Paso 2: Intentar Hold+Void (3DS + tokenizar, liberar fondos) ──
-        from app.infrastructure.azul_gateway import AzulIntegrationError
-        try:
-            # Build browser_info for 3DS
-            client_ip = (
-                request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-                or (request.client.host if request.client else "")
-                or browser_ip
-            )
-            hold_browser_info = {
-                "accept_header": browser_accept_header or "text/html",
-                "ip_address": client_ip,
-                "language": browser_language or "es-DO",
-                "color_depth": browser_color_depth or "24",
-                "screen_width": browser_screen_width or "1280",
-                "screen_height": browser_screen_height or "720",
-                "time_zone": browser_time_zone or "240",
-                "user_agent": browser_user_agent or request.headers.get("User-Agent", ""),
-                "javascript_enabled": "true",
-            }
-            payment = await svc.process_hold_verify(
-                card_number=card_clean,
-                expiration=exp_azul,
-                cvc=cvc.strip(),
-                order_id=f"HOLD-{uuid.uuid4().hex[:8].upper()}",
-                cardholder_name=cardholder_name.strip(),
-                cardholder_email=cardholder_email.strip(),
-                customer_id=customer_id,
-                browser_info=hold_browser_info,
-            )
-            logger.warning(
-                "[CHECKOUT] ← Hold response | payment_id=%s status=%s iso=%s",
-                payment.id, payment.status.value, payment.iso_code,
-            )
-            # Hold va por 3DS — reusar el mismo flujo de abajo (3DS method/challenge/result)
-            # El auto-void se ejecuta cuando APPROVED (detectado por order_id "HOLD-*")
-
-        except AzulIntegrationError as exc:
-            hold_err = str(exc)
-            if "VALIDATION_ERROR:TrxType" in hold_err:
-                logger.warning(
-                    "[CHECKOUT] ⚠ Hold not enabled either — falling back to Sale | customer_id=%s",
-                    customer_id,
-                )
-                # Fall through to Sale flow below
-            else:
-                logger.error("[CHECKOUT] ✗ Hold EXCEPTION | %s", hold_err[:400])
-                return HTMLResponse(
-                    _html_form(f"Error al verificar tarjeta: {exc}", theme=theme, customer_id=customer_id),
-                    status_code=422,
-                )
-        except Exception as exc:
-            logger.error("[CHECKOUT] ✗ Hold EXCEPTION | type=%s msg=%s", type(exc).__name__, str(exc)[:400])
-            # Fall through to Sale
-        else:
-            # Hold fue enviado — redirigir al flujo 3DS (method/challenge/result)
-            # El código de 3DS de abajo maneja el payment object
-            pass  # payment ya está definido, cae al manejo de 3DS abajo
-
-    # ── Flujo Sale (usuario existente O fallback final de usuario nuevo) ───
+    # An expired membership may explicitly proceed to payment.
     if payment is None and in_valid_period:
         return HTMLResponse(
             _html_form("No se pudo verificar la tarjeta. Tu prueba sigue vigente; intenta de nuevo más tarde.", theme=theme),
@@ -1894,8 +1835,6 @@ async def process_checkout(
         )
         try:
             # Para suscripciones siempre tokenizamos: save_card=True + STANDING_ORDER indicator
-            from app.services.checkout_attempts import reserve_checkout_charge
-            await reserve_checkout_charge(db, customer_id)
             payment = await svc.process_sale(
                 amount=amount,
                 itbis=itbis,
@@ -1909,13 +1848,15 @@ async def process_checkout(
                 cardholder_email=cardholder_email.strip(),
                 customer_id=customer_id,
                 browser_info=browser_info,
+                subscription_checkout=True,
+                activation_context={'promo_code': promo_code, 'user_name': user_name},
             )
         except Exception as exc:
             logger.error(
                 "[CHECKOUT] ✗ process_sale EXCEPTION | type=%s msg=%s",
                 type(exc).__name__, str(exc)[:400],
             )
-            return HTMLResponse(_html_form(f"Error al procesar: {exc}", theme=theme), status_code=422)
+            return HTMLResponse(_html_result('UNCERTAIN','', '', 0, '',theme=theme),status_code=502)
 
     # A partir de aquí, payment está definido (por Hold o por Sale)
     logger.warning(
@@ -2169,7 +2110,8 @@ async def pay_with_token(
         logger.exception("[CHECKOUT] No se pudo verificar la suscripción antes del cobro con token")
         return HTMLResponse(_html_form("No se pudo verificar tu suscripción. Intenta de nuevo.", theme=theme), status_code=503)
     from app.services.access_policy import access_decision
-    if existing_sub and access_decision([existing_sub])["allow_access"]:
+    from app.services.payment_lifecycle import subscription_history
+    if access_decision(await subscription_history(db, identity))["allow_access"]:
         await token_svc.set_default_card(customer_id, selected_card.id)
         return HTMLResponse(_html_result("APPROVED", "Tarjeta actualizada; se conserva tu período vigente. No se realizó un cobro.", "", 0, "", theme=theme, card_last4=selected_card.card_last4))
 
@@ -2184,6 +2126,7 @@ async def pay_with_token(
         customer_id=customer_id,
         amount=amount,
         itbis=itbis,
+        data_vault_token=token,
         payment_type=PaymentType.RECURRING,
         auth_mode="splitit",
         cardholder_email=user_data.get("email", "") if user_data else "",
@@ -2191,18 +2134,27 @@ async def pay_with_token(
     )
     
     try:
-        from app.services.checkout_attempts import reserve_checkout_charge
-        await reserve_checkout_charge(db, customer_id, payment.id)
-        payment, txn = await gateway.sale_cit(payment, token)
+        from app.services.payment_lifecycle import begin_payment, complete_payment, mark_uncertain
+        payment, fresh = await begin_payment(db, payment, kind='checkout_token', membership=True,
+            context={'card_expiration': expiration})
+        try:
+            payment, txn = await gateway.sale_cit(payment, token)
+        except Exception:
+            await mark_uncertain(db, payment.id)
+            raise
         payment.data_vault_token = payment.data_vault_token or token
         payment.card_number_masked = payment.card_number_masked or getattr(selected_card, 'card_last4', "")
         
         from app.infrastructure.repo_impl import SQLPaymentRepository, SQLTransactionRepository
-        await SQLPaymentRepository(db).save(payment)
-        await SQLTransactionRepository(db).save(txn)
+        await complete_payment(db, payment)
+        try:
+            await SQLTransactionRepository(db).save(txn)
+        except Exception:
+            await db.rollback()
+            logger.exception('Pago y activación persistidos; falló el registro de transacción')
     except Exception as e:
         logger.error("[CHECKOUT] ✗ Error llamando a sale_cit: %s", e)
-        return HTMLResponse(_html_result("DECLINED", "No se pudo confirmar el resultado. Consulta el estado antes de repetir el pago.", "", 0, "", theme=theme, card_last4=""), status_code=502)
+        return HTMLResponse(_html_result("UNCERTAIN", "", "", 0, "", theme=theme, card_last4=""), status_code=502)
 
     status = payment.status == PaymentStatus.APPROVED
     msg = payment.response_message or "Declinada"
@@ -2238,12 +2190,15 @@ async def pay_with_token(
 
 @router.post("/3ds-continue", include_in_schema=False)
 async def continue_3ds(
+    request: Request,
     payment_id: str = Form(...),
     method_status: str = Form("RECEIVED"),
     svc: PaymentService = Depends(_get_service),
     db: AsyncSession = Depends(get_db),
 ):
     """Continuación interna del flujo 3DS — llamada por el JS del iframe Method."""
+    from app.services.payment_authorization import require_payment_access
+    await require_payment_access(request,payment_id,db)
     from app.domain.entities import PaymentStatus
     from fastapi.responses import JSONResponse
 
@@ -2366,7 +2321,8 @@ async def continue_3ds(
         "activation_pending": bool(locals().get("activation") and activation.subscription_error)})
 
 
-@router.get("/challenge/{payment_id}", response_class=HTMLResponse, include_in_schema=False)
+@router.get("/challenge/{payment_id}", response_class=HTMLResponse, include_in_schema=False,
+    dependencies=[Depends(require_payment_access)])
 async def challenge_page(
     request: Request,
     payment_id: str,

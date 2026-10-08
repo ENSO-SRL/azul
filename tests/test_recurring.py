@@ -269,7 +269,8 @@ async def test_create_subscription_with_trial():
     svc = _make_service(gateway_sale_recurring_cit=AsyncMock())
     svc._gw.create_token = gw_create_token
     svc._card_repo = MagicMock()
-    svc._card_repo.save = AsyncMock()
+    svc._card_repo.save_if_not_exists = AsyncMock()
+    svc._card_repo.list_by_customer = AsyncMock(return_value=[])
 
     recurring, initial_payment = await svc.create_subscription(
         customer_id="CLI-002",
@@ -293,7 +294,7 @@ async def test_create_subscription_with_trial():
     assert recurring.last_charged_at is None
     assert recurring.status == SubscriptionStatus.ACTIVE
 
-    svc._card_repo.save.assert_awaited_once()
+    svc._card_repo.save_if_not_exists.assert_awaited_once()
     svc._recurring.save.assert_awaited_once()  # type: ignore[attr-defined]
 
 

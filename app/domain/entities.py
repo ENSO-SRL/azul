@@ -59,6 +59,8 @@ class PaymentStatus(str, Enum):
 
 
 class PaymentType(str, Enum):
+    REFUND    = "REFUND"
+    VOID      = "VOID"
     SALE      = "SALE"
     SERVICE   = "SERVICE"
     RECURRING = "RECURRING"

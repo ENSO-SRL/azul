@@ -1,5 +1,88 @@
 # Reconciliación de la identidad de facturación
 
+## Protección de nuevos cobros y suscripciones — 8 de octubre de 2026
+
+Este paquete está preparado en código; no se ha desplegado ni se han realizado
+cobros reales durante su validación. No modifica los registros históricos
+reparados de Danilo ni aplica asociaciones de identidad automáticamente.
+
+El checkout, el alta de suscripciones y el scheduler comparten la identidad
+canónica y la exclusión por cliente/ciclo. Antes de llamar a Azul guardan el
+intento y el pago pendiente en una transacción. Una respuesta aprobada guarda
+el resultado, el estado del intento y el trabajo de activación conjuntamente.
+La activación se puede reejecutar sin cobrar ni extender de nuevo la vigencia.
+Los rechazos definitivos actualizan el contador y la fecha del próximo intento;
+un timeout o una respuesta sin código bancario dejan el intento bloqueado.
+
+El registro reutiliza la suscripción existente y consulta todo el historial
+antes de conceder una prueba. Cancelar una suscripción no permite reiniciar el
+trial. Un período pagado vigente impide otro cobro aunque la suscripción esté
+pausada o cancelada. Guardar una tarjeta no pasa a un cobro si falla CREATE.
+Un pago aprobado de membresía conserva su período de acceso aunque Azul no
+devuelva un token para renovar. La falta de token sí impide cargos automáticos.
+
+Las devoluciones se reservan sobre el pago original y comprueban el saldo ya
+devuelto. Un Void rechazado conserva el pago aprobado. Una devolución completa
+revoca únicamente el período asociado a ese pago y cancela su activación
+pendiente. Una activación tardía conserva una cancelación hecha entretanto.
+La retención de pagos rechazados preserva los registros vinculados al ledger.
+
+### Contratos que deben revisar los consumidores
+
+- Los endpoints generales de cobro requieren `Idempotency-Key`, estable para
+  una misma operación y sus reintentos. Debe cambiar para una compra distinta.
+  Misma clave con otro importe o referencia produce conflicto. No generar una
+  clave nueva automáticamente después de un timeout. Checkout y renovación
+  generan internamente su clave por identidad/ciclo.
+- Las devoluciones parciales requieren `Idempotency-Key`; la completa usa una
+  clave estable por pago si se omite. Repetir una devolución terminada puede
+  devolver conflicto: no implica que se deba emitir otra devolución.
+- Estado y continuación de 3DS requieren la sesión propietaria o API key.
+  Sus respuestas no incluyen el token DataVault. Los callbacks ACS llevan una
+  firma vinculada al ID del pago. `/cert` no se monta en producción; en sandbox
+  también exige API key.
+- El checkout muestra un resultado por verificar ante incertidumbre y no ofrece
+  cambiar de tarjeta para repetirlo. Un pago de servicios o clubes no activa
+  automáticamente la membresía Atlas.
+
+### Despliegue y límites de recuperación
+
+1. Aplicar `migrations/20261008_payment_operation_context.sql` **antes** del
+   código. Requiere las migraciones de identidad anteriores y la tabla
+   `billing_attempts`. Añade dos columnas y un índice; no repara filas antiguas.
+2. Revisar los consumidores de API y drenar los flujos 3DS de la versión previa:
+   sus callbacks no tienen firma y la versión nueva los rechazará. No rotar
+   `API_KEY` durante un flujo 3DS en curso.
+3. Desplegar únicamente con autorización explícita de cada entorno y coordinar
+   todas las instancias y workers que comparten la base. QA puede usar Azul de
+   producción: no equivale a un sandbox para pruebas de cobro.
+4. Verificar la versión, la ejecución del trabajo de activación y las consultas
+   de acceso, sin crear cargos de prueba en producción. Conservar las columnas
+   y el ledger si se revierte el binario; no borrar intentos para forzar cobros.
+
+El recuperador consulta cada cinco minutos operaciones nuevas pendientes de
+más de cinco minutos. Solo acepta aprobación con referencia bancaria, importe
+y moneda coincidentes; nunca reenvía el cargo. Respuestas incompletas, resultados
+no aprobados y devoluciones inciertas requieren conciliación revisada. No debe
+marcarse un intento como rechazado solo porque la consulta no lo encuentre.
+Los intentos históricos sin contexto no se recuperan automáticamente. Una
+certificación con Azul sandbox sigue siendo necesaria para validar los campos
+reales del proveedor y la navegación ACS; las pruebas locales usan respuestas
+simuladas y no certifican disponibilidad del banco ni ausencia absoluta de fallos.
+
+Validación reproducible:
+
+```powershell
+python scripts/run_offline_tests.py
+$env:TEST_LOCAL_PG_PORT = '57826'
+python tests/check_postgresql_payment_lifecycle.py
+python tests/check_postgresql_billing_links.py
+```
+
+Los scripts PostgreSQL crean y eliminan su propia base desechable en loopback.
+El de ciclo de pagos bloquea HTTP externo y comprueba carreras entre solicitudes,
+checkout y scheduler, recuperación, 3DS, registro y devoluciones parciales.
+
 La cuenta actual puede tener otro ID que una suscripción histórica. El servicio
 reconoce un ID antiguo solo después de registrar una asociación verificada;
 no utiliza el correo del titular de la tarjeta para conceder acceso.

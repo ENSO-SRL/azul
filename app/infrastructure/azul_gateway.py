@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+from app.services.payment_authorization import callback_signature
 import os
 import re
 from typing import Any, Literal
@@ -173,7 +174,7 @@ async def _post_with_failover(
         try:
             resp = await client.post(url, json=payload)
             return resp
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+        except (httpx.ConnectTimeout, httpx.ConnectError) as exc:
             last_exc = exc
             logger.warning(
                 "[azul] failover: %s failed (%s) — trying next URL", url, type(exc).__name__
@@ -311,10 +312,10 @@ class AzulPaymentGateway:
             payload["CardHolderInfo"] = {k: v for k, v in ch.items() if v}
 
         if payment.auth_mode == "3dsecure" and browser_info:
-            _term_url = term_url or f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}"
+            _term_url = term_url or f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}&state={callback_signature(payment.id)}"
             _method_url = (
                 method_notification_url
-                or f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}"
+                or f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}&state={callback_signature(payment.id)}"
             )
             three_ds_auth: dict[str, Any] = {
                 "TermUrl": _term_url,
@@ -369,9 +370,9 @@ class AzulPaymentGateway:
 
         if payment.auth_mode == "3dsecure" and browser_info:
             payload["ThreeDSAuth"] = {
-                "TermUrl": f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}",
+                "TermUrl": f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}&state={callback_signature(payment.id)}",
                 "MethodNotificationUrl": (
-                    f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}"
+                    f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}&state={callback_signature(payment.id)}"
                 ),
                 "RequestorChallengeIndicator": "01",
             }
@@ -467,9 +468,9 @@ class AzulPaymentGateway:
 
         if payment.auth_mode == "3dsecure" and browser_info:
             payload["ThreeDSAuth"] = {
-                "TermUrl": f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}",
+                "TermUrl": f"{cfg.app_base_url}/api/v1/3ds/term?payment_id={payment.id}&state={callback_signature(payment.id)}",
                 "MethodNotificationUrl": (
-                    f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}"
+                    f"{cfg.app_base_url}/api/v1/3ds/method-notification?payment_id={payment.id}&state={callback_signature(payment.id)}"
                 ),
                 "RequestorChallengeIndicator": "01",
             }

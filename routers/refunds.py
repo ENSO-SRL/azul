@@ -17,7 +17,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Annotated
+from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,7 +51,7 @@ class CancelResponse(BaseModel):
 
 class RefundRequest(BaseModel):
     amount: int | None = Field(
-        None,
+        None, gt=0,
         description=(
             "Monto a devolver en centavos. "
             "Si se omite, se realiza devolución completa del monto original."
@@ -89,81 +90,16 @@ async def cancel_payment(
     payment_id: str,
     body: RefundRequest = RefundRequest(),
     deps=Depends(_get_service),
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     payment_repo, txn_repo, gateway = deps
-
-    # -- Retrieve original payment ----------------------------------------
-    original = await payment_repo.get_by_id(payment_id)
-    if not original:
-        raise HTTPException(status_code=404, detail=f"Payment {payment_id} not found")
-
-    if original.status != PaymentStatus.APPROVED:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Payment is {original.status.value} — only APPROVED payments can be cancelled",
-        )
-
-    if not original.azul_order_id:
-        raise HTTPException(
-            status_code=422,
-            detail="Payment has no AzulOrderId — cannot cancel without it",
-        )
-
-    # -- Determine action: Void or Refund ---------------------------------
-    elapsed = (datetime.now(timezone.utc) - original.created_at).total_seconds()
-    use_void = elapsed <= _VOID_WINDOW_SECONDS
-
-    original_date = original.created_at.strftime("%Y%m%d")
-
+    from app.services.refund_service import refund_payment
+    from app.services.billing_attempts import BillingConflict
     try:
-        if use_void:
-            result = await gateway.void(
-                azul_order_id=original.azul_order_id,
-                original_date=original_date,
-            )
-            action = "void"
-            iso_code = result.get("IsoCode", "")
-            response_message = result.get("ResponseMessage", "")
-            azul_order_id = result.get("AzulOrderId", original.azul_order_id)
-            # Mark original as cancelled
-            original.status = PaymentStatus.DECLINED  # reuse DECLINED for cancelled
-            original.response_message = f"[VOID] {response_message}"
-            await payment_repo.update(original)
-
-        else:
-            # Refund — creates a new payment record
-            refund_payment = Payment(
-                amount=body.amount if body.amount else original.amount,
-                itbis=original.itbis,
-                payment_type=PaymentType.SALE,
-                order_id=f"refund-{original.order_id}",
-                auth_mode=original.auth_mode,
-                cardholder_name=original.cardholder_name,
-                cardholder_email=original.cardholder_email,
-            )
-            refund_payment, txn = await gateway.refund(
-                payment=refund_payment,
-                original_date=original_date,
-                azul_order_id=original.azul_order_id,
-                amount=body.amount,
-            )
-            await payment_repo.save(refund_payment)
-            await txn_repo.save(txn)
-            action = "refund"
-            iso_code = refund_payment.iso_code
-            response_message = refund_payment.response_message
-            azul_order_id = refund_payment.azul_order_id
-
-    except AzulIntegrationError as exc:
-        raise HTTPException(status_code=502, detail=f"Integration error: {exc}")
+        return await refund_payment(getattr(payment_repo,'_session',None), payment_id, body.amount, idempotency_key, gateway)
+    except BillingConflict as exc:
+        raise HTTPException(409,str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
-    return {
-        "payment_id": payment_id,
-        "action": action,
-        "status": "CANCELLED" if use_void else iso_code,
-        "iso_code": iso_code,
-        "response_message": response_message,
-        "azul_order_id": azul_order_id,
-    }
+        raise HTTPException(502,'No se confirmó la devolución; consulta su estado antes de repetirla.') from exc

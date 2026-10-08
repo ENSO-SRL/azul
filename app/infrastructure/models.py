@@ -178,6 +178,8 @@ class BillingAttemptModel(Base):
     subscription_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     payment_id: Mapped[str] = mapped_column(String(36), default='')
     status: Mapped[str] = mapped_column(String(16), nullable=False, default='RESERVED')
+    request_fingerprint: Mapped[str] = mapped_column(String(64), default='')
+    context_json: Mapped[str] = mapped_column(Text, default='{}')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 

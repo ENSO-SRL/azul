@@ -323,7 +323,7 @@ async def _purge_old_transactions(session_factory: async_sessionmaker) -> None:
     """
     import os as _os
     from sqlalchemy import delete, text
-    from app.infrastructure.models import PaymentModel, TransactionModel
+    from app.infrastructure.models import PaymentModel, TransactionModel, BillingAttemptModel
 
     retention_days = int(_os.getenv("DATA_RETENTION_DAYS", "90"))
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
@@ -334,6 +334,7 @@ async def _purge_old_transactions(session_factory: async_sessionmaker) -> None:
         declined_ids = select(PaymentModel.id).where(
             PaymentModel.status == "DECLINED",
             PaymentModel.created_at < cutoff,
+            ~select(BillingAttemptModel.id).where(BillingAttemptModel.payment_id==PaymentModel.id).exists(),
         )
         del_txns = await session.execute(
             delete(TransactionModel).where(
@@ -345,6 +346,7 @@ async def _purge_old_transactions(session_factory: async_sessionmaker) -> None:
             delete(PaymentModel).where(
                 PaymentModel.status == "DECLINED",
                 PaymentModel.created_at < cutoff,
+                ~select(BillingAttemptModel.id).where(BillingAttemptModel.payment_id==PaymentModel.id).exists(),
             )
         )
         await session.commit()

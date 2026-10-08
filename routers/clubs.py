@@ -21,6 +21,7 @@ from app.infrastructure.repo_impl import (
 )
 from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
 from app.services.payment_service import PaymentService
+from app.services.billing_attempts import BillingConflict
 
 router = APIRouter(prefix="/api/v1/clubs", tags=["Clubs"])
 
@@ -103,6 +104,8 @@ async def pay_club(
             token=body.token,
             idempotency_key=idempotency_key,
         )
+    except BillingConflict:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
