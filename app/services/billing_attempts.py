@@ -13,11 +13,17 @@ class BillingAttempts:
     def __init__(self, db):
         self.db = db
 
-    async def reserve(self, key, subscription_id, payment_id):
+    async def reserve(self, key, subscription_id, payment_id, *, payment=None, context=None):
         if self.db is None:
             raise BillingConflict('CONFLICT: No se puede garantizar la exclusión del cobro.')
+        import json,hashlib
+        metadata=json.dumps(context or {},sort_keys=True)
         self.db.add(BillingAttemptModel(id=key, subscription_id=subscription_id,
-                     payment_id=payment_id, status='RESERVED'))
+                     payment_id=payment_id, status='RESERVED',context_json=metadata,
+                     request_fingerprint=hashlib.sha256(metadata.encode()).hexdigest() if payment else ''))
+        if payment is not None:
+            from app.infrastructure.repo_impl import _payment_to_model
+            self.db.add(_payment_to_model(payment))
         try:
             await self.db.commit()
         except IntegrityError:

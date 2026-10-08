@@ -140,13 +140,18 @@ class RecurringService:
             raise ValueError("CONFLICT: No se puede crear sin exclusión persistente.")
         identity = await resolve_customer_identity(self._db, customer_id)
         customer_id = identity.customer_id
+        await lock_customer_subscriptions(self._db, identity)
         if await find_active_subscription(self._db, identity):
             raise ValueError("CONFLICT: El usuario ya tiene una suscripción activa.")
         prior = await self.list_subscriptions(customer_id)
         anchor = max(prior, key=lambda row: row.created_at).id if prior else "initial"
-        await BillingAttempts(self._db).reserve(f"create:{customer_id}:{anchor}", customer_id, "")
-
         if trial_days > 0:
+            from app.services.payment_lifecycle import assert_no_pending_membership
+            await assert_no_pending_membership(self._db, identity)
+            if prior:
+                raise ValueError('CONFLICT: Esta cuenta ya tuvo una suscripción; no corresponde otro trial.')
+            trial_key=f'create:{customer_id}:{anchor}'
+            await BillingAttempts(self._db).reserve(trial_key, customer_id, '')
             try:
                 saved = await self._gw.create_token(
                     card_number=card_number,
@@ -170,7 +175,9 @@ class RecurringService:
                     expiration=expiration,
                     is_default=True
                 )
-                await self._card_repo.save(local_card)
+                from app.services.payment_service import PaymentService
+                await PaymentService(self._payments,self._txns,self._gw,
+                    card_repo=self._card_repo,db_session=self._db)._save_card(local_card)
 
             now = datetime.now(timezone.utc)
             recurring = RecurringPayment(
@@ -188,6 +195,7 @@ class RecurringService:
                 last_charged_at=None,
             )
             await self._recurring.save(recurring)
+            await BillingAttempts(self._db).finish(trial_key, 'TOKENIZED')
             return recurring, None
 
         payment = Payment(
@@ -202,14 +210,22 @@ class RecurringService:
             customer_id=customer_id,
         )
 
-        # Use sale_cit_new — STANDING_ORDER CIT + SaveToDataVault=1
-        payment, txn = await self._gw.sale_recurring_cit(
-            payment, card_number, expiration, cvc,
-            browser_info=browser_info,
-        )
-
-        await self._payments.save(payment)
-        await self._txns.save(txn)
+        from app.services.payment_lifecycle import begin_payment, complete_payment, mark_uncertain
+        payment, fresh = await begin_payment(self._db, payment, kind='subscription', membership=True,
+            context={'card_expiration': expiration, 'amount': amount, 'itbis': itbis,
+                     'frequency_days': frequency_days, 'currency': curr.value, 'description': description})
+        try:
+            payment, txn = await self._gw.sale_recurring_cit(payment, card_number, expiration, cvc,
+                browser_info=browser_info)
+        except Exception:
+            await mark_uncertain(self._db, payment.id)
+            raise
+        await complete_payment(self._db, payment)
+        try:
+            await self._txns.save(txn)
+        except Exception:
+            await self._db.rollback()
+            logger.exception('Payment approved/pending persisted; transaction audit write failed')
 
         # 3DS requires additional steps — return a placeholder subscription (not persisted)
         if payment.status.value.startswith("PENDING_3DS"):
@@ -254,11 +270,17 @@ class RecurringService:
             card_last4=card_number[-4:] if len(card_number) >= 4 else card_number,
             card_expiration=expiration,
             cardholder_email=cardholder_email,
-            last_charged_at=now,
-            next_charge_at=now + timedelta(days=frequency_days),
+            last_charged_at=payment.created_at,
+            next_charge_at=payment.created_at + timedelta(days=frequency_days),
         )
 
         await self._recurring.save(recurring)
+
+        from app.infrastructure.models import SubscriptionActivationJobModel
+        job=await self._db.get(SubscriptionActivationJobModel,payment.id)
+        if job:
+            job.status='DONE'
+            await self._db.commit()
 
         # Send the invoice/receipt for the FIRST charge (previously missing for
         # subscriptions created via the API — only checkout sent a receipt).
@@ -304,9 +326,21 @@ class RecurringService:
         except (ValueError, TypeError, IndexError):
             raise ValueError("CONFLICT: La tarjeta requiere una fecha de vencimiento válida.") from None
         identity = await resolve_customer_identity(self._db, sub.customer_id)
+        await lock_customer_subscriptions(self._db, identity)
+        from app.services.payment_lifecycle import assert_no_pending_membership, subscription_history
+        await assert_no_pending_membership(self._db, identity)
+        if access_decision(await subscription_history(self._db,identity))['allow_access']:
+            raise ValueError('CONFLICT: La cuenta conserva un período vigente; no corresponde cobrar.')
         active = await find_active_subscription(self._db, identity)
         if active is None or active.id != sub.id:
             raise ValueError("CONFLICT: Suscripción no identificable o duplicada.")
+        # Re-read after the identity lock: another worker may have advanced this cycle.
+        from app.infrastructure.models import RecurringPaymentModel
+        if isinstance(active, RecurringPaymentModel):
+            from app.infrastructure.repo_impl import _model_to_recurring
+            sub = _model_to_recurring(active)
+            if sub.next_charge_at and utc(sub.next_charge_at) > datetime.now(timezone.utc):
+                raise ValueError("CONFLICT: El ciclo ya fue actualizado por otro proceso.")
         if not sub.data_vault_token:
             raise ValueError(f"Subscription {recurring_id} has no DataVault token")
 
@@ -337,7 +371,7 @@ class RecurringService:
             sub.failed_attempts = 0
             sub.last_failure_reason = ""
             sub.last_charged_at = existing.created_at if existing is not None else now
-            sub.next_charge_at = now + timedelta(days=sub.frequency_days)
+            sub.next_charge_at = sub.last_charged_at + timedelta(days=sub.frequency_days)
             await self._recurring.update(sub)
             if existing is not None:
                 return existing
@@ -373,11 +407,15 @@ class RecurringService:
 
         # This durable unique reservation survives commits, worker crashes and timeouts.
         attempts = BillingAttempts(self._db)
-        await attempts.reserve(custom_order_id, sub.id, payment.id)
+        payment.data_vault_token=sub.data_vault_token
+        await attempts.reserve(custom_order_id, sub.id, payment.id, payment=payment,
+            context={'kind':'subscription','membership':True,'card_expiration':sub.card_expiration,
+                     'amount':sub.amount,'itbis':sub.itbis,'frequency_days':sub.frequency_days,
+                     'currency':sub.currency_code.value,'description':sub.description})
         try:
             payment, txn = await self._gw.sale_mit(payment, sub.data_vault_token)
-            await self._payments.save(payment)
-            await self._txns.save(txn)
+            from app.services.payment_lifecycle import complete_payment
+            await complete_payment(self._db,payment)
         except Exception:
             await attempts.uncertain(custom_order_id)
             raise
@@ -387,19 +425,32 @@ class RecurringService:
             # Only advance the billing schedule on a successful charge.
             sub.failed_attempts = 0
             sub.last_failure_reason = ""
-            sub.last_charged_at = now
-            sub.next_charge_at  = now + timedelta(days=sub.frequency_days)
+            sub.last_charged_at = payment.created_at
+            sub.next_charge_at  = payment.created_at + timedelta(days=sub.frequency_days)
         else:
             # Declined — apply the same retry/backoff policy as the scheduler.
             # Do NOT advance next_charge_at or mark the cycle as paid.
             reason = payment.response_message or f"IsoCode={payment.iso_code}"
-            sub = _handle_failure(sub, reason)
+            if getattr(payment,'_failure_applied',False):
+                sub = await self._recurring.get_by_id(sub.id)
+            else:
+                sub = _handle_failure(sub, reason)
 
         await self._recurring.update(sub)
 
         # Notify the customer (success invoice / decline / pause) — same behaviour
         # as the scheduler, so manual charges are no longer silent.
         await attempts.finish(custom_order_id, payment.status.value, payment.id)
+        from app.infrastructure.models import SubscriptionActivationJobModel
+        job=await self._db.get(SubscriptionActivationJobModel,payment.id)
+        if job:
+            job.status='DONE'
+            await self._db.commit()
+        try:
+            await self._txns.save(txn)
+        except Exception:
+            await self._db.rollback()
+            logger.exception('Charge and entitlement persisted; transaction audit write failed')
         await notify_charge_outcome(sub, payment, invoice_number=custom_order_id)
 
         return payment

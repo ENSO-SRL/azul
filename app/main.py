@@ -156,7 +156,8 @@ async def audit_log_middleware(request: Request, call_next) -> Response:
 # Públicos: health checks, callbacks ACS, dashboard
 app.include_router(health_router)
 app.include_router(threeds_router)          # /method-notification y /term son callbacks del ACS
-app.include_router(cert_router)             # /cert  — dashboard interactivo de certificación
+if _AZUL_ENV != 'production':
+    app.include_router(cert_router, dependencies=[Depends(require_api_key)])
 
 # Checkout — requiere cookie user_info (usuario logueado en iamatlas.do)
 from app.utils.token_utils import require_user_info, register_login_redirect_handler
@@ -178,6 +179,13 @@ app.include_router(registration_router,   dependencies=_auth)
 # Tunnel no está protegido globalmente por la API key porque los clientes acceden mediante GET.
 # POST /tunnel/process valida su propio payload o token si es necesario, pero como es de un solo uso lo dejamos público o protegido a nivel endpoint si requiere auth.
 app.include_router(tunnel_router)
+
+from app.services.billing_attempts import BillingConflict
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(BillingConflict)
+async def billing_conflict_response(request,exc):
+    return JSONResponse(status_code=409,content={'detail':str(exc)})
 
 
 # ---------------------------------------------------------------------------

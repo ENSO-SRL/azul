@@ -3,9 +3,9 @@ Payment service — orchestrates single payments and service payments.
 
 Idempotency
 -----------
-If an ``idempotency_key`` is provided and a payment with that key already
-exists in the database, the service returns the existing record WITHOUT
-calling Azul again.  This prevents double charges on client retries.
+A durable operation is reserved before contacting Azul. General API charges
+require an ``idempotency_key``; membership uses a shared customer/cycle key.
+Uncertain results block resubmission until reconciliation.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from app.domain.repositories import (
 from app.infrastructure.azul_gateway import AzulPaymentGateway
 
 logger = logging.getLogger(__name__)
+from app.services.payment_lifecycle import serialized_3ds
 
 
 class PaymentService:
@@ -45,33 +46,53 @@ class PaymentService:
         self._txns     = txn_repo
         self._gw       = gateway
         self._cards    = card_repo
-        self._db       = db_session
+        self._db       = db_session or getattr(payment_repo, '_session', None)
+
+    async def _send(self, payment, send, *, kind, membership=False, context=None):
+        from app.services.payment_lifecycle import begin_payment, complete_payment, mark_uncertain
+        if payment.amount <= 0 or payment.itbis < 0 or payment.itbis > payment.amount:
+            raise ValueError('Importe o impuesto inválido.')
+        payment.currency=payment.currency_code.azul_code
+        payment, fresh = await begin_payment(self._db, payment, kind=kind,
+            key=payment.idempotency_key, membership=membership, context=context)
+        if not fresh:
+            return payment, None
+        try:
+            payment, txn = await send(payment)
+        except Exception:
+            await mark_uncertain(self._db, payment.id)
+            raise
+        await complete_payment(self._db, payment)
+        return payment, txn
+
+    async def _persist_result(self, payment):
+        from app.services.payment_lifecycle import complete_payment
+        await complete_payment(self._db, payment)
+
+    async def _save_transaction(self, txn):
+        if txn is None:
+            return
+        try:
+            await self._txns.save(txn)
+        except Exception:
+            await self._db.rollback()
+            logger.exception('Payment result persisted; transaction audit write failed')
+
+    async def _save_card(self, card):
+        from app.services.subscription_identity import resolve_customer_identity, lock_customer_subscriptions
+        identity = await resolve_customer_identity(self._db, card.customer_id)
+        await lock_customer_subscriptions(self._db, identity)
+        card.customer_id = identity.customer_id
+        cards = []
+        for identifier in identity.aliases:
+            cards.extend(await self._cards.list_by_customer(identifier))
+        card.is_default = not any(c.is_default for c in cards)
+        return await self._cards.save_if_not_exists(card)
 
     async def _get_search_ids(self, customer_id: str) -> set[str]:
-        search_ids = {customer_id}
-        if self._db:
-            from sqlalchemy import text
-            try:
-                if customer_id.isdigit():
-                    result = await self._db.execute(
-                        text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
-                        {"cid": int(customer_id)},
-                    )
-                    row = result.fetchone()
-                    if row and row[0]:
-                        search_ids.add(row[0])
-                else:
-                    result = await self._db.execute(
-                        text("SELECT id FROM public.users WHERE email = :email LIMIT 1"),
-                        {"email": customer_id},
-                    )
-                    row = result.fetchone()
-                    if row and row[0]:
-                        search_ids.add(str(row[0]))
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(f"Error fetching user cross-reference: {e}")
-        return search_ids
+        from app.services.subscription_identity import resolve_customer_identity
+        identity = await resolve_customer_identity(self._db, customer_id)
+        return set(identity.aliases)
 
     # ------------------------------------------------------------------
     # One-time Sale
@@ -111,6 +132,9 @@ class PaymentService:
         cardholder_info: dict[str, str] | None = None,
         requestor_challenge_indicator: str = "01",
         include_method_notification_url: bool = True,
+        subscription_checkout: bool = False,
+        activation_context: dict | None = None,
+        currency: str = 'DOP',
     ) -> Payment:
         """Create and execute a one-time CIT Sale.
 
@@ -123,12 +147,9 @@ class PaymentService:
         PENDING_3DS_CHALLENGE — the caller must continue the flow via the
         /api/v1/3ds/ endpoints.
         """
-        if idempotency_key:
-            existing = await self._payments.find_by_idempotency_key(idempotency_key)
-            if existing:
-                return existing
-
+        from app.domain.entities import Currency
         payment = Payment(
+            currency_code=Currency(currency.upper()),
             amount=amount,
             itbis=itbis,
             payment_type=PaymentType.SALE,
@@ -142,39 +163,16 @@ class PaymentService:
         )
 
         if save_card:
-            # Suscripción: usa STANDING_ORDER indicator + SaveToDataVault=1
-            # Fallback: si Azul no tiene DataVault habilitado aún, reintenta sin token
-            from app.infrastructure.azul_gateway import AzulIntegrationError
-            try:
-                payment, txn = await self._gw.sale_recurring_cit(
-                    payment, card_number, expiration, cvc,
-                    browser_info=browser_info,
-                )
-            except AzulIntegrationError as exc:
-                if "datavault not enabled" in str(exc).lower():
-                    logger.warning(
-                        "[SVC] ⚠ DataVault not enabled — falling back to sale() without token | payment_id=%s",
-                        payment.id,
-                    )
-                    payment, txn = await self._gw.sale(
-                        payment, card_number, expiration, cvc,
-                        save_token=False,
-                        browser_info=browser_info,
-                        cardholder_info=cardholder_info,
-                        requestor_challenge_indicator=requestor_challenge_indicator,
-                        include_method_notification_url=include_method_notification_url,
-                    )
-                else:
-                    raise
+            send = lambda p: self._gw.sale_recurring_cit(p, card_number, expiration, cvc, browser_info=browser_info)
         else:
-            payment, txn = await self._gw.sale(
-                payment, card_number, expiration, cvc,
-                save_token=False,
-                browser_info=browser_info,
-                cardholder_info=cardholder_info,
+            send = lambda p: self._gw.sale(p, card_number, expiration, cvc, save_token=False,
+                browser_info=browser_info, cardholder_info=cardholder_info,
                 requestor_challenge_indicator=requestor_challenge_indicator,
-                include_method_notification_url=include_method_notification_url,
-            )
+                include_method_notification_url=include_method_notification_url)
+        context = dict(activation_context or {})
+        context['card_expiration'] = expiration
+        payment, txn = await self._send(payment, send, kind='sale',
+            membership=subscription_checkout, context=context if subscription_checkout else {})
 
         # Only save the card when the payment is fully APPROVED right now.
         # If 3DS is pending, the card will be saved in the 3DS continuation
@@ -197,10 +195,7 @@ class PaymentService:
                 expiration=expiration,  # YYYYMM from checkout
             )
             # Auto-mark as default if this is the customer's first card
-            existing_cards = await self._cards.list_by_customer(customer_id)
-            if not existing_cards:
-                card.is_default = True
-            await self._cards.save_if_not_exists(card)
+            await self._save_card(card)
             logger.warning(
                 "[SVC] ✓ card saved | customer=%s brand=%s last4=%s exp=%s default=%s",
                 customer_id, brand, card.card_last4, expiration, card.is_default,
@@ -212,7 +207,7 @@ class PaymentService:
             payment.idempotency_key or "(none)",
         )
         try:
-            await self._payments.save(payment)
+            await self._persist_result(payment)
         except Exception as exc:
             logger.error(
                 "[SVC] ✗ payments.save FAILED | payment_id=%s type=%s msg=%s",
@@ -221,7 +216,7 @@ class PaymentService:
             raise
 
         try:
-            await self._txns.save(txn)
+            await self._save_transaction(txn)
         except Exception as exc:
             logger.error(
                 "[SVC] ✗ txns.save FAILED | payment_id=%s type=%s msg=%s",
@@ -252,11 +247,6 @@ class PaymentService:
         customer_id: str = "",
     ) -> Payment:
         """Pay a utility / service bill."""
-        if idempotency_key:
-            existing = await self._payments.find_by_idempotency_key(idempotency_key)
-            if existing:
-                return existing
-
         payment = Payment(
             amount=amount,
             itbis=itbis,
@@ -272,10 +262,10 @@ class PaymentService:
             customer_id=customer_id,
         )
 
-        payment, txn = await self._gw.sale(payment, card_number, expiration, cvc)
+        payment, txn = await self._send(payment, lambda p: self._gw.sale(p, card_number, expiration, cvc), kind='sale')
 
-        await self._payments.save(payment)
-        await self._txns.save(txn)
+        await self._persist_result(payment)
+        await self._save_transaction(txn)
         return payment
 
     async def process_service_payment_with_saved_card(
@@ -305,11 +295,6 @@ class PaymentService:
         target_card = next((c for c in cards if c.is_default), cards[0])
         token = target_card.token
 
-        if idempotency_key:
-            existing = await self._payments.find_by_idempotency_key(idempotency_key)
-            if existing:
-                return existing
-
         payment = Payment(
             amount=amount,
             itbis=itbis,
@@ -325,10 +310,10 @@ class PaymentService:
             customer_id=customer_id,
         )
 
-        payment, txn = await self._gw.sale_cit(payment, token)
+        payment, txn = await self._send(payment, lambda p: self._gw.sale_cit(p, token), kind='sale_cit')
 
-        await self._payments.save(payment)
-        await self._txns.save(txn)
+        await self._persist_result(payment)
+        await self._save_transaction(txn)
         return payment
 
     async def process_hold(
@@ -344,11 +329,6 @@ class PaymentService:
         idempotency_key: str = "",
         customer_id: str = "",
     ) -> Payment:
-        if idempotency_key:
-            existing = await self._payments.find_by_idempotency_key(idempotency_key)
-            if existing:
-                return existing
-
         payment = Payment(
             amount=amount,
             itbis=itbis,
@@ -361,9 +341,9 @@ class PaymentService:
             cardholder_email=cardholder_email,
             customer_id=customer_id,
         )
-        payment, txn = await self._gw.hold(payment, card_number, expiration, cvc)
-        await self._payments.save(payment)
-        await self._txns.save(txn)
+        payment, txn = await self._send(payment, lambda p: self._gw.hold(p, card_number, expiration, cvc), kind='hold')
+        await self._persist_result(payment)
+        await self._save_transaction(txn)
         return payment
 
     async def process_hold_verify(
@@ -372,6 +352,7 @@ class PaymentService:
         expiration: str,
         cvc: str,
         order_id: str = "",
+        idempotency_key: str = "",
         cardholder_name: str = "",
         cardholder_email: str = "",
         customer_id: str = "",
@@ -385,6 +366,7 @@ class PaymentService:
         can detect it and auto-void.
         """
         payment = Payment(
+            idempotency_key=idempotency_key,
             amount=100,   # RD$1.00 mínimo
             itbis=0,
             payment_type=PaymentType.SALE,
@@ -397,10 +379,10 @@ class PaymentService:
         )
 
         from app.infrastructure.azul_gateway import AzulIntegrationError
-        payment, txn = await self._gw.hold_verify_card(
-            payment, card_number, expiration, cvc,
+        payment, txn = await self._send(payment, lambda p: self._gw.hold_verify_card(
+            p, card_number, expiration, cvc,
             browser_info=browser_info,
-        )
+        ), kind='hold_verify_card')
 
         # Save card if immediately approved (no 3DS redirect)
         if (
@@ -418,17 +400,14 @@ class PaymentService:
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
                 expiration=expiration,
             )
-            existing_cards = await self._cards.list_by_customer(customer_id)
-            if not existing_cards:
-                card.is_default = True
-            await self._cards.save_if_not_exists(card)
+            await self._save_card(card)
             logger.warning(
                 "[SVC] ✓ card saved (hold-verify) | customer=%s brand=%s last4=%s",
                 customer_id, brand, card.card_last4,
             )
 
-        await self._payments.save(payment)
-        await self._txns.save(txn)
+        await self._persist_result(payment)
+        await self._save_transaction(txn)
         logger.warning("[SVC] hold-verify saved | payment_id=%s status=%s", payment.id, payment.status.value)
         return payment
 
@@ -446,11 +425,6 @@ class PaymentService:
         idempotency_key: str = "",
         customer_id: str = "",
     ) -> Payment:
-        if idempotency_key:
-            existing = await self._payments.find_by_idempotency_key(idempotency_key)
-            if existing:
-                return existing
-
         payment = Payment(
             amount=amount,
             itbis=itbis,
@@ -463,15 +437,15 @@ class PaymentService:
             cardholder_email=cardholder_email,
             customer_id=customer_id,
         )
-        payment, txn = await self._gw.post_capture(
-            payment,
+        payment, txn = await self._send(payment, lambda p: self._gw.post_capture(
+            p,
             azul_order_id=azul_order_id,
             card_number=card_number,
             expiration=expiration,
             cvc=cvc,
-        )
-        await self._payments.save(payment)
-        await self._txns.save(txn)
+        ), kind='post_capture', context={'original_bank_order':azul_order_id})
+        await self._persist_result(payment)
+        await self._save_transaction(txn)
         return payment
 
     # ------------------------------------------------------------------
@@ -492,11 +466,6 @@ class PaymentService:
         The user is present (e.g. tapped "Pagar" in the app) but doesn't
         re-enter card details.
         """
-        if idempotency_key:
-            existing = await self._payments.find_by_idempotency_key(idempotency_key)
-            if existing:
-                return existing
-
         payment = Payment(
             amount=amount,
             itbis=itbis,
@@ -508,16 +477,17 @@ class PaymentService:
             customer_id=customer_id,
         )
 
-        payment, txn = await self._gw.sale_cit(payment, token)
+        payment, txn = await self._send(payment, lambda p: self._gw.sale_cit(p, token), kind='sale_cit')
 
-        await self._payments.save(payment)
-        await self._txns.save(txn)
+        await self._persist_result(payment)
+        await self._save_transaction(txn)
         return payment
 
     # ------------------------------------------------------------------
     # 3DS 2.0 continuation
     # ------------------------------------------------------------------
 
+    @serialized_3ds('method')
     async def continue_three_ds_method(
         self,
         payment_id: str,
@@ -572,12 +542,13 @@ class PaymentService:
             response_code=payment.response_code,
             response_message=payment.response_message,
         )
-        await self._txns.save(txn)
+        await self._save_transaction(txn)
 
         if iso_raw == IsoCode.APPROVED:
             payment.status = PaymentStatus.APPROVED
             token = data.get("DataVaultToken", "") or payment.data_vault_token or ""
             payment.data_vault_token = token
+            await self._persist_result(payment)
             logger.warning("[SVC] → 3DS method approved | payment_id=%s token=%s", payment.id, token[:8] + "…" if token else "(none)")
             if token and self._cards:
                 from app.domain.entities import SavedCard
@@ -601,13 +572,11 @@ class PaymentService:
                     expiration=exp,
                 )
                 # Auto-mark as default if first card
-                existing_cards = await self._cards.list_by_customer(card_customer)
-                if not existing_cards:
-                    card.is_default = True
                 try:
-                    await self._cards.save_if_not_exists(card)
+                    await self._save_card(card)
                     logger.warning("[SVC] ✓ token persisted (method step) | payment_id=%s customer=%s brand=%s", payment.id, card_customer, brand)
                 except Exception as exc:
+                    await self._db.rollback()
                     logger.error("[SVC] ✗ card save FAILED (method step) | payment_id=%s err=%s", payment.id, exc)
         elif iso_raw == IsoCode.THREE_DS_CHALLENGE:
             payment.status = PaymentStatus.PENDING_3DS_CHALLENGE
@@ -724,10 +693,11 @@ class PaymentService:
             )
 
         payment.threeds_method_form = ""
-        await self._payments.update(payment)
+        await self._persist_result(payment)
         logger.warning("[SVC] payment updated | payment_id=%s final_status=%s", payment.id, payment.status.value)
         return payment
 
+    @serialized_3ds('challenge')
     async def continue_three_ds_challenge(
         self,
         payment_id: str,
@@ -765,12 +735,13 @@ class PaymentService:
             response_code=payment.response_code,
             response_message=payment.response_message,
         )
-        await self._txns.save(txn)
+        await self._save_transaction(txn)
 
         if iso_raw == IsoCode.APPROVED:
             payment.status = PaymentStatus.APPROVED
             token = data.get("DataVaultToken", "") or payment.data_vault_token or ""
             payment.data_vault_token = token
+            await self._persist_result(payment)
             # Persistir token en SavedCardRepository para cobros mensuales futuros
             if token and self._cards:
                 from app.domain.entities import SavedCard
@@ -794,16 +765,14 @@ class PaymentService:
                     expiration=exp,
                 )
                 # Auto-mark as default if first card
-                existing_cards = await self._cards.list_by_customer(card_customer)
-                if not existing_cards:
-                    card.is_default = True
                 try:
-                    await self._cards.save_if_not_exists(card)
+                    await self._save_card(card)
                     logger.warning(
                         "[SVC] ✓ DataVaultToken persisted | payment_id=%s customer=%s token=%s brand=%s",
                         payment.id, card_customer, token[:8] + "…", brand,
                     )
                 except Exception as exc:
+                    await self._db.rollback()
                     logger.error(
                         "[SVC] ✗ card save FAILED | payment_id=%s err=%s",
                         payment.id, exc,
@@ -813,7 +782,7 @@ class PaymentService:
 
         payment.threeds_redirect_url = ""
         payment.threeds_challenge_form = ""
-        await self._payments.update(payment)
+        await self._persist_result(payment)
         return payment
 
     # ------------------------------------------------------------------

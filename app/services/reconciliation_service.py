@@ -61,7 +61,7 @@ class ReconciliationService:
         logger.info("[reconciliation] Starting run for %d payment(s) since %s", len(payments), since.date())
 
         for pm in payments:
-            custom_order_id = pm.idempotency_key or pm.id
+            custom_order_id = pm.id
             row_status = "OK"
             azul_iso = ""
             azul_order_id = ""

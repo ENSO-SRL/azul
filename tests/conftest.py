@@ -36,12 +36,29 @@ def legacy_service_dependencies(request, monkeypatch):
         if service._db is None:
             service._db = MagicMock()
         service._db.test_repo = service._recurring
+        service._db.test_payments = service._payments
         service._db.execute = AsyncMock()
+        service._db.get = AsyncMock(return_value=None)
+        service._db.commit = AsyncMock()
+        service._db.rollback = AsyncMock()
     monkeypatch.setattr(rs.RecurringService, "__init__", init)
     monkeypatch.setattr(rs, "resolve_customer_identity", identity)
     monkeypatch.setattr(rs, "find_active_subscription", active)
     monkeypatch.setattr(rs, "lock_customer_subscriptions", AsyncMock())
+    from app.services import subscription_identity
+    monkeypatch.setattr(subscription_identity, "resolve_customer_identity", identity)
+    monkeypatch.setattr(subscription_identity, "lock_customer_subscriptions", AsyncMock())
     monkeypatch.setattr(rs, "BillingAttempts", lambda db: SimpleNamespace(reserve=AsyncMock(), finish=AsyncMock(), uncertain=AsyncMock()))
+    # These legacy unit tests isolate orchestration; real lifecycle/SQL behavior
+    # is exercised in test_payment_lifecycle and the PostgreSQL integration suite.
+    from app.services import payment_lifecycle as lifecycle
+    async def begin(db,payment,**kwargs): return payment,True
+    async def complete(db,payment): await db.test_payments.save(payment)
+    monkeypatch.setattr(lifecycle,'begin_payment',begin)
+    monkeypatch.setattr(lifecycle,'complete_payment',complete)
+    monkeypatch.setattr(lifecycle,'mark_uncertain',AsyncMock())
+    monkeypatch.setattr(lifecycle,'assert_no_pending_membership',AsyncMock())
+    monkeypatch.setattr(lifecycle,'subscription_history',AsyncMock(return_value=[]))
     if request.module.__name__.split(".")[-1] == "test_scheduler":
         from app.services import scheduler
         async def notify(*args, **kwargs):

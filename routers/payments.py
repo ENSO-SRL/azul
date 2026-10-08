@@ -13,6 +13,7 @@ from app.infrastructure.database import get_db
 from app.infrastructure.repo_impl import SQLPaymentRepository, SQLTransactionRepository
 from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
 from app.services.payment_service import PaymentService
+from app.services.billing_attempts import BillingConflict
 
 router = APIRouter(prefix="/api/v1/payments", tags=["Payments"])
 
@@ -226,6 +227,7 @@ async def create_payment(
         order_id=body.order_id,
         auth_mode=body.auth_mode,
         save_card=body.save_card,
+        currency=body.currency,
         idempotency_key=idempotency_key,
         cardholder_name=body.cardholder_name,
         cardholder_email=body.cardholder_email,
@@ -289,6 +291,8 @@ async def create_service_payment_with_saved_card(
             cardholder_name=body.cardholder_name,
             cardholder_email=body.cardholder_email,
         )
+    except BillingConflict:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return _to_response(payment)

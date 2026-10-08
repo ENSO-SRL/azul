@@ -111,6 +111,11 @@ async def register_trial(
         identity = await resolve_customer_identity(db, body.email)
         await lock_customer_subscriptions(db, identity)
         existing_sub = await find_active_subscription(db, identity, for_update=True)
+        from app.services.payment_lifecycle import assert_no_pending_membership, subscription_history
+        if existing_sub is None:
+            await assert_no_pending_membership(db, identity)
+            if await subscription_history(db, identity):
+                raise CustomerIdentityError('Esta cuenta ya tuvo una suscripción; no corresponde otra prueba gratuita.')
     except CustomerIdentityError as exc:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc

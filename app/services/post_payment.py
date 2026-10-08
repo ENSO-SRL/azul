@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import (
     Payment,
+    Currency,
     PaymentStatus,
     RecurringPayment,
     SubscriptionStatus,
@@ -325,10 +326,18 @@ async def _activate_subscription(
     )
 
     status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
-    if status != "APPROVED" or not payment.data_vault_token or not customer_id:
+    if status != "APPROVED" or not customer_id:
         return result
+    from sqlalchemy import select
+    from app.infrastructure.models import BillingAttemptModel
+    import json
+    attempts=(await db.execute(select(BillingAttemptModel).where(BillingAttemptModel.payment_id==payment.id))).scalars().all()
+    terms=next((json.loads(a.context_json or '{}') for a in attempts if json.loads(a.context_json or '{}').get('kind')=='subscription'),{})
+    membership_amount=terms.get('amount',MEMBERSHIP_AMOUNT)
+    membership_itbis=terms.get('itbis',MEMBERSHIP_ITBIS)
+    frequency=terms.get('frequency_days',SUBSCRIPTION_FREQUENCY_DAYS)
     verification_only = (payment.order_id or "").startswith("HOLD-")
-    if not verification_only and payment.amount < MEMBERSHIP_AMOUNT:
+    if not verification_only and payment.amount < membership_amount:
         result.subscription_error = "El importe aprobado requiere revisión antes de activar la membresía."
         return result
     paid_at = payment.created_at
@@ -343,6 +352,13 @@ async def _activate_subscription(
         customer_id = identity.customer_id
         await lock_customer_subscriptions(db, identity)
         existing_sub = await find_active_subscription(db, identity, for_update=True)
+        if existing_sub is None:
+            # If cancellation won a race with the bank response, preserve it.
+            # Record the paid period on the original subscription without renewing consent.
+            target_ids=[a.subscription_id for a in attempts if json.loads(a.context_json or '{}').get('membership')]
+            existing_sub=(await db.execute(select(RecurringPaymentModel).where(
+                RecurringPaymentModel.id.in_(target_ids),
+                identity.matches(RecurringPaymentModel.customer_id)).with_for_update())).scalar_one_or_none()
         if existing_sub:
             await _reuse_active_subscription(
                 db, identity, existing_sub, result,
@@ -389,10 +405,11 @@ async def _activate_subscription(
             # Heredar período de gracia restante
             recurring = RecurringPayment(
                 customer_id=customer_id,
-                amount=MEMBERSHIP_AMOUNT,
-                itbis=MEMBERSHIP_ITBIS,
-                frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
-                description="Membresía Atlas",
+                amount=membership_amount,
+                itbis=membership_itbis,
+                frequency_days=frequency,
+                description=terms.get('description') or 'Membresía Atlas',
+                currency_code=Currency(terms.get('currency','DOP')),
                 data_vault_token=payment.data_vault_token,
                 card_brand=_detect_brand_from_masked(payment.card_number_masked),
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
@@ -439,10 +456,11 @@ async def _activate_subscription(
             trial_end = now + timedelta(days=trial_days_for_user)
             recurring = RecurringPayment(
                 customer_id=customer_id,
-                amount=MEMBERSHIP_AMOUNT,
-                itbis=MEMBERSHIP_ITBIS,
-                frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
-                description="Membresía Atlas",
+                amount=membership_amount,
+                itbis=membership_itbis,
+                frequency_days=frequency,
+                description=terms.get('description') or 'Membresía Atlas',
+                currency_code=Currency(terms.get('currency','DOP')),
                 data_vault_token=payment.data_vault_token,
                 card_brand=_detect_brand_from_masked(payment.card_number_masked),
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
@@ -463,16 +481,17 @@ async def _activate_subscription(
             # Existing user (sin trial): cobro inmediato, próximo en 30 días
             recurring = RecurringPayment(
                 customer_id=customer_id,
-                amount=MEMBERSHIP_AMOUNT,
-                itbis=MEMBERSHIP_ITBIS,
-                frequency_days=SUBSCRIPTION_FREQUENCY_DAYS,
-                description="Membresía Atlas",
+                amount=membership_amount,
+                itbis=membership_itbis,
+                frequency_days=frequency,
+                description=terms.get('description') or 'Membresía Atlas',
+                currency_code=Currency(terms.get('currency','DOP')),
                 data_vault_token=payment.data_vault_token,
                 card_brand=_detect_brand_from_masked(payment.card_number_masked),
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
                 card_expiration=card_expiration,
                 cardholder_email=payment.cardholder_email or "",
-                next_charge_at=paid_at + timedelta(days=SUBSCRIPTION_FREQUENCY_DAYS),
+                next_charge_at=paid_at + timedelta(days=frequency),
                 last_charged_at=paid_at,
                 trial_ends_at=None,
             )
@@ -481,7 +500,7 @@ async def _activate_subscription(
                 "[post-payment] ✓ EXISTING user — subscription created (no trial) | "
                 "customer_id=%s next_charge=%s",
                 customer_id,
-                (now + timedelta(days=SUBSCRIPTION_FREQUENCY_DAYS)).isoformat(),
+                (now + timedelta(days=frequency)).isoformat(),
             )
 
         repo = SQLRecurringRepository(db)
@@ -563,7 +582,22 @@ async def create_trial_subscription(
             return result
 
         now = datetime.now(timezone.utc)
-        
+        from app.services.payment_lifecycle import subscription_history, assert_no_pending_membership
+        history = await subscription_history(db, identity)
+        from app.services.access_policy import access_decision
+        if history:
+            if access_decision(history)['allow_access']:
+                prior = max(history, key=lambda row: row.last_charged_at or row.created_at)
+                await _reuse_active_subscription(db, identity, prior, result,
+                    token=saved_card.token, card_brand=getattr(saved_card,'card_brand',''),
+                    card_last4=saved_card.card_last4, card_expiration=getattr(saved_card,'expiration',''),
+                    cardholder_email=cardholder_email)
+                return result
+            result.subscription_error = 'Esta cuenta ya tuvo una suscripción; no corresponde otra prueba gratuita.'
+            await db.rollback()
+            return result
+        await assert_no_pending_membership(db, identity)
+
         # Descuento especial de 30 días con código promocional o ID
         special_30_day_users = [
             # "ID_DEL_USUARIO_AQUI",
@@ -652,6 +686,14 @@ async def create_subscription_if_needed(payment, customer_id, db, card_expiratio
     if payment.status != PaymentStatus.APPROVED:
         return result
     try:
+        # An approved service/club payment must not accidentally buy membership.
+        import json
+        from app.infrastructure.models import BillingAttemptModel
+        operations=(await db.execute(select(BillingAttemptModel).where(
+            BillingAttemptModel.payment_id==payment.id,
+            BillingAttemptModel.request_fingerprint!=''))).scalars().all()
+        if operations and not any(json.loads(a.context_json or '{}').get('membership') for a in operations):
+            return result
         job = await db.get(SubscriptionActivationJobModel, payment.id)
         if job is None:
             job = SubscriptionActivationJobModel(payment_id=payment.id, customer_id=customer_id,
@@ -660,12 +702,20 @@ async def create_subscription_if_needed(payment, customer_id, db, card_expiratio
             await db.commit()
         job = (await db.execute(select(SubscriptionActivationJobModel).where(
             SubscriptionActivationJobModel.payment_id == payment.id).with_for_update())).scalar_one()
+        from app.infrastructure.models import PaymentModel
+        current=(await db.execute(select(PaymentModel).where(PaymentModel.id==payment.id)
+            .execution_options(populate_existing=True))).scalar_one_or_none()
+        if job.status=='CANCELLED' or (current and current.status in ('VOIDED','REFUNDED')):
+            job.status='CANCELLED'
+            await db.commit()
+            result.subscription_error='El pago fue devuelto; no corresponde activar una membresía.'
+            return result
         if job.status == "DONE":
             result.subscription_updated = True
             await db.commit()
             return result
-        if not payment.data_vault_token or not customer_id:
-            result.subscription_error = "Pago aprobado; activación pendiente por falta de método de pago."
+        if not customer_id:
+            result.subscription_error = "Pago aprobado; activación pendiente por falta de identidad."
         else:
             result = await _activate_subscription(payment, job.customer_id, db,
                 card_expiration=job.card_expiration, promo_code=job.promo_code or None, user_name=job.user_name)
@@ -685,6 +735,9 @@ async def retry_subscription_activations(session_factory):
     from app.infrastructure.models import SubscriptionActivationJobModel
     from app.infrastructure.repo_impl import SQLPaymentRepository
     async with session_factory() as db:
+        from app.services.payment_recovery import recover_payment_operations
+        from app.infrastructure.azul_gateway import AzulPaymentGateway
+        await recover_payment_operations(db, AzulPaymentGateway())
         ids = list((await db.execute(select(SubscriptionActivationJobModel.payment_id).where(
             SubscriptionActivationJobModel.status == "PENDING").limit(100))).scalars())
         for payment_id in ids:

@@ -22,6 +22,7 @@ from app.infrastructure.database import get_db
 from app.infrastructure.repo_impl import SQLPaymentRepository, SQLTransactionRepository
 from app.infrastructure.repo_saved_cards import SQLSavedCardRepository
 from app.services.payment_service import PaymentService
+from app.services.payment_authorization import require_payment_access, verify_callback
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,6 @@ class ThreeDSStatusResponse(BaseModel):
     threeds_method_form: str = ""
     threeds_redirect_url: str = ""
     threeds_challenge_form: str = ""
-    data_vault_token: str = ""
 
 
 class CompleteMethodRequest(BaseModel):
@@ -56,7 +56,6 @@ class ThreeDSPaymentResponse(BaseModel):
     status: str
     iso_code: str
     response_message: str
-    data_vault_token: str = ""
     threeds_redirect_url: str = ""
     threeds_challenge_form: str = ""
 
@@ -99,11 +98,13 @@ async def method_notification(
     payment_id: str = Query(..., description="ID del pago"),
     three_ds_method_data: str = Form(default="", alias="threeDSMethodData"),
     db: AsyncSession = Depends(get_db),
+    state: str = Query(''),
 ):
     """ACS calls this after the 3DS Method iframe completes.
 
     Persists the notification in the DB so all ECS instances can read it.
     """
+    verify_callback(payment_id,state)
     from app.infrastructure.repo_impl import SQLPaymentRepository
     repo = SQLPaymentRepository(db)
     payment = await repo.get_by_id(payment_id)
@@ -132,6 +133,7 @@ async def term_callback(
     payment_id: str = Query(..., description="ID del pago"),
     svc: PaymentService = Depends(_get_service),
     db: AsyncSession = Depends(get_db),
+    state: str = Query(''),
 ):
     """ACS redirects here after the cardholder completes the challenge.
 
@@ -140,6 +142,7 @@ async def term_callback(
     We parse the raw form body to handle all casings.
     Returns HTML that redirects the browser to the result page.
     """
+    verify_callback(payment_id,state)
     from fastapi.responses import HTMLResponse
 
     # Parse raw form body — Cardinal Commerce field name casing is not guaranteed.
@@ -277,6 +280,7 @@ async def term_callback(
 
 @router.get(
     "/{payment_id}/status",
+    dependencies=[Depends(require_payment_access)],
     response_model=ThreeDSStatusResponse,
     summary="Consultar estado 3DS del pago",
     description=(
@@ -301,12 +305,12 @@ async def get_threeds_status(
         "threeds_method_form": payment.threeds_method_form,
         "threeds_redirect_url": payment.threeds_redirect_url,
         "threeds_challenge_form": payment.threeds_challenge_form,
-        "data_vault_token": payment.data_vault_token,
     }
 
 
 @router.post(
     "/{payment_id}/complete-method",
+    dependencies=[Depends(require_payment_access)],
     response_model=ThreeDSPaymentResponse,
     summary="Continuar flujo 3DS después del iframe Method",
     description=(
@@ -344,7 +348,6 @@ async def complete_method(
         "status": payment.status.value,
         "iso_code": payment.iso_code,
         "response_message": payment.response_message,
-        "data_vault_token": payment.data_vault_token,
         "threeds_redirect_url": payment.threeds_redirect_url,
         "threeds_challenge_form": payment.threeds_challenge_form,
     }
@@ -352,6 +355,7 @@ async def complete_method(
 
 @router.post(
     "/{payment_id}/complete-challenge",
+    dependencies=[Depends(require_payment_access)],
     response_model=ThreeDSPaymentResponse,
     summary="Completar flujo 3DS después del challenge",
     description=(
@@ -375,7 +379,6 @@ async def complete_challenge(
         "status": payment.status.value,
         "iso_code": payment.iso_code,
         "response_message": payment.response_message,
-        "data_vault_token": payment.data_vault_token,
         "threeds_redirect_url": "",
         "threeds_challenge_form": "",
     }
