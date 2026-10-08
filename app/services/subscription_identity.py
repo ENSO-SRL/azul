@@ -6,7 +6,6 @@ The email supplied by a cardholder must never establish account ownership.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 
 from sqlalchemy import bindparam, func, select, text
@@ -39,10 +38,13 @@ async def resolve_customer_identity(
 
     result = await db.execute(
         text(
-            "SELECT id::text, lower(trim(email)), uuid::text FROM public.users "
-            "WHERE id::text = :identifier OR uuid::text = :identifier "
-            "OR lower(trim(email)) = :identifier "
-            "OR id IN (SELECT atlas_user_id FROM pagos.customer_identity_aliases "
+            "SELECT DISTINCT canonical.id::text, lower(trim(canonical.email)), canonical.uuid::text "
+            "FROM public.users candidate "
+            "LEFT JOIN pagos.customer_identity_links link ON link.source_user_id = candidate.id "
+            "JOIN public.users canonical ON canonical.id = coalesce(link.atlas_user_id, candidate.id) "
+            "WHERE candidate.id::text = :identifier OR candidate.uuid::text = :identifier "
+            "OR lower(trim(candidate.email)) = :identifier "
+            "OR candidate.id IN (SELECT atlas_user_id FROM pagos.customer_identity_aliases "
             "WHERE alias = :identifier) LIMIT 2"
         ),
         {"identifier": identifier},
@@ -54,34 +56,62 @@ async def resolve_customer_identity(
             "Completa el registro del usuario antes de crear la suscripción."
         )
     canonical_id, email, user_uuid = rows[0]
-    historical = (await db.execute(
-        text("SELECT alias FROM pagos.customer_identity_aliases WHERE atlas_user_id = :user_id"),
+    members = (await db.execute(
+        text("SELECT id, lower(trim(email)), uuid::text FROM public.users "
+             "WHERE id = :user_id OR id IN (SELECT source_user_id FROM pagos.customer_identity_links "
+             "WHERE atlas_user_id = :user_id)"),
         {"user_id": int(canonical_id)},
+    )).all()
+    member_ids = tuple(row[0] for row in members)
+    # The migration rejects chains. Also fail closed on malformed restored data.
+    chain = (await db.execute(
+        text("SELECT source_user_id FROM pagos.customer_identity_links "
+             "WHERE source_user_id = :canonical OR "
+             "(atlas_user_id IN :members AND atlas_user_id <> :canonical) LIMIT 1")
+        .bindparams(bindparam("members", expanding=True)),
+        {"canonical": int(canonical_id), "members": member_ids},
+    )).first()
+    if chain is not None:
+        raise CustomerIdentityError("La vinculación de facturación requiere revisión: contiene una cadena.")
+    historical = (await db.execute(
+        text("SELECT alias FROM pagos.customer_identity_aliases WHERE atlas_user_id IN :members")
+        .bindparams(bindparam("members", expanding=True)),
+        {"members": member_ids},
     )).all()
     aliases = tuple(sorted({
         str(value).strip().lower()
-        for value in (canonical_id, email, user_uuid, identifier, *(row[0] for row in historical)) if value
+        for value in (identifier, *(v for row in members for v in row), *(row[0] for row in historical)) if value
     }))
-    # A historical ID must never steal a different live account's identity.
-    # Check all aliases even when the caller supplied the canonical ID.
+    # Only reviewed group members may share ownership. Check every key even
+    # when the caller supplied the primary ID, including other historical owners.
     collisions = await db.execute(
         text(
-            "SELECT id FROM public.users WHERE id::text <> :canonical "
+            "SELECT id FROM public.users WHERE id NOT IN :members "
             "AND (id::text IN :aliases OR uuid::text IN :aliases "
             "OR lower(trim(email)) IN :aliases) LIMIT 1"
-        ).bindparams(bindparam("aliases", expanding=True)),
-        {"canonical": str(canonical_id), "aliases": aliases},
+        ).bindparams(bindparam("aliases", expanding=True), bindparam("members", expanding=True)),
+        {"members": member_ids, "aliases": aliases},
     )
     if collisions.first() is not None:
         raise CustomerIdentityError("La identidad histórica entra en conflicto con otra cuenta de Atlas.")
+    historical_collision = (await db.execute(
+        text("SELECT alias FROM pagos.customer_identity_aliases "
+             "WHERE atlas_user_id NOT IN :members AND alias IN :aliases LIMIT 1")
+        .bindparams(bindparam("members", expanding=True), bindparam("aliases", expanding=True)),
+        {"members": member_ids, "aliases": aliases},
+    )).first()
+    if historical_collision is not None:
+        raise CustomerIdentityError("La identidad de facturación coincide con un alias de otra cuenta.")
     return CustomerIdentity(str(canonical_id), email or "", aliases)
 
 
 async def lock_customer_subscriptions(db: AsyncSession, identity: CustomerIdentity) -> None:
     """Serialize writers for this person across workers until commit/rollback."""
-    digest = hashlib.sha256(f"atlas-subscription:{identity.customer_id}".encode()).digest()
-    lock_id = int.from_bytes(digest[:8], "big", signed=True)
-    await db.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id})
+    # Use the very same PostgreSQL key as the trigger guarding direct SQL writers.
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended('atlas-subscription:' || :canonical, 0))"),
+        {"canonical": identity.customer_id},
+    )
 
 
 async def find_active_subscription(

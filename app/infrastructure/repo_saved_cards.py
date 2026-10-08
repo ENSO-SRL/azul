@@ -4,7 +4,7 @@ SavedCard repository — SQLAlchemy async implementation.
 
 from __future__ import annotations
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import SavedCard
@@ -84,9 +84,12 @@ class SQLSavedCardRepository(SavedCardRepository):
         return _model_to_card(row) if row else None
 
     async def list_by_customer(self, customer_id: str) -> list[SavedCard]:
+        normalized_id = customer_id.strip().lower()
+        if not normalized_id:
+            return []
         result = await self._session.execute(
             select(SavedCardModel)
-            .where(SavedCardModel.customer_id == customer_id)
+            .where(func.lower(func.trim(SavedCardModel.customer_id)) == normalized_id)
             .order_by(SavedCardModel.created_at.desc())
         )
         return [_model_to_card(r) for r in result.scalars().all()]

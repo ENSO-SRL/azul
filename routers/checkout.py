@@ -67,6 +67,7 @@ def _get_token_svc(db: AsyncSession = Depends(get_db)) -> TokenService:
     return TokenService(
         card_repo=SQLSavedCardRepository(db),
         gateway=AzulPaymentGateway(),
+        db_session=db,
     )
 
 def _get_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
@@ -1362,24 +1363,27 @@ async def checkout_form(
         name = user_data.get("name", "")
         last_name = user_data.get("last_name", "")
         
-        # Buscar en la base de datos si nos falta el correo o el nombre
-        if sub and (not prefill_email or not name):
+        # Resolve verified billing ownership even for a session on the old profile.
+        if sub or prefill_email:
             try:
+                from app.services.subscription_identity import resolve_customer_identity
+                identity = await resolve_customer_identity(db, sub or prefill_email)
                 result = await db.execute(
-                    text("SELECT email, name, last_name FROM public.users WHERE uuid = :sub OR email = :sub LIMIT 1"),
-                    {"sub": sub}
+                    text("SELECT email, name, last_name FROM public.users WHERE id = :user_id"),
+                    {"user_id": int(identity.customer_id)}
                 )
                 row = result.fetchone()
                 if row:
                     prefill_email = row[0] or prefill_email
                     name = row[1] or name
                     last_name = row[2] or last_name
-            except Exception as e:
-                logger.error("[CHECKOUT] Error querying public.users: %s", e)
+            except Exception:
+                await db.rollback()
+                logger.exception("[CHECKOUT] No se pudo verificar la identidad de facturación")
+                return HTMLResponse(_html_form("No se pudo verificar tu suscripción. Intenta de nuevo.", theme=_resolve_theme(request)),status_code=503)
 
         prefill_name = f"{name} {last_name}".strip()
-        # Use user UUID (sub) as canonical customer_id for consistency across all pagos tables
-        customer_id = sub or prefill_email
+        customer_id = identity.customer_id if sub or prefill_email else ""
         logger.warning(
             "[CHECKOUT] %s cookie decoded | sub=%s email=%s name=%s customer_id=%s",
             cookie_source,
@@ -1396,11 +1400,13 @@ async def checkout_form(
             now = datetime.now(timezone.utc)
             subs_result = await db.execute(
                 select(RecurringPaymentModel)
-                .where(RecurringPaymentModel.customer_id == customer_id)
+                .where(identity.matches(RecurringPaymentModel.customer_id))
                 .order_by(RecurringPaymentModel.created_at.desc())
-                .limit(1)
             )
-            sub = subs_result.scalar_one_or_none()
+            subscriptions = subs_result.scalars().all()
+            from app.services.access_policy import access_decision
+            decision = access_decision(subscriptions)
+            sub = next((s for s in subscriptions if s.status == "ACTIVE"), subscriptions[0] if subscriptions else None)
             
             if sub:
                 status_class = "status-cancelled"
@@ -1424,6 +1430,18 @@ async def checkout_form(
                     icon_svg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>'
                     title = "Problema con tu pago"
                     desc = "No pudimos procesar tu último cobro. Por favor, actualiza tu tarjeta para evitar la interrupción del servicio."
+
+                if decision["allow_access"]:
+                    status_class = "status-trial" if decision["in_trial"] else "status-active"
+                    title = "Prueba gratuita activa" if decision["in_trial"] else "Membresía pagada vigente"
+                    until = datetime.fromisoformat(decision["valid_until"])
+                    desc = f"Tu acceso está vigente hasta el {until.strftime('%d/%m/%Y')}."
+                elif sub.status == "ACTIVE":
+                    status_class = "status-paused"
+                    title = "Prueba vencida" if decision["reason"] == "trial_expired_no_card" else "Pago pendiente"
+                    desc = "Tu suscripción no tiene un período vigente. Revisa tu método de pago."
+                if decision["requires_review"]:
+                    desc += " Necesitamos revisar tus suscripciones antes de procesar otro cobro."
                 
                 subscription_status_html = f'''
                 <div class="sub-status-banner {status_class}">
@@ -1434,8 +1452,10 @@ async def checkout_form(
                     </div>
                 </div>
                 '''
-        except Exception as e:
-            logger.error(f"[CHECKOUT] Error fetching subscription status: {e}")
+        except Exception:
+            await db.rollback()
+            logger.exception("[CHECKOUT] No se pudo consultar la vigencia")
+            return HTMLResponse(_html_form("No se pudo verificar tu suscripción. Intenta de nuevo.",theme=_resolve_theme(request)),status_code=503)
 
         try:
             cards = await token_svc.list_cards(customer_id)
@@ -1612,7 +1632,8 @@ async def process_checkout(
         _jwt_last = user_data.get("last_name", "")
         user_name = f"{_jwt_name} {_jwt_last}".strip()
     else:
-        user_name = cardholder_name.strip() if cardholder_name else ""
+        customer_id = ""  # Never accept the form's identity without a valid session.
+        user_name = ""
 
     if not customer_id:
         return HTMLResponse(_html_form("Sesión expirada. Inicia sesión nuevamente.", theme=theme), status_code=401)
@@ -1751,6 +1772,8 @@ async def process_checkout(
                 trial_ends_at=trial_result.trial_ends_at if trial_result else "",
                 theme=theme,
             )
+            if in_valid_period and not in_existing_trial:
+                html = _html_result("APPROVED", "Tarjeta guardada; se conserva tu período pagado. No se realizó un cobro.", "", 0, "", theme=theme, card_last4=saved_card.card_last4)
             resp = HTMLResponse(html, status_code=202 if "activación pendiente" in html.lower() else 200)
             resp.headers["X-Frame-Options"] = "DENY"
             resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -2045,6 +2068,8 @@ async def process_checkout(
                 trial_ends_at=trial_result.trial_ends_at if trial_result else "",
                 theme=theme,
             )
+            if in_valid_period and not in_existing_trial:
+                html = _html_result("APPROVED", "Tarjeta guardada; se conserva tu período pagado. No se realizó un cobro.", "", 0, "", theme=theme, card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "")
             resp = HTMLResponse(html, status_code=202 if "activación pendiente" in html.lower() else 200)
             resp.headers["X-Frame-Options"] = "DENY"
             resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -2110,7 +2135,16 @@ async def pay_with_token(
         
     logger.warning("[CHECKOUT] ▶ POST /pay-with-token | customer_id=%s card_id=%s", customer_id, card_id)
 
-    cards = await token_svc.list_cards(customer_id)
+    from app.services.subscription_identity import CustomerIdentityError
+    try:
+        cards = await token_svc.list_cards(customer_id)
+    except CustomerIdentityError:
+        await db.rollback()
+        return HTMLResponse(_html_form("No se pudo verificar la identidad de facturación.",theme=theme),status_code=409)
+    except Exception:
+        await db.rollback()
+        logger.exception("[CHECKOUT] No se pudieron consultar las tarjetas")
+        return HTMLResponse(_html_form("No se pudieron consultar tus tarjetas. Intenta de nuevo.",theme=theme),status_code=503)
     selected_card = next((c for c in cards if hasattr(c, 'id') and c.id == card_id), None)
     
     if not selected_card or not hasattr(selected_card, 'token') or not selected_card.token:

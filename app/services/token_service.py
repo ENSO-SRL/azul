@@ -47,6 +47,12 @@ class TokenService:
         cardholder_name and cardholder_email are required by Azul API v1.2.
         Returns the SavedCard domain entity with the DataVault token.
         """
+        if self._db is not None:
+            identity = await resolve_customer_identity(self._db, customer_id)
+            await lock_customer_subscriptions(self._db, identity)
+            await find_active_subscription(self._db, identity, for_update=True)
+            customer_id = identity.customer_id
+        existing_cards = await self.list_cards(customer_id)
         card = await self._gw.create_token(
             customer_id=customer_id,
             card_number=card_number,
@@ -57,7 +63,6 @@ class TokenService:
         )
         
         # If this is the first card, make it the default
-        existing_cards = await self._cards.list_by_customer(customer_id)
         if not existing_cards:
             card.is_default = True
             
@@ -96,7 +101,8 @@ class TokenService:
         card = await self._cards.get_by_token(token)
         if not card:
             raise ValueError(f"Token {token!r} not found.")
-        if card.customer_id != customer_id:
+        aliases = await self._ownership_aliases(customer_id)
+        if card.customer_id.strip().lower() not in aliases:
             raise PermissionError(
                 f"Token {token!r} does not belong to customer {customer_id!r}."
             )
@@ -121,27 +127,9 @@ class TokenService:
         (most recent) is kept.
         """
         search_ids = {customer_id}
-        if self._db:
-            from sqlalchemy import text
-            try:
-                if customer_id.isdigit():
-                    result = await self._db.execute(
-                        text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
-                        {"cid": int(customer_id)},
-                    )
-                    row = result.fetchone()
-                    if row and row[0]:
-                        search_ids.add(row[0])
-                else:
-                    result = await self._db.execute(
-                        text("SELECT id FROM public.users WHERE email = :email LIMIT 1"),
-                        {"email": customer_id},
-                    )
-                    row = result.fetchone()
-                    if row and row[0]:
-                        search_ids.add(str(row[0]))
-            except Exception as e:
-                logger.warning(f"Error fetching user cross-reference in list_cards: {e}")
+        if self._db is not None:
+            identity = await resolve_customer_identity(self._db, customer_id)
+            search_ids = set(identity.aliases)
 
         cards = []
         for sid in search_ids:
@@ -170,44 +158,9 @@ class TokenService:
         card = await self._cards.get_by_id(card_id)
         if not card:
             raise ValueError(f"Tarjeta con id {card_id!r} no encontrada.")
-        # Accept ownership if the caller's ID matches the card's customer_id
-        # (could be numeric ID like "173" or email — both are valid)
-        if card.customer_id != customer_email:
-            # Also check if the caller's email matches (for cross-format lookups)
-            # e.g., card saved with "173" but caller sends email, or vice versa
-            if self._db:
-                from sqlalchemy import text
-                try:
-                    if customer_email.isdigit():
-                        result = await self._db.execute(
-                            text("SELECT email FROM public.users WHERE id = :cid LIMIT 1"),
-                            {"cid": int(customer_email)},
-                        )
-                        row = result.fetchone()
-                        cross_id = row[0] if row else None
-                    else:
-                        result = await self._db.execute(
-                            text("SELECT id FROM public.users WHERE email = :email LIMIT 1"),
-                            {"email": customer_email},
-                        )
-                        row = result.fetchone()
-                        cross_id = str(row[0]) if row else None
-                        
-                    if not (cross_id and card.customer_id == cross_id):
-                        raise PermissionError(
-                            f"La tarjeta no pertenece al usuario {customer_email!r}."
-                        )
-                except PermissionError:
-                    raise
-                except Exception:
-                    # DB lookup failed — fall back to strict check
-                    raise PermissionError(
-                        f"La tarjeta no pertenece al usuario {customer_email!r}."
-                    )
-            else:
-                raise PermissionError(
-                    f"La tarjeta no pertenece al usuario {customer_email!r}."
-                )
+        aliases = await self._ownership_aliases(customer_email)
+        if card.customer_id.strip().lower() not in aliases:
+            raise PermissionError("La tarjeta no pertenece al usuario.")
 
         try:
             await self._gw.delete_token(card.token)
@@ -238,10 +191,11 @@ class TokenService:
             return
 
         try:
+            identity = await resolve_customer_identity(self._db, customer_id)
             result = await self._db.execute(
                 update(RecurringPaymentModel)
                 .where(
-                    RecurringPaymentModel.customer_id == customer_id,
+                    identity.matches(RecurringPaymentModel.customer_id),
                     RecurringPaymentModel.data_vault_token == token,
                     RecurringPaymentModel.status == "ACTIVE",
                 )
@@ -262,3 +216,10 @@ class TokenService:
                 "customer_id=%s token=%s err=%s",
                 customer_id, token[:12] + "…" if token else "(none)", exc,
             )
+
+    async def _ownership_aliases(self, customer_id: str) -> tuple[str, ...]:
+        if self._db is None:
+            return (customer_id.strip().lower(),)
+        identity = await resolve_customer_identity(self._db, customer_id)
+        await lock_customer_subscriptions(self._db, identity)
+        return identity.aliases

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import (
@@ -337,10 +337,13 @@ class SQLRecurringRepository(RecurringRepository):
         return [_model_to_recurring(r) for r in result.scalars().all()]
 
     async def list_by_customer(self, customer_id: str) -> list[RecurringPayment]:
-        """Return all subscriptions (any status) for a given customer."""
+        """Match legacy identifiers using the same rules as CustomerIdentity."""
+        normalized_id = customer_id.strip().lower()
+        if not normalized_id:
+            return []
         result = await self._session.execute(
             select(RecurringPaymentModel)
-            .where(RecurringPaymentModel.customer_id == customer_id)
+            .where(func.lower(func.trim(RecurringPaymentModel.customer_id)) == normalized_id)
             .order_by(RecurringPaymentModel.created_at.desc())
         )
         return [_model_to_recurring(r) for r in result.scalars().all()]
