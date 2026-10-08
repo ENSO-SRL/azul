@@ -72,6 +72,8 @@ async def main():
         reviewed = (ROOT / "operations/roberto_172_to_259_review.sql").read_text(encoding="utf-8")
         await conn.execute(schema)
         await conn.execute(schema)
+        # The current reader also supports separately reviewed, existing accounts.
+        await conn.execute((ROOT / "migrations/20261008_verified_billing_links.sql").read_text(encoding="utf-8"))
         assertions.append("schema migration is idempotent on PostgreSQL")
 
         async def status(identifier):

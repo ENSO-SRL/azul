@@ -41,7 +41,7 @@ async def test_pay_with_token_csrf_failure(mock_decode, override_auth):
 @pytest.mark.asyncio
 @patch("app.utils.token_utils.decode_user_info_token")
 async def test_pay_with_token_card_not_found(mock_decode, override_auth):
-    mock_decode.return_value = {"sub": "user123"}
+    mock_decode.return_value = {"sub": "228"}
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         response = await ac.post(

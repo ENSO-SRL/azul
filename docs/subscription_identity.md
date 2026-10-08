@@ -13,6 +13,20 @@ evidencia revisada, responsable y fecha; no se deduce del correo de la tarjeta.
 El mismo resolvedor se usa en `customer-status`, el resumen web, checkout y
 cobros. Un alias que colisiona con otra cuenta impide resolver la identidad.
 
+Las cuentas duplicadas que todavía existen se vinculan por separado mediante
+`pagos.customer_identity_links`, con responsable, fecha y evidencia revisada.
+Ambos ID, correos y UUID resuelven la misma identidad de facturación. Esto no
+fusiona perfiles, credenciales ni reservas: el vínculo solo autoriza compartir
+la membresía y sus medios de pago entre las cuentas verificadas. No se deduce
+una asociación de un nombre, un teléfono marcado como duplicado o un correo de
+tarjeta. Los alias históricos siguen rechazando IDs de cuentas existentes.
+
+Registro, checkout, tarjetas y consultas usan esa identidad común. Las nuevas
+operaciones usan el ID principal y reutilizan la suscripción existente. Consultar
+el estado conserva los identificadores históricos originales. Una sesión firmada
+con el ID anterior sigue resolviendo la misma membresía. Sin sesión válida, el
+checkout no acepta el `customer_id` enviado en el formulario.
+
 ## Comportamiento
 
 1. `POST /api/v1/registration/trial` mantiene su payload actual por correo.
@@ -74,6 +88,12 @@ La aplicación no crea asociaciones automáticamente y debe tener permiso de
 lectura sobre esa tabla. Una tabla ausente es un fallo operativo, nunca prueba
 de deuda. La migración conserva las filas históricas y amplía la restricción de
 suscripciones activas para reconocer los alias revisados.
+
+El lector de cuentas existentes requiere además
+`migrations/20261008_verified_billing_links.sql`, que inicialmente deja la tabla
+vacía. No aplicar un vínculo hasta que todos los servicios de pagos que usan
+la base compartida ejecuten esta versión. El caso Danilo está descrito en
+`operations/README.md`; sus scripts no forman parte del despliegue automático.
 
 Los procedimientos específicos de reconciliación están en `operations/`;
 terminan en `ROLLBACK` y no se ejecutan desde el despliegue. Revisar las
