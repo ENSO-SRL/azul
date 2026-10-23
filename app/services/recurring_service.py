@@ -315,16 +315,28 @@ class RecurringService:
         try:
             year, month = int(sub.card_expiration[:4]), int(sub.card_expiration[4:6])
             cutoff = datetime(year, month, monthrange(year, month)[1], 23, 59, 59, tzinfo=timezone.utc)
-            if now > cutoff:
-                sub.status = SubscriptionStatus.PAUSED
-                sub.last_failure_reason = "Tarjeta vencida"
-                await self._recurring.update(sub)
-                await send_notification("card_expired", to_email=sub.cardholder_email,
-                    context=ctx_charge(amount=sub.amount, currency=getattr(sub.currency_code, "value", sub.currency_code),
-                        description=sub.description or "Suscripción", card_last4=sub.card_last4))
-                raise ValueError("expired")
         except (ValueError, TypeError, IndexError):
+            # card_expiration is missing or malformed (e.g. a token was attached to
+            # the subscription without ever recording its expiration). This will
+            # never parse on its own, so retrying every cycle loops forever —
+            # pause immediately, same as a confirmed-expired card, instead of
+            # letting the scheduler's generic exception handler swallow it and
+            # leave the subscription ACTIVE and due again next run.
+            sub.status = SubscriptionStatus.PAUSED
+            sub.last_failure_reason = "Fecha de vencimiento de tarjeta inválida o ausente"
+            await self._recurring.update(sub)
+            await send_notification("card_expired", to_email=sub.cardholder_email,
+                context=ctx_charge(amount=sub.amount, currency=getattr(sub.currency_code, "value", sub.currency_code),
+                    description=sub.description or "Suscripción", card_last4=sub.card_last4))
             raise ValueError("CONFLICT: La tarjeta requiere una fecha de vencimiento válida.") from None
+        if now > cutoff:
+            sub.status = SubscriptionStatus.PAUSED
+            sub.last_failure_reason = "Tarjeta vencida"
+            await self._recurring.update(sub)
+            await send_notification("card_expired", to_email=sub.cardholder_email,
+                context=ctx_charge(amount=sub.amount, currency=getattr(sub.currency_code, "value", sub.currency_code),
+                    description=sub.description or "Suscripción", card_last4=sub.card_last4))
+            raise ValueError("expired")
         identity = await resolve_customer_identity(self._db, sub.customer_id)
         await lock_customer_subscriptions(self._db, identity)
         from app.services.payment_lifecycle import assert_no_pending_membership, subscription_history
