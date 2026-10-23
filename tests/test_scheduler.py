@@ -366,6 +366,42 @@ async def test_charge_due_subscriptions_expired_card():
     assert "Tarjeta vencida" in updated.last_failure_reason
 
 
+@pytest.mark.asyncio
+async def test_charge_due_subscriptions_malformed_expiration_pauses():
+    """Regression: a subscription with a token but blank/invalid card_expiration
+    must be paused (and the customer notified) instead of being left ACTIVE.
+
+    Before the fix, int("") raised inside the try block and was caught by the
+    same `except (ValueError, TypeError, IndexError)` that also catches the
+    deliberately-raised "expired" signal, so the handler just re-raised a bare
+    CONFLICT ValueError. The scheduler's generic exception handler then logged
+    and swallowed it without pausing or updating the subscription, so it stayed
+    ACTIVE and due — retried forever on every scheduler run.
+    """
+    sub = _make_sub()
+    sub.card_expiration = ""  # token present, but expiration was never recorded
+
+    recurring_repo, payment_repo, txn_repo, gateway, session_factory = _build_mocks()
+    recurring_repo.list_due.return_value = [sub]
+
+    with (
+        patch("app.infrastructure.repo_impl.SQLRecurringRepository", return_value=recurring_repo),
+        patch("app.infrastructure.repo_impl.SQLPaymentRepository",   return_value=payment_repo),
+        patch("app.infrastructure.repo_impl.SQLTransactionRepository", return_value=txn_repo),
+        patch("app.services.scheduler.AzulPaymentGateway",   return_value=gateway),
+    ):
+        await sched_module._charge_due_subscriptions(session_factory)
+
+    # Gateway shouldn't be called
+    gateway.sale_mit.assert_not_called()
+
+    # Repo must have paused the sub instead of leaving it ACTIVE and due forever
+    recurring_repo.update.assert_awaited_once()
+    updated = recurring_repo.update.call_args[0][0]
+    assert updated.status == SubscriptionStatus.PAUSED
+    assert "vencimiento" in updated.last_failure_reason.lower()
+
+
 # ---------------------------------------------------------------------------
 # Idempotency key
 # ---------------------------------------------------------------------------
