@@ -16,6 +16,8 @@ Si ninguna está presente, muestra checkout como invitado.
 from __future__ import annotations
 
 import logging
+import re
+import secrets
 from html import escape
 import os
 import uuid
@@ -62,6 +64,30 @@ def _resolve_theme(request: Request) -> str:
     raw = request.cookies.get("theme", "light").lower().strip().strip('"').strip("'")
     return raw if raw in ("dark", "light") else "light"
 
+
+
+def _checkout_form_response(
+    request: Request, error: str = "", *, status_code: int = 200, **form_options
+) -> HTMLResponse:
+    """Every form, including errors, must carry the same token as its cookie."""
+    csrf_token = request.cookies.get("checkout_csrf", "")
+    # Reuse an existing server-shaped token so opening another tab does not
+    # invalidate forms already being filled out. Never reflect arbitrary cookies.
+    if not re.fullmatch(r"[0-9a-f]{64}", csrf_token):
+        csrf_token = secrets.token_hex(32)
+    response = HTMLResponse(
+        _html_form(error, csrf_token=csrf_token, **form_options),
+        status_code=status_code,
+    )
+    response.set_cookie(
+        "checkout_csrf", csrf_token, httponly=True,
+        secure=request.url.scheme == "https", samesite="lax", max_age=3600,
+    )
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return response
 
 
 def _get_token_svc(db: AsyncSession = Depends(get_db)) -> TokenService:
@@ -1348,8 +1374,6 @@ async def checkout_form(
     prefill_email = ""
     prefill_name = ""
     customer_id = ""
-    import secrets
-    csrf_token = secrets.token_hex(32)
 
     # ── Read user_info cookie (preferred) or access_token (legacy fallback) ──
     from app.utils.token_utils import decode_user_info_token
@@ -1389,7 +1413,7 @@ async def checkout_form(
             except Exception:
                 await db.rollback()
                 logger.exception("[CHECKOUT] No se pudo verificar la identidad de facturación")
-                return HTMLResponse(_html_form("No se pudo verificar tu suscripción. Intenta de nuevo.", theme=_resolve_theme(request)),status_code=503)
+                return _checkout_form_response(request, "No se pudo verificar tu suscripción. Intenta de nuevo.", theme=_resolve_theme(request), status_code=503)
 
         prefill_name = f"{name} {last_name}".strip()
         customer_id = identity.customer_id if sub or prefill_email else ""
@@ -1464,7 +1488,7 @@ async def checkout_form(
         except Exception:
             await db.rollback()
             logger.exception("[CHECKOUT] No se pudo consultar la vigencia")
-            return HTMLResponse(_html_form("No se pudo verificar tu suscripción. Intenta de nuevo.",theme=_resolve_theme(request)),status_code=503)
+            return _checkout_form_response(request, "No se pudo verificar tu suscripción. Intenta de nuevo.", theme=_resolve_theme(request), status_code=503)
 
         try:
             cards = await token_svc.list_cards(customer_id)
@@ -1521,7 +1545,8 @@ async def checkout_form(
     # Normalize theme value
     resolved = theme.lower().strip() if theme and theme.lower().strip() in ("dark", "light") else _resolve_theme(request)
 
-    html_content = _html_form(
+    return _checkout_form_response(
+        request,
         error="",
         saved_cards_html=saved_cards_html,
         cards_count=cards_count,
@@ -1529,23 +1554,8 @@ async def checkout_form(
         customer_id=customer_id or "",
         prefill_email=prefill_email,
         prefill_name=prefill_name,
-        csrf_token=csrf_token,
         subscription_status_html=subscription_status_html,
     )
-    resp = HTMLResponse(html_content)
-    resp.set_cookie(
-        "checkout_csrf", 
-        csrf_token, 
-        httponly=True, 
-        secure=request.url.scheme == "https", 
-        samesite="lax", 
-        max_age=3600
-    )
-    resp.headers["X-Frame-Options"] = "DENY"
-    resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-    return resp
 
 @router.post("/delete-card", include_in_schema=False)
 async def checkout_delete_card(
@@ -1623,9 +1633,9 @@ async def process_checkout(
     """
     theme = _resolve_theme(request)
     import secrets
-    if not checkout_csrf or not csrf_token or not secrets.compare_digest(csrf_token, checkout_csrf):
+    if not checkout_csrf or not csrf_token or not secrets.compare_digest(csrf_token.encode("utf-8"), checkout_csrf.encode("utf-8")):
         logger.warning("[CHECKOUT] ✗ Validación CSRF fallida en /checkout/process")
-        return HTMLResponse(_html_form("Error de seguridad (CSRF). Intenta de nuevo.", theme=theme), status_code=400)
+        return _checkout_form_response(request, "Error de seguridad (CSRF). Intenta de nuevo.", theme=theme, status_code=400)
 
     # ── Extraer customer_id del JWT (no del form, para evitar manipulación) ──
     from app.utils.token_utils import decode_user_info_token
@@ -1645,7 +1655,7 @@ async def process_checkout(
         user_name = ""
 
     if not customer_id:
-        return HTMLResponse(_html_form("Sesión expirada. Inicia sesión nuevamente.", theme=theme), status_code=401)
+        return _checkout_form_response(request, "Sesión expirada. Inicia sesión nuevamente.", theme=theme, status_code=401)
 
     card_clean = card_number.replace(" ", "").strip()
     card_masked = f"{'*' * (len(card_clean) - 4)}{card_clean[-4:]}" if len(card_clean) >= 4 else "****"
@@ -1661,7 +1671,7 @@ async def process_checkout(
         exp_azul = f"20{yy.strip()}{mm.strip().zfill(2)}"
     except Exception:
         logger.error("[CHECKOUT] ✗ Expiration parse failed: %r", expiration)
-        return HTMLResponse(_html_form("Fecha de vencimiento inválida. Usa MM/AA.", theme=theme), status_code=422)
+        return _checkout_form_response(request, "Fecha de vencimiento inválida. Usa MM/AA.", theme=theme, status_code=422)
 
     # Monto de membresía (centralizado en constantes del módulo)
     amount = MEMBERSHIP_AMOUNT
@@ -1699,14 +1709,11 @@ async def process_checkout(
         tokenize_only = is_new_user or in_valid_period
     except CustomerIdentityError as exc:
         await db.rollback()
-        return HTMLResponse(_html_form(str(exc), theme=theme), status_code=409)
+        return _checkout_form_response(request, str(exc), theme=theme, status_code=409)
     except Exception:
         await db.rollback()
         logger.exception("[CHECKOUT] No se pudo verificar la suscripción del usuario")
-        return HTMLResponse(
-            _html_form("No se pudo verificar tu suscripción. Intenta de nuevo.", theme=theme),
-            status_code=503,
-        )
+        return _checkout_form_response(request, "No se pudo verificar tu suscripción. Intenta de nuevo.", theme=theme, status_code=503)
 
     # --- SAVE PROMO TO REDIS FOR 3DS REDIRECT ---
     if promo_code and customer_id:
@@ -1770,10 +1777,7 @@ async def process_checkout(
                 )
 
             if not trial_result or trial_result.subscription_error:
-                return HTMLResponse(
-                    _html_form("La tarjeta se guardó, pero no se pudo actualizar tu suscripción. Intenta de nuevo.", theme=theme),
-                    status_code=503,
-                )
+                return _checkout_form_response(request, "La tarjeta se guardó, pero no se pudo actualizar tu suscripción. Intenta de nuevo.", theme=theme, status_code=503)
             html = _html_result_trial(
                 card_last4=saved_card.card_last4,
                 cardholder_name=cardholder_name.strip(),
@@ -1791,16 +1795,11 @@ async def process_checkout(
         except Exception:
             await db.rollback()
             logger.exception('[CHECKOUT] Card tokenization failed; no charge fallback')
-            return HTMLResponse(
-                _html_form('No se pudo guardar la tarjeta. No se realizó un cobro; intenta más tarde.',
-                           theme=theme,customer_id=customer_id),status_code=503)
+            return _checkout_form_response(request, 'No se pudo guardar la tarjeta. No se realizó un cobro; intenta más tarde.', theme=theme, customer_id=customer_id, status_code=503)
 
     # An expired membership may explicitly proceed to payment.
     if payment is None and in_valid_period:
-        return HTMLResponse(
-            _html_form("No se pudo verificar la tarjeta. Tu prueba sigue vigente; intenta de nuevo más tarde.", theme=theme),
-            status_code=503,
-        )
+        return _checkout_form_response(request, "No se pudo verificar la tarjeta. Tu prueba sigue vigente; intenta de nuevo más tarde.", theme=theme, status_code=503)
     if payment is None:
         # IP real del cliente
         client_ip = (
@@ -1909,7 +1908,7 @@ async def process_checkout(
                     "[CHECKOUT] ✗ 3DS METHOD auto-continue EXCEPTION | payment_id=%s type=%s msg=%s",
                     payment.id, type(exc).__name__, str(exc)[:400],
                 )
-                return HTMLResponse(_html_form(f"Error 3DS (método): {exc}", theme=theme), status_code=502)
+                return _checkout_form_response(request, f"Error 3DS (método): {exc}", theme=theme, status_code=502)
             # Fall through to challenge / result handling below
 
     # ── 3DS Challenge ─────────────────────────────────────────────────────
@@ -1935,7 +1934,7 @@ async def process_checkout(
             from fastapi.responses import RedirectResponse
             return RedirectResponse(url=redirect_url, status_code=303)
         logger.error("[CHECKOUT] ✗ 3DS CHALLENGE | payment_id=%s no challenge_form and no redirect_url", payment.id)
-        return HTMLResponse(_html_form("Error 3DS: sin URL de challenge.", theme=theme), status_code=502)
+        return _checkout_form_response(request, "Error 3DS: sin URL de challenge.", theme=theme, status_code=502)
 
     # ── Resultado final ───────────────────────────────────────────────────
     status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
@@ -1998,10 +1997,7 @@ async def process_checkout(
                 logger.error("[CHECKOUT] ✗ trial FAILED (hold-verify) | %s", te)
 
             if not trial_result or trial_result.subscription_error:
-                return HTMLResponse(
-                    _html_form("La tarjeta se verificó, pero no se pudo actualizar tu suscripción. Intenta de nuevo.", theme=theme),
-                    status_code=503,
-                )
+                return _checkout_form_response(request, "La tarjeta se verificó, pero no se pudo actualizar tu suscripción. Intenta de nuevo.", theme=theme, status_code=503)
             html = _html_result_trial(
                 card_last4=payment.card_number_masked[-4:] if payment.card_number_masked else "",
                 cardholder_name=payment.cardholder_name or "",
@@ -2056,9 +2052,9 @@ async def pay_with_token(
     """Procesa un cobro (CIT) usando una tarjeta previamente guardada (DataVault Token)."""
     theme = _resolve_theme(request)
     import secrets
-    if not checkout_csrf or not csrf_token or not secrets.compare_digest(csrf_token, checkout_csrf):
+    if not checkout_csrf or not csrf_token or not secrets.compare_digest(csrf_token.encode("utf-8"), checkout_csrf.encode("utf-8")):
         logger.warning("[CHECKOUT] ✗ Validación CSRF fallida en /checkout/pay-with-token")
-        return HTMLResponse(_html_form("Error de seguridad (CSRF). Intenta de nuevo.", theme=theme), status_code=400)
+        return _checkout_form_response(request, "Error de seguridad (CSRF). Intenta de nuevo.", theme=theme, status_code=400)
     
     from app.utils.token_utils import decode_user_info_token
     user_info_token = request.cookies.get("user_info")
@@ -2072,7 +2068,7 @@ async def pay_with_token(
         customer_id = user_data.get("sub", "") or user_data.get("email", "")
         
     if not customer_id:
-        return HTMLResponse(_html_form("Sesión expirada. Inicia sesión nuevamente.", theme=theme), status_code=401)
+        return _checkout_form_response(request, "Sesión expirada. Inicia sesión nuevamente.", theme=theme, status_code=401)
         
     logger.warning("[CHECKOUT] ▶ POST /pay-with-token | customer_id=%s card_id=%s", customer_id, card_id)
 
@@ -2081,16 +2077,16 @@ async def pay_with_token(
         cards = await token_svc.list_cards(customer_id)
     except CustomerIdentityError:
         await db.rollback()
-        return HTMLResponse(_html_form("No se pudo verificar la identidad de facturación.",theme=theme),status_code=409)
+        return _checkout_form_response(request, "No se pudo verificar la identidad de facturación.", theme=theme, status_code=409)
     except Exception:
         await db.rollback()
         logger.exception("[CHECKOUT] No se pudieron consultar las tarjetas")
-        return HTMLResponse(_html_form("No se pudieron consultar tus tarjetas. Intenta de nuevo.",theme=theme),status_code=503)
+        return _checkout_form_response(request, "No se pudieron consultar tus tarjetas. Intenta de nuevo.", theme=theme, status_code=503)
     selected_card = next((c for c in cards if hasattr(c, 'id') and c.id == card_id), None)
     
     if not selected_card or not hasattr(selected_card, 'token') or not selected_card.token:
         logger.error("[CHECKOUT] ✗ Tarjeta no encontrada o sin token: %s", card_id)
-        return HTMLResponse(_html_form("Tarjeta no encontrada o inválida.", theme=theme, customer_id=customer_id), status_code=404)
+        return _checkout_form_response(request, "Tarjeta no encontrada o inválida.", theme=theme, customer_id=customer_id, status_code=404)
         
     token = selected_card.token
     expiration = getattr(selected_card, 'expiration', '')
@@ -2104,11 +2100,11 @@ async def pay_with_token(
         existing_sub = await find_active_subscription(db, identity)
     except CustomerIdentityError as exc:
         await db.rollback()
-        return HTMLResponse(_html_form(str(exc), theme=theme), status_code=409)
+        return _checkout_form_response(request, str(exc), theme=theme, status_code=409)
     except Exception:
         await db.rollback()
         logger.exception("[CHECKOUT] No se pudo verificar la suscripción antes del cobro con token")
-        return HTMLResponse(_html_form("No se pudo verificar tu suscripción. Intenta de nuevo.", theme=theme), status_code=503)
+        return _checkout_form_response(request, "No se pudo verificar tu suscripción. Intenta de nuevo.", theme=theme, status_code=503)
     from app.services.access_policy import access_decision
     from app.services.payment_lifecycle import subscription_history
     if access_decision(await subscription_history(db, identity))["allow_access"]:
@@ -2348,7 +2344,7 @@ async def challenge_page(
         else:
             logger.error("[CHECKOUT] ✗ challenge page | payment_id=%s not in cache nor DB", payment_id)
             theme = _resolve_theme(request)
-            return HTMLResponse(_html_form("Error 3DS: sesión de autenticación expirada. Intenta de nuevo.", theme=theme), status_code=410)
+            return _checkout_form_response(request, "Error 3DS: sesión de autenticación expirada. Intenta de nuevo.", theme=theme, status_code=410)
 
     logger.warning("[CHECKOUT] ▶ GET /challenge/%s | serving challenge form (%d bytes)", payment_id, len(form_html))
 
@@ -2391,7 +2387,7 @@ async def checkout_result(
     payment = await svc.get_payment(payment_id)
     if not payment:
         logger.error("[CHECKOUT] ✗ payment not found | payment_id=%s", payment_id)
-        return HTMLResponse(_html_form("Pago no encontrado.", theme=theme), status_code=404)
+        return _checkout_form_response(request, "Pago no encontrado.", theme=theme, status_code=404)
 
     from app.domain.entities import PaymentStatus
     from app.services.subscription_identity import resolve_customer_identity

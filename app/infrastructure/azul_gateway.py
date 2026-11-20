@@ -159,6 +159,8 @@ async def _post_with_failover(
     client: httpx.AsyncClient,
     payload: dict[str, Any],
     env: str,
+    *,
+    datavault: bool = False,
 ) -> httpx.Response:
     """POST to Azul with automatic failover to secondary URL on network errors.
 
@@ -171,6 +173,9 @@ async def _post_with_failover(
     last_exc: Exception | None = None
 
     for url in urls:
+        if datavault:
+            # CREATE/DELETE belong to ProcessDatavault, not ProcessPayment.
+            url = str(httpx.URL(url).copy_with(query=b"ProcessDatavault"))
         try:
             resp = await client.post(url, json=payload)
             return resp
@@ -570,7 +575,7 @@ class AzulPaymentGateway:
         }
 
         async with self._build_client("splitit") as client:
-            resp = await _post_with_failover(client, payload, cfg.env)
+            resp = await _post_with_failover(client, payload, cfg.env, datavault=True)
 
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
@@ -611,7 +616,7 @@ class AzulPaymentGateway:
         }
 
         async with self._build_client("splitit") as client:
-            resp = await _post_with_failover(client, payload, cfg.env)
+            resp = await _post_with_failover(client, payload, cfg.env, datavault=True)
 
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()

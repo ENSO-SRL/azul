@@ -1,5 +1,17 @@
 # Activación TrxType CREATE / DELETE — Azul DataVault
 
+> **Corrección del diagnóstico — 2026-11-19:** El código enviaba `CREATE` y
+> `DELETE` al endpoint de pagos (`Default.aspx`), sin `?ProcessDatavault`.
+> La documentación oficial de AZUL v3.2 (pp. 62–65) exige ese método para ambas
+> operaciones. El error `VALIDATION_ERROR:TrxType` por sí solo **no demuestra**
+> que al comercio le falten permisos. Se corrigió el enrutamiento en código;
+> falta validar la respuesta real del comercio tras un despliegue autorizado.
+> El contenido siguiente es histórico: no ejecutar el workaround de cobro.
+> El checkout actual devuelve un error si falla la tokenización, sin convertir
+> el intento de guardar tarjeta en una venta o una retención.
+>
+> Fuente: [WebServices AZUL v3.2](https://www.azul.com.do/Pages/developer/documentos/plugins/Documento%20E-commerce%20WebServices%20-%20%28Espa%C3%B1ol%29%202023%20v3.2.pdf).
+
 > **Estado:** ⏳ Pendiente de activación por AZUL  
 > **Fecha:** 2026-08-07  
 > **Contacto:** Luis Recio (lrecio@azul.com.do)
