@@ -124,7 +124,7 @@ async def test_approved_membership_without_vault_token_keeps_paid_access(storage
     from app.domain.entities import Payment
     from app.services.payment_lifecycle import begin_payment,complete_payment
     db=storage()
-    paid,_=await begin_payment(db,Payment(amount=50000,customer_id='228'),kind='sale',membership=True)
+    paid,_=await begin_payment(db,Payment(amount=59000,customer_id='228'),kind='sale',membership=True)
     paid.status=PaymentStatus.APPROVED;paid.iso_code='00'
     await complete_payment(db,paid)
     result=await post_payment.create_subscription_if_needed(paid,'228',db)
@@ -153,7 +153,7 @@ async def test_delayed_activation_preserves_cancellation(storage):
     from app.domain.entities import Payment
     from app.services.payment_lifecycle import begin_payment,complete_payment
     db=storage();sub=add_subscription(db,'228',days=-1)
-    paid,_=await begin_payment(db,Payment(amount=50000,customer_id='228'),kind='sale',membership=True)
+    paid,_=await begin_payment(db,Payment(amount=59000,customer_id='228'),kind='sale',membership=True)
     sub.status='CANCELLED';await db.commit()
     paid.status=PaymentStatus.APPROVED;paid.iso_code='00';paid.data_vault_token='fake-token'
     await complete_payment(db,paid)

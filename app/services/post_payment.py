@@ -105,8 +105,7 @@ def _is_promo_allowed(user_name: str) -> bool:
 
 # Monto real de la membresía (centavos) — para el cobro recurrente.
 # El Hold de verificación usa RD$1.00 pero la suscripción debe cobrar el precio real.
-MEMBERSHIP_AMOUNT = int(os.getenv("MEMBERSHIP_AMOUNT", "50000"))   # RD$500.00
-MEMBERSHIP_ITBIS  = int(os.getenv("MEMBERSHIP_ITBIS", "9000"))     # RD$90.00
+from app.domain.membership_pricing import MEMBERSHIP_AMOUNT, MEMBERSHIP_ITBIS
 
 
 @dataclass
@@ -332,12 +331,24 @@ async def _activate_subscription(
     from app.infrastructure.models import BillingAttemptModel
     import json
     attempts=(await db.execute(select(BillingAttemptModel).where(BillingAttemptModel.payment_id==payment.id))).scalars().all()
-    terms=next((json.loads(a.context_json or '{}') for a in attempts if json.loads(a.context_json or '{}').get('kind')=='subscription'),{})
+    contexts = [json.loads(a.context_json or '{}') for a in attempts]
+    terms = next((ctx for ctx in contexts if ctx.get('kind') == 'subscription' or (
+        ctx.get('membership') and ctx.get('kind') in ('sale', 'checkout_token')
+        and 'amount' in ctx)), {})
     membership_amount=terms.get('amount',MEMBERSHIP_AMOUNT)
     membership_itbis=terms.get('itbis',MEMBERSHIP_ITBIS)
     frequency=terms.get('frequency_days',SUBSCRIPTION_FREQUENCY_DAYS)
     verification_only = (payment.order_id or "").startswith("HOLD-")
-    if not verification_only and payment.amount < membership_amount:
+    required_amount = membership_amount
+    # Pre-price-fix checkout attempts have no price snapshot. Honor a recorded
+    # RD$500 approval without collecting a difference or losing its paid period.
+    # New attempts always have the snapshot above; arbitrary small sales do not qualify.
+    if not terms and payment.amount == 50000 and any(
+        ctx.get('membership') and ctx.get('kind') in ('sale', 'checkout_token')
+        and 'amount' not in ctx for ctx in contexts
+    ):
+        required_amount = 50000
+    if not verification_only and payment.amount < required_amount:
         result.subscription_error = "El importe aprobado requiere revisión antes de activar la membresía."
         return result
     paid_at = payment.created_at

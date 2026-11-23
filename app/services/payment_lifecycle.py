@@ -41,6 +41,11 @@ async def begin_payment(db, payment, *, kind, key='', membership=False, context=
     if db is None:
         raise BillingConflict('CONFLICT: El cobro requiere persistencia e idempotencia.')
     context=dict(context or {})
+    if membership and kind in ('sale', 'checkout_token'):
+        from app.domain.membership_pricing import MEMBERSHIP_AMOUNT, MEMBERSHIP_ITBIS
+        # Persist the server's price before 3DS; callbacks can arrive after a release.
+        context['amount'] = MEMBERSHIP_AMOUNT
+        context['itbis'] = MEMBERSHIP_ITBIS
     owner=('refund:'+context['original_payment_id']) if 'original_payment_id' in context else payment.customer_id
     if membership:
         identity=await resolve_customer_identity(db,owner)

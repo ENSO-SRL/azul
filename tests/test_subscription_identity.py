@@ -147,7 +147,7 @@ def card():
 
 def payment(*, order_id="CHK-TEST", email="cardholder@example.com"):
     return Payment(
-        customer_id="228", amount=50000, itbis=9000, status=PaymentStatus.APPROVED,
+        customer_id="228", amount=59000, itbis=9000, status=PaymentStatus.APPROVED,
         order_id=order_id, data_vault_token="vault-test", card_number_masked="4260********4242",
         cardholder_email=email,
     )

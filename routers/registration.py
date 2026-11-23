@@ -41,8 +41,7 @@ router = APIRouter(prefix="/api/v1/registration", tags=["Registration"])
 REGISTRATION_TRIAL_DAYS = int(os.getenv("REGISTRATION_TRIAL_DAYS", "30"))
 
 # Monto de membresía — el scheduler usará esto cuando expire el trial
-MEMBERSHIP_AMOUNT = int(os.getenv("MEMBERSHIP_AMOUNT", "50000"))   # RD$500.00
-MEMBERSHIP_ITBIS  = int(os.getenv("MEMBERSHIP_ITBIS",  "9000"))    # RD$90.00
+from app.domain.membership_pricing import MEMBERSHIP_AMOUNT, MEMBERSHIP_ITBIS
 
 
 # ---------------------------------------------------------------------------

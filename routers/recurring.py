@@ -130,14 +130,14 @@ class ChargeResponse(BaseModel):
 class ConsentRequest(BaseModel):
     consent_text: str = Field(
         ...,
-        description="Texto exacto mostrado al cliente, ej. 'Acepto que se me cobre RD$500 cada 30 días hasta cancelar'",
+        description="Texto exacto mostrado al cliente, ej. 'Acepto que se me cobre RD$590 cada 30 días hasta cancelar'",
     )
     ip_address: str = Field("", description="IP del cliente al momento del consentimiento")
     user_agent: str = Field("", description="User-Agent del navegador del cliente")
 
     model_config = {"json_schema_extra": {"examples": [
         {
-            "consent_text": "Acepto que se me cobre RD$500.00 cada 30 días hasta cancelar.",
+            "consent_text": "Acepto que se me cobre RD$590.00 cada 30 días hasta cancelar.",
             "ip_address": "192.168.1.1",
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ...",
         }
