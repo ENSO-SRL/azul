@@ -19,6 +19,7 @@ from sqlalchemy.sql.elements import TextClause
 from app.domain.entities import Payment, PaymentStatus, SavedCard
 from app.infrastructure.database import get_db
 from app.infrastructure.models import PaymentModel, RecurringPaymentModel, SavedCardModel, SubscriptionActivationJobModel, BillingAttemptModel
+from app.infrastructure.models import InvoiceModel, InvoiceEmailModel
 from app.services.post_payment import create_subscription_if_needed, create_trial_subscription
 from app.services.subscription_identity import resolve_customer_identity
 from app.utils.token_utils import require_user_info
@@ -73,6 +74,9 @@ class TestDB:
     async def get(self, model, key):
         return self.session.get(model, key)
 
+    async def flush(self):
+        self.session.flush()
+
     def add(self, model):
         self.session.add(model)
 
@@ -108,6 +112,8 @@ def storage():
         conn.execute(CreateTable(PaymentModel.__table__))
         SubscriptionActivationJobModel.__table__.create(conn)
         BillingAttemptModel.__table__.create(conn)
+        InvoiceModel.__table__.create(conn)
+        InvoiceEmailModel.__table__.create(conn)
     sessions = []
     locks = {}
 

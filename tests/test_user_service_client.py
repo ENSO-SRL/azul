@@ -8,8 +8,8 @@ Valida:
 - 502 -> False (sin lanzar)
 - Timeout -> False (sin lanzar)
 - Error de red -> False (sin lanzar)
-- Modo dev (sin env vars) -> True sin llamar HTTP
-- PAYMENT_EMAIL_ENABLED=0 -> True sin llamar HTTP
+- Modo dev (sin env vars) -> False sin llamar HTTP
+- PAYMENT_EMAIL_ENABLED=0 -> False sin llamar HTTP
 
 Ejecutar: pytest tests/test_user_service_client.py -v
 """
@@ -160,8 +160,8 @@ async def test_network_error_returns_false_no_raise(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_dev_mode_no_base_url_returns_true_no_http(monkeypatch):
-    """Sin ATLAS_API_BASE_URL configurada -> True sin llamar HTTP."""
+async def test_dev_mode_no_base_url_returns_false_no_http(monkeypatch):
+    """Omitir un correo no equivale a enviarlo."""
     monkeypatch.delenv("ATLAS_API_BASE_URL", raising=False)
     monkeypatch.delenv("USER_SERVICE_KEY", raising=False)
     monkeypatch.setenv("PAYMENT_EMAIL_ENABLED", "1")
@@ -169,20 +169,20 @@ async def test_dev_mode_no_base_url_returns_true_no_http(monkeypatch):
     with patch("app.services.user_service_client.httpx.AsyncClient") as mock_cls:
         result = await usc.enviar_correo_pago(to_email="dev@local.com", success=True)
 
-    assert result is True
+    assert result is False
     mock_cls.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_payment_email_disabled_returns_true_no_http(monkeypatch):
-    """PAYMENT_EMAIL_ENABLED=0 -> True sin llamar HTTP."""
+async def test_payment_email_disabled_returns_false_no_http(monkeypatch):
+    """PAYMENT_EMAIL_ENABLED=0 -> False sin llamar HTTP."""
     _env(monkeypatch)
     monkeypatch.setenv("PAYMENT_EMAIL_ENABLED", "0")
 
     with patch("app.services.user_service_client.httpx.AsyncClient") as mock_cls:
         result = await usc.enviar_correo_pago(to_email="x@x.com", success=True)
 
-    assert result is True
+    assert result is False
     mock_cls.assert_not_called()
 
 

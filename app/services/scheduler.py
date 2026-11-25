@@ -120,14 +120,11 @@ async def notify_charge_outcome(sub, payment, invoice_number: str) -> None:
     payment_method = f"Tarjeta terminada en {sub.card_last4}" if sub.card_last4 else None
 
     if payment.status == PaymentStatus.APPROVED:
-        await enviar_correo_pago(
-            to_email=sub.cardholder_email,
-            success=True,
-            invoice_number=invoice_number,
-            total=sub.amount / 100,
-            currency=_currency_str(sub),
-            payment_method=payment_method,
-        )
+        from app.services.invoice_delivery import dispatch_invoice
+        try:
+            await dispatch_invoice(payment.id)
+        except Exception:
+            logger.exception('Invoice retained for background delivery payment=%s',payment.id)
         return
 
     reason = payment.response_message or f"IsoCode={payment.iso_code}"
@@ -413,6 +410,10 @@ def start_scheduler(engine: AsyncEngine) -> None:
     from app.services.post_payment import retry_subscription_activations
     _scheduler.add_job(retry_subscription_activations, trigger="interval", minutes=5,
         kwargs={"session_factory": session_factory}, id="retry_subscription_activations", replace_existing=True)
+    from app.services.invoice_delivery import retry_invoice_emails
+    _scheduler.add_job(retry_invoice_emails,trigger='interval',seconds=30,
+        kwargs={'session_factory':session_factory},id='retry_invoice_emails',replace_existing=True,
+        max_instances=1,coalesce=True)
     _scheduler.start()
     logger.info(
         "[scheduler] Started — "

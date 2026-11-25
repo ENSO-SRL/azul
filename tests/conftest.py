@@ -59,6 +59,8 @@ def legacy_service_dependencies(request, monkeypatch):
     monkeypatch.setattr(lifecycle,'mark_uncertain',AsyncMock())
     monkeypatch.setattr(lifecycle,'assert_no_pending_membership',AsyncMock())
     monkeypatch.setattr(lifecycle,'subscription_history',AsyncMock(return_value=[]))
+    from app.services import invoice_delivery
+    monkeypatch.setattr(invoice_delivery,'dispatch_invoice',AsyncMock(return_value='ACCEPTED'))
     if request.module.__name__.split(".")[-1] == "test_scheduler":
         from app.services import scheduler
         async def notify(*args, **kwargs):

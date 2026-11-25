@@ -112,6 +112,7 @@ from app.domain.membership_pricing import MEMBERSHIP_AMOUNT, MEMBERSHIP_ITBIS
 class PostPaymentResult:
     """Summary of all post-payment actions taken."""
     email_sent: bool = False
+    email_status: str = 'PENDING'
     card_saved: bool = False
     confirmation_triggered: bool = False
     subscription_created: bool = False
@@ -207,45 +208,19 @@ async def handle_post_payment_actions(payment: Payment) -> PostPaymentResult:
 
     # ── 1. Identify if card was saved ─────────────────────────────────────
     result.card_saved = bool(payment.data_vault_token)
-    logger.warning(
-        "[post-payment] payment_id=%s email=%s card_saved=%s token=%s",
-        payment.id,
-        payment.cardholder_email or "(none)",
-        result.card_saved,
-        (payment.data_vault_token[:8] + "…") if payment.data_vault_token else "(none)",
-    )
+    logger.info('[post-payment] payment_id=%s card_saved=%s',payment.id,result.card_saved)
 
     # ── 2. Send checkout payment receipt email ────────────────────────────
     if payment.cardholder_email:
-        card_last4 = (
-            payment.card_number_masked[-4:]
-            if payment.card_number_masked
-            else "****"
-        )
-        total_amount = payment.amount
         try:
-            result.email_sent = await send_notification(
-                event="checkout_payment_approved",
-                to_email=payment.cardholder_email,
-                context={
-                    "amount_display": f"{total_amount / 100:.2f}",
-                    "currency": payment.currency or "DOP",
-                    "description": "Pago desde checkout",
-                    "card_last4": card_last4,
-                    "payment_id": payment.id,
-                    "card_saved": result.card_saved,
-                },
-            )
-            logger.warning(
-                "[post-payment] ✓ receipt email sent=%s to=%s payment_id=%s",
-                result.email_sent,
-                payment.cardholder_email,
-                payment.id,
-            )
+            from app.services.invoice_delivery import dispatch_invoice
+            result.email_status=await dispatch_invoice(payment.id)
+            result.email_sent=result.email_status in ('ACCEPTED','DELIVERED')
+            logger.info('[post-payment] receipt status=%s payment_id=%s',result.email_status,payment.id)
         except Exception as exc:
             logger.error(
                 "[post-payment] ✗ receipt email FAILED | payment_id=%s to=%s err=%s",
-                payment.id, payment.cardholder_email, exc,
+                payment.id, payment.cardholder_email, type(exc).__name__,
             )
 
         # ── 3. Trigger account confirmation via auth service ──────────────
@@ -261,6 +236,7 @@ async def handle_post_payment_actions(payment: Payment) -> PostPaymentResult:
             payment.id,
         )
 
+    payment._receipt_email_status=result.email_status
     return result
 
 

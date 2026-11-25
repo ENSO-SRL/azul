@@ -337,19 +337,15 @@ async def test_create_subscription_sends_first_charge_receipt():
     cit = AsyncMock(return_value=(payment, _make_txn(payment.id)))
     svc = _make_service(gateway_sale_recurring_cit=cit)
 
-    mock_enviar = AsyncMock(return_value=True)
-    with patch("app.services.scheduler.enviar_correo_pago", mock_enviar):
+    mock_dispatch = AsyncMock(return_value='ACCEPTED')
+    with patch("app.services.invoice_delivery.dispatch_invoice", mock_dispatch):
         await svc.create_subscription(
             customer_id="CLI-1", amount=59000, itbis=None,
             card_number="4260550061845872", expiration="203012", cvc="123",
             cardholder_name="Ana", cardholder_email="ana@ejemplo.com",
         )
 
-    mock_enviar.assert_awaited_once()
-    kw = mock_enviar.call_args.kwargs
-    assert kw["success"] is True
-    assert kw["to_email"] == "ana@ejemplo.com"
-    assert kw["total"] == 590.0
+    mock_dispatch.assert_awaited_once_with(payment.id)
 
 
 @pytest.mark.asyncio
@@ -363,12 +359,11 @@ async def test_manual_charge_sends_receipt_on_success():
     svc._payments.get_by_id = AsyncMock(return_value=None)
     svc._gw.verify_payment = AsyncMock(return_value={"Found": False})
 
-    mock_enviar = AsyncMock(return_value=True)
-    with patch("app.services.scheduler.enviar_correo_pago", mock_enviar):
+    mock_dispatch = AsyncMock(return_value='ACCEPTED')
+    with patch("app.services.invoice_delivery.dispatch_invoice", mock_dispatch):
         await svc.charge("sub-test-id")
 
-    mock_enviar.assert_awaited_once()
-    assert mock_enviar.call_args.kwargs["success"] is True
+    mock_dispatch.assert_awaited_once_with(payment.id)
 
 
 @pytest.mark.asyncio

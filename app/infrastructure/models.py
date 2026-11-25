@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, Index, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Integer, String, Text, Index, Identity, LargeBinary, ForeignKey, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database import Base
@@ -221,4 +221,47 @@ class ReconciliationReportModel(Base):
     notes: Mapped[str] = mapped_column(String(500), default="")
 
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class InvoiceModel(Base):
+    """Immutable invoice snapshot, independent of mutable user/card records."""
+    __tablename__ = 'invoices'
+    __table_args__ = (CheckConstraint('total > 0 AND subtotal >= 0 AND itbis >= 0 '
+        'AND subtotal + itbis = total AND balance_due = 0',name='invoice_amounts_valid'), {'schema': 'pagos'})
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer,'sqlite'), Identity(), primary_key=True)
+    payment_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    invoice_number: Mapped[str | None] = mapped_column(String(80), unique=True)
+    customer_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    subtotal: Mapped[int] = mapped_column(Integer, nullable=False)
+    itbis: Mapped[int] = mapped_column(Integer, nullable=False)
+    total: Mapped[int] = mapped_column(Integer, nullable=False)
+    balance_due: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    document_json: Mapped[str] = mapped_column(Text, nullable=False)
+    html_content: Mapped[str] = mapped_column(Text, nullable=False)
+    pdf_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    pdf_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class InvoiceEmailModel(Base):
+    """One durable delivery per invoice/recipient; never retry the payment."""
+    __tablename__ = 'invoice_email_outbox'
+    __table_args__ = (Index('ix_invoice_email_due', 'scope', 'status', 'next_attempt_at'),
+        UniqueConstraint('invoice_id','recipient',name='uq_invoice_email_recipient'), {'schema': 'pagos'})
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey('pagos.invoices.id'), nullable=False)
+    scope: Mapped[str] = mapped_column(String(255), nullable=False)
+    audience: Mapped[str] = mapped_column(String(20), nullable=False)
+    recipient: Mapped[str] = mapped_column(String(255), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default='{}')
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default='PENDING')
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[str] = mapped_column(String(36), default='')
+    provider_id: Mapped[str] = mapped_column(String(255), default='')
+    last_error: Mapped[str] = mapped_column(String(100), default='')
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 

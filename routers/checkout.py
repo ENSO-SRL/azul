@@ -717,6 +717,7 @@ def _html_result(
     status: str, message: str, payment_id: str, amount: int, iso: str,
     theme: str = "dark", card_last4: str = "", cardholder_name: str = "",
     cardholder_email: str = "", card_saved: bool = False,
+    receipt_status: str = 'PENDING',
 ) -> str:
     cardholder_name = escape(cardholder_name)
     cardholder_email = escape(cardholder_email)
@@ -783,14 +784,21 @@ def _html_result(
         </div>'''
 
     email_line = ""
-    if ok and cardholder_email:
+    if ok and amount > 0 and cardholder_email:
+        receipt_message = {
+            'ACCEPTED':'Factura aceptada para envío a',
+            'DELIVERED':'Factura entregada al servidor de correo de',
+            'UNCERTAIN':'Estamos verificando el envío de la factura a',
+            'FAILED':'No pudimos enviar la factura a',
+            'NOT_REQUESTED':'Aún no se ha solicitado el envío de la factura a',
+        }.get(receipt_status,'Factura pendiente de envío a')
         email_line = f'''
         <div class="result-email-notice">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
                 <polyline points="22,6 12,13 2,6"/>
             </svg>
-            <span>Recibo enviado a <strong>{cardholder_email}</strong></span>
+            <span>{receipt_message} <strong>{cardholder_email}</strong>. Tu pago está aprobado; no lo repitas.</span>
         </div>'''
 
     return f"""<!DOCTYPE html>
@@ -2031,6 +2039,7 @@ async def process_checkout(
         cardholder_name=payment.cardholder_name or "",
         cardholder_email=payment.cardholder_email or "",
         card_saved=bool(payment.data_vault_token),
+        receipt_status=getattr(payment,'_receipt_email_status','PENDING'),
     )
     resp = HTMLResponse(html, status_code=202 if "activación pendiente" in html.lower() else 200)
     resp.headers["X-Frame-Options"] = "DENY"
@@ -2176,6 +2185,7 @@ async def pay_with_token(
         cardholder_name=payment.cardholder_name or getattr(selected_card, 'cardholder_name', ""),
         cardholder_email=payment.cardholder_email or "",
         card_saved=True,
+        receipt_status=getattr(payment,'_receipt_email_status','PENDING'),
     )
     resp = HTMLResponse(html, status_code=202 if "activación pendiente" in html.lower() else 200)
     resp.headers["X-Frame-Options"] = "DENY"
@@ -2406,6 +2416,8 @@ async def checkout_result(
 
     if payment.status.value == "APPROVED" and (activation is None or activation.status != "DONE"):
         msg = "Pago aprobado; activación pendiente. No repitas el pago."
+    from app.services.invoice_delivery import customer_receipt_status
+    receipt_status=await customer_receipt_status(db,payment.id)
     html = _html_result(
         status=status,
         message=msg,
@@ -2417,6 +2429,7 @@ async def checkout_result(
         cardholder_name=payment.cardholder_name or "",
         cardholder_email=payment.cardholder_email or "",
         card_saved=bool(payment.data_vault_token),
+        receipt_status=receipt_status,
     )
     resp = HTMLResponse(html, status_code=202 if "activación pendiente" in html.lower() else 200)
     resp.headers["X-Frame-Options"] = "DENY"

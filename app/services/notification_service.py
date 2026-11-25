@@ -229,7 +229,7 @@ async def send_notification(
             "Subject: %s",
             event, to_email, subject,
         )
-        return True
+        return False
 
     try:
         import boto3

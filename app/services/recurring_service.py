@@ -419,6 +419,8 @@ class RecurringService:
 
         # This durable unique reservation survives commits, worker crashes and timeouts.
         attempts = BillingAttempts(self._db)
+        payment.cardholder_email=sub.cardholder_email or identity.email
+        payment.card_number_masked='****'+(sub.card_last4 or '')
         payment.data_vault_token=sub.data_vault_token
         await attempts.reserve(custom_order_id, sub.id, payment.id, payment=payment,
             context={'kind':'subscription','membership':True,'card_expiration':sub.card_expiration,

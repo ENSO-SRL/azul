@@ -13,7 +13,7 @@ USER_SERVICE_KEY     Valor del header x-service-key
 Modo dev (sin env vars)
 -----------------------
 Si alguna de las dos variables falta, la funcion loguea una advertencia y
-retorna True sin hacer ninguna llamada HTTP. Esto permite correr en local sin
+retorna False sin hacer ninguna llamada HTTP. Esto permite correr en local sin
 credenciales de produccion.
 
 Flag de corte de emergencia
@@ -112,7 +112,7 @@ async def enviar_correo_pago(
             "[user_svc] PAYMENT_EMAIL_ENABLED=0 -- correo omitido para %s (success=%s).",
             to_email, success,
         )
-        return True
+        return False
 
     cfg = _get_config()
     if cfg is None:
@@ -120,7 +120,7 @@ async def enviar_correo_pago(
             "[user_svc] ATLAS_API_BASE_URL o USER_SERVICE_KEY no configurados -- "
             "modo dev, correo omitido para %s.", to_email,
         )
-        return True  # no falla el cobro por falta de config local
+        return False  # Omitido no equivale a enviado; el cobro no se revierte.
 
     base_url, service_key = cfg
     endpoint = f"{base_url}/invoices/service/payment_email"

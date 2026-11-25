@@ -189,6 +189,12 @@ async def complete_payment(db,payment):
                 db.add(SubscriptionActivationJobModel(payment_id=payment.id,customer_id=payment.customer_id,
                     card_expiration=context.get('card_expiration',''),promo_code=context.get('promo_code','') or '',
                     user_name=context.get('user_name',''),status='PENDING'))
+    if payment.status == PaymentStatus.APPROVED:
+        from app.services.invoice_delivery import record_invoice
+        contexts=[json.loads(a.context_json or '{}') for a in attempts]
+        financial=next((c for c in contexts if c.get('kind') in ('sale','checkout_token','subscription')),
+            next((c for c in contexts if c.get('kind')), {}))
+        await record_invoice(db,payment,financial)
     await db.commit()
 
 

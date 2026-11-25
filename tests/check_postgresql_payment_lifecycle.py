@@ -28,7 +28,7 @@ os.environ.update(DATABASE_URL=DSN.replace('postgresql://', 'postgresql+asyncpg:
 
 from app.domain.entities import Payment, PaymentStatus
 from app.infrastructure.models import (PaymentModel, RecurringPaymentModel, SavedCardModel,
-    BillingAttemptModel, SubscriptionActivationJobModel, TransactionModel)
+    BillingAttemptModel, SubscriptionActivationJobModel, TransactionModel, InvoiceModel, InvoiceEmailModel)
 from app.infrastructure.repo_impl import SQLPaymentRepository, SQLRecurringRepository
 from app.services.billing_attempts import BillingConflict
 from app.services.payment_service import PaymentService
@@ -56,7 +56,7 @@ async def main():
                 bsuid_meta text, created_at timestamptz, updated_at timestamptz);
             INSERT INTO public.users VALUES (228, 'd9e1c417-43ea-407d-9ad1-d0e6f58b5b82',
                 'fixture@example.invalid','Fixture','Person','+18095550000',true,true,false,null,null,now(),now());''')
-        for model in (PaymentModel, RecurringPaymentModel, SavedCardModel, BillingAttemptModel, SubscriptionActivationJobModel, TransactionModel):
+        for model in (PaymentModel, RecurringPaymentModel, SavedCardModel, BillingAttemptModel, SubscriptionActivationJobModel, TransactionModel, InvoiceModel, InvoiceEmailModel):
             await conn.execute(str(CreateTable(model.__table__).compile(dialect=postgresql.dialect())))
         await conn.execute('ALTER TABLE pagos.payments ADD COLUMN atlas_user_id integer REFERENCES public.users(id)')
         for filename in ('20261007_customer_identity_aliases.sql', '20261008_verified_billing_links.sql',
@@ -67,7 +67,7 @@ async def main():
         sessions = async_sessionmaker(engine, expire_on_commit=False)
 
         async def reset():
-            await conn.execute('TRUNCATE pagos.transactions,pagos.billing_attempts,pagos.subscription_activation_jobs,pagos.payments,pagos.recurring_payments,pagos.saved_cards')
+            await conn.execute('TRUNCATE pagos.invoice_email_outbox,pagos.invoices,pagos.transactions,pagos.billing_attempts,pagos.subscription_activation_jobs,pagos.payments,pagos.recurring_payments,pagos.saved_cards')
 
         async def sale(p, *args, **kwargs):
             await asyncio.sleep(.07)
@@ -78,10 +78,11 @@ async def main():
             return p, None
 
         gw = SimpleNamespace(sale=AsyncMock(side_effect=sale), sale_recurring_cit=AsyncMock(side_effect=sale))
-        async def pay(key, amount=50000, membership=False):
+        async def pay(key, amount=None, membership=False):
+            amount=amount if amount is not None else (59000 if membership else 50000)
             async with sessions() as db:
                 svc = PaymentService(SQLPaymentRepository(db), SimpleNamespace(save=AsyncMock()), gw, db_session=db)
-                return await svc.process_sale(amount, 0, '4242424242424242', '209912', '123',
+                return await svc.process_sale(amount, 9000 if membership else 0, '4242424242424242', '209912', '123',
                     idempotency_key=key, customer_id='228', subscription_checkout=membership)
 
         results = await asyncio.gather(pay('same-request'), pay('same-request'), return_exceptions=True)
@@ -112,7 +113,7 @@ async def main():
         assert await conn.fetchval("SELECT status FROM pagos.subscription_activation_jobs") == 'PENDING'
         async with sessions() as db:
             activation = await create_subscription_if_needed(approved, '228', db)
-            assert activation.subscription_created and not activation.subscription_error
+            assert activation.subscription_created and not activation.subscription_error, activation
         expiry = await conn.fetchval('SELECT next_charge_at FROM pagos.recurring_payments')
         async with sessions() as db:
             await create_subscription_if_needed(approved, '228', db)
